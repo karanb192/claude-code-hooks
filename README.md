@@ -9,11 +9,8 @@
 ### 🎬 Quick Demo
 
 <p align="center">
-  <img src="assets/block-secrets.png" alt="Hook blocking .env read" width="600">
-</p>
-
-<p align="center">
-  <img src="assets/block-dangerous-commands.png" alt="Hook blocking dangerous commands" width="600">
+  <img src="assets/block-secrets.png" alt="Hook blocking .env read" width="420">&nbsp;&nbsp;&nbsp;
+  <img src="assets/block-dangerous-commands.png" alt="Hook blocking dangerous commands" width="420">
 </p>
 
 A growing collection of tested, documented hooks you can copy, paste, and customize.
