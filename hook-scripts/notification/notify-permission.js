@@ -22,7 +22,7 @@ const path = require('path');
 // Channel webhooks (Discord/Telegram coming soon)
 const SLACK_WEBHOOK = process.env.CCH_SLA_WEBHOOK || '';
 
-const LOG_DIR = path.join(process.env.HOME, '.claude', 'hooks-logs');
+const LOG_DIR = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME, '.claude'), 'hooks-logs');
 
 function log(data) {
   try {

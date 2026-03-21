@@ -36,7 +36,7 @@ from pathlib import Path
 
 
 def get_log_file_path():
-    log_dir = Path.home() / ".claude" / "hooks-logs"
+    log_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "hooks-logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir / f"{datetime.now().strftime('%Y-%m-%d')}.jsonl"
 

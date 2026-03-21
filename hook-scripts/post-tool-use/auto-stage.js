@@ -26,7 +26,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-const LOG_DIR = path.join(process.env.HOME, '.claude', 'hooks-logs');
+const LOG_DIR = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME, '.claude'), 'hooks-logs');
 
 function log(data) {
   try {
