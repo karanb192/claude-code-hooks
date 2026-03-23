@@ -43,6 +43,7 @@ Runs **before** Claude executes a tool. Can block or modify the operation.
 |------|---------|-------------|
 | [block-dangerous-commands](hook-scripts/pre-tool-use/block-dangerous-commands.js) | `Bash` | Blocks dangerous shell commands (rm -rf ~, fork bombs, curl\|sh) |
 | [protect-secrets](hook-scripts/pre-tool-use/protect-secrets.js) | `Read\|Edit\|Write\|Bash` | Prevents reading/modifying/exfiltrating sensitive files |
+| [case-sensitive-guard](hook-scripts/pre-tool-use/case-sensitive-guard.js) | `Bash` | Blocks rm/mkdir collisions on case-insensitive filesystems (exFAT, NTFS, HFS+) |
 
 ### Post-Tool-Use
 
