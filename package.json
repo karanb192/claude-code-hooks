@@ -1,6 +1,6 @@
 {
   "name": "claude-code-hooks",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Production-ready hooks for Claude Code — safety, automation, notifications, and more",
   "scripts": {
     "test": "node --test hook-scripts/tests/**/*.test.js"
