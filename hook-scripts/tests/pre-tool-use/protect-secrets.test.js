@@ -17,6 +17,7 @@ const {
   ALLOWLIST,
   LEVELS,
   SAFETY_LEVEL,
+  ASK,
   check,
   checkFilePath,
   checkBashCommand,
@@ -439,5 +440,34 @@ describe('Config: Pattern structures', () => {
     assert.strictEqual(LEVELS.critical, 1);
     assert.strictEqual(LEVELS.high, 2);
     assert.strictEqual(LEVELS.strict, 3);
+  });
+
+  it('ASK has valid boolean values for each level', () => {
+    for (const level of ['critical', 'high', 'strict']) {
+      assert.ok(level in ASK, `ASK missing level: ${level}`);
+      assert.strictEqual(typeof ASK[level], 'boolean', `ASK.${level} is not boolean`);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Integration Tests - ask mode
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Integration: ask mode', () => {
+  it('returns "deny" for critical-level file (ASK.critical=false)', async () => {
+    const { output } = await runHook('Read', { file_path: '/app/.env' });
+    assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
+  });
+
+  it('returns "deny" for high-level bash pattern (ASK.high=false)', async () => {
+    const { output } = await runHook('Bash', { command: 'echo $SECRET_KEY' });
+    assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
+  });
+
+  it('ASK defaults are correct', () => {
+    assert.strictEqual(ASK.critical, false, 'Default ASK.critical should be false');
+    assert.strictEqual(ASK.high, false, 'Default ASK.high should be false');
+    assert.strictEqual(ASK.strict, false, 'Default ASK.strict should be false');
   });
 });
