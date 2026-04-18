@@ -10,13 +10,25 @@
  * and two days later can't remember which session touched which file. This hook
  * gives you a durable, greppable (and Obsidian-friendly) record of every session.
  *
- * One script, three registrations in .claude/settings.json:
+ * One script, three registrations in .claude/settings.json.
+ *
+ * PostToolUse uses "async": true so logging never blocks Claude — the hook
+ * fires after every Edit/Write/Read/Bash, so keep it non-blocking. SessionStart
+ * is sync so the note file exists before PostToolUse tries to append to it;
+ * SessionEnd is sync so finalization completes before the session terminates.
+ *
  * {
  *   "hooks": {
- *     "SessionStart": [{ "hooks": [{ "type": "command", "command": "node ~/.claude/hooks/session-logger.js" }] }],
- *     "PostToolUse":  [{ "matcher": "Edit|Write|Bash|Read",
- *                         "hooks": [{ "type": "command", "command": "node ~/.claude/hooks/session-logger.js" }] }],
- *     "SessionEnd":   [{ "hooks": [{ "type": "command", "command": "node ~/.claude/hooks/session-logger.js" }] }]
+ *     "SessionStart": [{
+ *       "hooks": [{ "type": "command", "command": "node ~/.claude/hooks/session-logger.js" }]
+ *     }],
+ *     "PostToolUse":  [{
+ *       "matcher": "Edit|Write|Bash|Read",
+ *       "hooks": [{ "type": "command", "command": "node ~/.claude/hooks/session-logger.js", "async": true }]
+ *     }],
+ *     "SessionEnd":   [{
+ *       "hooks": [{ "type": "command", "command": "node ~/.claude/hooks/session-logger.js" }]
+ *     }]
  *   }
  * }
  *
