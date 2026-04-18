@@ -16,9 +16,15 @@
  *     "SessionStart": [{ "hooks": [{ "type": "command", "command": "node ~/.claude/hooks/session-logger.js" }] }],
  *     "PostToolUse":  [{ "matcher": "Edit|Write|Bash|Read",
  *                         "hooks": [{ "type": "command", "command": "node ~/.claude/hooks/session-logger.js" }] }],
- *     "Stop":         [{ "hooks": [{ "type": "command", "command": "node ~/.claude/hooks/session-logger.js" }] }]
+ *     "SessionEnd":   [{ "hooks": [{ "type": "command", "command": "node ~/.claude/hooks/session-logger.js" }] }]
  *   }
  * }
+ *
+ * Note: register against SessionEnd, NOT Stop. Stop fires at the end of every
+ * Claude turn (many times per session); SessionEnd fires once when the session
+ * actually ends. If the terminal is closed abruptly (SIGKILL), SessionEnd may
+ * not fire — the note remains as-is with all activity up to the last tool call
+ * preserved, just without a final ended: timestamp.
  *
  * Tip: point CC_SESSION_LOG_DIR at an Obsidian vault for cross-device sync.
  */
@@ -189,17 +195,27 @@ function appendUnderSection(filePath, section, entry) {
   fs.writeFileSync(filePath, lines.join('\n'));
 }
 
-function handleStop(data) {
+function handleSessionEnd(data) {
   const { session_id, cwd } = data;
   const filePath = findExistingFile(session_id);
   if (!filePath) {
-    log({ level: 'SKIP', reason: 'no session file on stop', session_id });
+    log({ level: 'SKIP', reason: 'no session file on end', session_id });
     return;
   }
+
+  // Idempotent: skip if already finalized (defensive — protects against the
+  // user accidentally registering against Stop, which fires every turn).
+  // The frontmatter is seeded with a literal "ended:" line; once we fill it,
+  // this regex no longer matches and we skip.
+  let body = fs.readFileSync(filePath, 'utf8');
+  if (!/^ended:[ \t]*$/m.test(body)) {
+    log({ level: 'SKIP', reason: 'already finalized', session_id });
+    return;
+  }
+
   const ended = new Date().toISOString();
 
   // Update frontmatter `ended:` line
-  let body = fs.readFileSync(filePath, 'utf8');
   body = body.replace(/^ended:\s*$/m, `ended: ${ended}`);
 
   // Try to capture final git status (short)
@@ -218,7 +234,7 @@ function handleStop(data) {
     footer.push('', '**Final git status:**', '```', gitStatus, '```');
   }
   fs.writeFileSync(filePath, body + footer.join('\n') + '\n');
-  log({ level: 'STOP', session_id, file: filePath });
+  log({ level: 'END', session_id, file: filePath });
 }
 
 async function main() {
@@ -229,7 +245,9 @@ async function main() {
     const event = data.hook_event_name;
     if (event === 'SessionStart') handleSessionStart(data);
     else if (event === 'PostToolUse') handlePostToolUse(data);
-    else if (event === 'Stop' || event === 'SessionEnd') handleStop(data);
+    else if (event === 'SessionEnd') handleSessionEnd(data);
+    // Note: Stop is intentionally NOT handled. It fires every turn, not once
+    // per session. Register against SessionEnd instead.
     console.log('{}');
   } catch (e) {
     log({ level: 'ERROR', error: e.message });
@@ -247,6 +265,6 @@ if (require.main === module) {
     appendUnderSection,
     handleSessionStart,
     handlePostToolUse,
-    handleStop,
+    handleSessionEnd,
   };
 }

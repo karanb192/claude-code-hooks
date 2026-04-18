@@ -25,7 +25,7 @@ const {
   appendUnderSection,
   handleSessionStart,
   handlePostToolUse,
-  handleStop,
+  handleSessionEnd,
 } = require('../../session/session-logger.js');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -237,15 +237,15 @@ describe('Integration: PostToolUse', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Integration: Stop event
+// Integration: SessionEnd event
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('Integration: Stop', () => {
+describe('Integration: SessionEnd', () => {
   beforeEach(cleanSessionsDir);
 
   it('writes end timestamp into frontmatter and a Session End section', async () => {
     await runHook({ hook_event_name: 'SessionStart', session_id: 'sess-ffff6666', cwd: '/tmp' });
-    await runHook({ hook_event_name: 'Stop', session_id: 'sess-ffff6666', cwd: '/tmp' });
+    await runHook({ hook_event_name: 'SessionEnd', session_id: 'sess-ffff6666', cwd: '/tmp' });
     const f = fs.readdirSync(TMP_SESSIONS)[0];
     const body = fs.readFileSync(path.join(TMP_SESSIONS, f), 'utf8');
     assert.ok(/^ended: \d{4}-/m.test(body));
@@ -254,12 +254,31 @@ describe('Integration: Stop', () => {
 
   it('no-ops when session file does not exist', async () => {
     const { code, output } = await runHook({
-      hook_event_name: 'Stop',
+      hook_event_name: 'SessionEnd',
       session_id: 'sess-nofile',
       cwd: '/tmp',
     });
     assert.strictEqual(code, 0);
     assert.deepStrictEqual(output, {});
+  });
+
+  it('is idempotent — duplicate SessionEnd does not double-append', async () => {
+    await runHook({ hook_event_name: 'SessionStart', session_id: 'sess-gggg7777', cwd: '/tmp' });
+    await runHook({ hook_event_name: 'SessionEnd', session_id: 'sess-gggg7777', cwd: '/tmp' });
+    await runHook({ hook_event_name: 'SessionEnd', session_id: 'sess-gggg7777', cwd: '/tmp' });
+    const f = fs.readdirSync(TMP_SESSIONS)[0];
+    const body = fs.readFileSync(path.join(TMP_SESSIONS, f), 'utf8');
+    const matches = body.match(/## Session End/g) || [];
+    assert.strictEqual(matches.length, 1, 'Session End section should appear exactly once');
+  });
+
+  it('ignores Stop events (fires per-turn, not per-session)', async () => {
+    await runHook({ hook_event_name: 'SessionStart', session_id: 'sess-hhhh8888', cwd: '/tmp' });
+    await runHook({ hook_event_name: 'Stop', session_id: 'sess-hhhh8888', cwd: '/tmp' });
+    const f = fs.readdirSync(TMP_SESSIONS)[0];
+    const body = fs.readFileSync(path.join(TMP_SESSIONS, f), 'utf8');
+    assert.ok(!body.includes('## Session End'), 'Stop should not finalize the note');
+    assert.ok(!/^ended: \d{4}-/m.test(body), 'Stop should not fill ended timestamp');
   });
 });
 

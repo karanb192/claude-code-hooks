@@ -4,7 +4,7 @@
 
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-280%20passing-brightgreen)](hook-scripts/tests)
+[![Tests](https://img.shields.io/badge/tests-282%20passing-brightgreen)](hook-scripts/tests)
 
 ### 🎬 Quick Demo
 
@@ -66,7 +66,7 @@ Runs on session lifecycle events — start, end, and tool usage during the sessi
 
 | Hook | Matcher | Description |
 |------|---------|-------------|
-| [session-logger](hook-scripts/session/session-logger.js) | `SessionStart` + `PostToolUse` + `Stop` | Writes a durable markdown log of every session (cwd, git repo, files touched, bash commands) — drop-in for Obsidian vaults via `CC_SESSION_LOG_DIR` |
+| [session-logger](hook-scripts/session/session-logger.js) | `SessionStart` + `PostToolUse` + `SessionEnd` | Writes a durable markdown log of every session (cwd, git repo, files touched, bash commands) — drop-in for Obsidian vaults via `CC_SESSION_LOG_DIR` |
 
 ### Utils
 
