@@ -66,7 +66,7 @@ Runs on session lifecycle events — start, end, and tool usage during the sessi
 
 | Hook | Matcher | Description |
 |------|---------|-------------|
-| [session-logger](hook-scripts/session/session-logger.js) | `SessionStart` + `PostToolUse` + `SessionEnd` | Writes a durable markdown log of every session (cwd, git repo, files touched, bash commands) — drop-in for Obsidian vaults via `CC_SESSION_LOG_DIR` |
+| [session-logger](hook-scripts/session/session-logger.js) | `SessionStart` + `PostToolUse` + `SessionEnd` | Writes a durable markdown log of every session (cwd, git repo, files touched, bash commands). `PostToolUse` registers with `"async": true` so logging never blocks Claude. Drop-in for Obsidian vaults via `CC_SESSION_LOG_DIR`. |
 
 ### Utils
 
