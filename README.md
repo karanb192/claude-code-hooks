@@ -4,7 +4,7 @@
 
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-262%20passing-brightgreen)](hook-scripts/tests)
+[![Tests](https://img.shields.io/badge/tests-282%20passing-brightgreen)](hook-scripts/tests)
 
 ### 🎬 Quick Demo
 
@@ -59,6 +59,14 @@ Fires when Claude needs user attention.
 | Hook | Matcher | Description |
 |------|---------|-------------|
 | [notify-permission](hook-scripts/notification/notify-permission.js) | `permission_prompt\|idle_prompt` | Sends Slack alerts when Claude needs input |
+
+### Session
+
+Runs on session lifecycle events — start, end, and tool usage during the session.
+
+| Hook | Matcher | Description |
+|------|---------|-------------|
+| [session-logger](hook-scripts/session/session-logger.js) | `SessionStart` + `PostToolUse` + `SessionEnd` | Writes a durable markdown log of every session (cwd, git repo, files touched, bash commands). `PostToolUse` registers with `"async": true` so logging never blocks Claude. Drop-in for Obsidian vaults via `CC_SESSION_LOG_DIR`. |
 
 ### Utils
 
@@ -165,7 +173,6 @@ Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 | `auto-format` | PostToolUse | Run prettier/black/gofmt after edits |
 | `branch-guard` | PreToolUse | Block changes on main/master branch |
 | `context-snapshot` | PreCompact | Preserve context before compaction |
-| `session-summary` | Stop | Generate summary on session end |
 | `ntfy-notify` | Notification | Free mobile push via [ntfy.sh](https://ntfy.sh) |
 | `discord-notify` | Notification | Discord webhook alerts |
 | `cost-tracker` | PostToolUse | Track token usage and estimate costs |
