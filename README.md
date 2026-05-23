@@ -39,34 +39,35 @@ A growing collection of tested, documented hooks you can copy, paste, and custom
 
 Runs **before** Claude executes a tool. Can block or modify the operation.
 
-| Hook | Matcher | Description |
-|------|---------|-------------|
-| [block-dangerous-commands](hook-scripts/pre-tool-use/block-dangerous-commands.js) | `Bash` | Blocks dangerous shell commands (rm -rf ~, fork bombs, curl\|sh) |
-| [protect-secrets](hook-scripts/pre-tool-use/protect-secrets.js) | `Read\|Edit\|Write\|Bash` | Prevents reading/modifying/exfiltrating sensitive files |
+| Hook                                                                              | Matcher                   | Description                                                      |
+| --------------------------------------------------------------------------------- | ------------------------- | ---------------------------------------------------------------- |
+| [block-dangerous-commands](hook-scripts/pre-tool-use/block-dangerous-commands.js) | `Bash`                    | Blocks dangerous shell commands (rm -rf ~, fork bombs, curl\|sh) |
+| [protect-secrets](hook-scripts/pre-tool-use/protect-secrets.js)                   | `Read\|Edit\|Write\|Bash` | Prevents reading/modifying/exfiltrating sensitive files          |
 
 ### Post-Tool-Use
 
 Runs **after** Claude executes a tool. Can react to results.
 
-| Hook | Matcher | Description |
-|------|---------|-------------|
-| [auto-stage](hook-scripts/post-tool-use/auto-stage.js) | `Edit\|Write` | Automatically git stages files after Claude modifies them |
+| Hook                                                     | Matcher       | Description                                                              |
+| -------------------------------------------------------- | ------------- | ------------------------------------------------------------------------ |
+| [auto-stage](hook-scripts/post-tool-use/auto-stage.js)   | `Edit\|Write` | Automatically git stages files after Claude modifies them                |
+| [format-code](hook-scripts/post-tool-use/format-code.js) | `Write\|Edit` | Auto-formats Python (ruff) and Markdown/YAML/JSON (prettier) after edits |
 
 ### Notification
 
 Fires when Claude needs user attention.
 
-| Hook | Matcher | Description |
-|------|---------|-------------|
+| Hook                                                                | Matcher                          | Description                                |
+| ------------------------------------------------------------------- | -------------------------------- | ------------------------------------------ |
 | [notify-permission](hook-scripts/notification/notify-permission.js) | `permission_prompt\|idle_prompt` | Sends Slack alerts when Claude needs input |
 
 ### Utils
 
 Tools to help you build and debug hooks.
 
-| Tool | Language | Description |
-|------|----------|-------------|
-| [event-logger](hook-scripts/utils/event-logger.py) | Python | Logs all hook events to inspect payload structures |
+| Tool                                               | Language | Description                                        |
+| -------------------------------------------------- | -------- | -------------------------------------------------- |
+| [event-logger](hook-scripts/utils/event-logger.py) | Python   | Logs all hook events to inspect payload structures |
 
 > 💡 **Building a new hook?** Use `event-logger.py` to discover what data Claude Code provides for each event before writing your own hooks.
 
@@ -75,12 +76,14 @@ Tools to help you build and debug hooks.
 ## 🚀 Quick Start
 
 **1. Copy the hook script:**
+
 ```bash
 mkdir -p ~/.claude/hooks
 cp hook-scripts/pre-tool-use/block-dangerous-commands.js ~/.claude/hooks/
 ```
 
 **2. Add to `.claude/settings.json`:**
+
 ```json
 {
   "hooks": {
@@ -109,16 +112,16 @@ cp hook-scripts/pre-tool-use/block-dangerous-commands.js ~/.claude/hooks/
 
 Security hooks support configurable safety levels:
 
-| Level | What's Blocked | Use Case |
-|-------|----------------|----------|
-| `critical` | Catastrophic only (rm -rf ~, fork bombs, dd to disk) | Maximum flexibility |
-| `high` | + Risky (force push main, secrets exposure, git reset --hard) | **Recommended** |
-| `strict` | + Cautionary (any force push, sudo rm, docker prune) | Maximum safety |
+| Level      | What's Blocked                                                | Use Case            |
+| ---------- | ------------------------------------------------------------- | ------------------- |
+| `critical` | Catastrophic only (rm -rf ~, fork bombs, dd to disk)          | Maximum flexibility |
+| `high`     | + Risky (force push main, secrets exposure, git reset --hard) | **Recommended**     |
+| `strict`   | + Cautionary (any force push, sudo rm, docker prune)          | Maximum safety      |
 
 **To change:** Edit the `SAFETY_LEVEL` constant at the top of each hook.
 
 ```javascript
-const SAFETY_LEVEL = 'strict'; // or 'critical', 'high'
+const SAFETY_LEVEL = "strict"; // or 'critical', 'high'
 ```
 
 ---
@@ -136,6 +139,7 @@ node --test hook-scripts/tests/pre-tool-use/block-dangerous-commands.test.js
 ```
 
 **Test coverage:**
+
 - ✅ Unit tests for core functions
 - ✅ Integration tests for stdin/stdout flow
 - ✅ Config validation tests
@@ -159,20 +163,19 @@ Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 **Ideas for new hooks:**
 
-| Hook | Event | Description |
-|------|-------|-------------|
-| `protect-tests` | PreToolUse | Block test deletion/disabling |
-| `auto-format` | PostToolUse | Run prettier/black/gofmt after edits |
-| `branch-guard` | PreToolUse | Block changes on main/master branch |
-| `context-snapshot` | PreCompact | Preserve context before compaction |
-| `session-summary` | Stop | Generate summary on session end |
-| `ntfy-notify` | Notification | Free mobile push via [ntfy.sh](https://ntfy.sh) |
-| `discord-notify` | Notification | Discord webhook alerts |
-| `cost-tracker` | PostToolUse | Track token usage and estimate costs |
-| `tts-alerts` | Notification | Voice notifications via say/espeak |
-| `rules-injector` | UserPromptSubmit | Auto-inject CLAUDE.md rules |
-| `rate-limiter` | PreToolUse | Limit tool calls per minute |
-| `context-injector` | SessionStart | Inject project context on session start |
+| Hook               | Event            | Description                                     |
+| ------------------ | ---------------- | ----------------------------------------------- |
+| `protect-tests`    | PreToolUse       | Block test deletion/disabling                   |
+| `branch-guard`     | PreToolUse       | Block changes on main/master branch             |
+| `context-snapshot` | PreCompact       | Preserve context before compaction              |
+| `session-summary`  | Stop             | Generate summary on session end                 |
+| `ntfy-notify`      | Notification     | Free mobile push via [ntfy.sh](https://ntfy.sh) |
+| `discord-notify`   | Notification     | Discord webhook alerts                          |
+| `cost-tracker`     | PostToolUse      | Track token usage and estimate costs            |
+| `tts-alerts`       | Notification     | Voice notifications via say/espeak              |
+| `rules-injector`   | UserPromptSubmit | Auto-inject CLAUDE.md rules                     |
+| `rate-limiter`     | PreToolUse       | Limit tool calls per minute                     |
+| `context-injector` | SessionStart     | Inject project context on session start         |
 
 ---
 
