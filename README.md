@@ -48,10 +48,10 @@ Runs **before** Claude executes a tool. Can block or modify the operation.
 
 Runs **after** Claude executes a tool. Can react to results.
 
-| Hook                                                     | Matcher       | Description                                                              |
-| -------------------------------------------------------- | ------------- | ------------------------------------------------------------------------ |
-| [auto-stage](hook-scripts/post-tool-use/auto-stage.js)   | `Edit\|Write` | Automatically git stages files after Claude modifies them                |
-| [format-code](hook-scripts/post-tool-use/format-code.js) | `Write\|Edit` | Auto-formats Python (ruff) and Markdown/YAML/JSON (prettier) after edits |
+| Hook                                                     | Matcher       | Description                                                                   |
+| -------------------------------------------------------- | ------------- | ----------------------------------------------------------------------------- |
+| [auto-stage](hook-scripts/post-tool-use/auto-stage.js)   | `Edit\|Write` | Automatically git stages files after Claude modifies them                     |
+| [format-code](hook-scripts/post-tool-use/format-code.js) | `Write\|Edit` | Auto-formats Python (ruff) and JS/TS/HTML/JSON/MD/YAML (prettier) after edits |
 
 ### Notification
 
