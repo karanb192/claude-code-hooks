@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Session Logger - SessionStart | PostToolUse | Stop Hook
+ * Session Logger - SessionStart | PostToolUse | SessionEnd Hook
  * Writes a human-readable markdown log of every Claude Code session:
  * timestamps, cwd, git repo/branch, files touched, and bash commands run.
  * Logs to: ~/.claude/hooks-logs/ (hook diagnostics)
@@ -13,9 +13,20 @@
  * One script, three registrations in .claude/settings.json.
  *
  * PostToolUse uses "async": true so logging never blocks Claude — the hook
- * fires after every Edit/Write/Read/Bash, so keep it non-blocking. SessionStart
- * is sync so the note file exists before PostToolUse tries to append to it;
- * SessionEnd is sync so finalization completes before the session terminates.
+ * fires after every Edit/Write/Read/Bash, so keep it non-blocking. Because
+ * async invocations can run concurrently (parallel tool calls), every write to
+ * a note goes through a cross-process file lock (withLock) so concurrent
+ * appends can't clobber each other. SessionStart is sync so the note file
+ * exists before PostToolUse tries to append to it; SessionEnd is sync so
+ * finalization completes before the session terminates.
+ *
+ * Secrets: bash commands are single-line-truncated AND run through a best-effort
+ * redactor (redactSecrets) that masks common inline-secret shapes — sensitive
+ * env assignments, --password/--token flags, Bearer tokens, and well-known key
+ * prefixes (ghp_, xox…, sk-, AKIA…). This is best-effort, NOT a guarantee; an
+ * unusual secret form can still slip through. Treat notes as sensitive and keep
+ * synced folders (Obsidian/iCloud) private. File CONTENTS are never logged —
+ * only paths for Edit/Write/Read.
  *
  * {
  *   "hooks": {
@@ -108,6 +119,59 @@ function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
+// Synchronous sleep — hooks are short-lived one-shot processes, so a blocking
+// wait while spinning for the lock is fine (and simpler than going async).
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// Cross-process advisory lock. PostToolUse runs with "async": true, so parallel
+// tool calls can invoke this script concurrently; the note write is a
+// read-modify-write and would otherwise lose entries (last writer wins). We
+// serialize per-note via an exclusive lockfile. Best-effort: if we can't get
+// the lock within the budget, we proceed unlocked rather than drop the write —
+// a rare interleave beats silent data loss.
+function withLock(filePath, fn, { retries = 60, delayMs = 15, staleMs = 10000 } = {}) {
+  const lockPath = `${filePath}.lock`;
+  for (let i = 0; i < retries; i++) {
+    let fd;
+    try {
+      fd = fs.openSync(lockPath, 'wx'); // atomic create-exclusive
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      // Steal a stale lock left behind by a crashed/killed process.
+      try {
+        if (Date.now() - fs.statSync(lockPath).mtimeMs > staleMs) fs.unlinkSync(lockPath);
+      } catch {}
+      sleepSync(delayMs);
+      continue;
+    }
+    try {
+      return fn();
+    } finally {
+      fs.closeSync(fd);
+      try { fs.unlinkSync(lockPath); } catch {}
+    }
+  }
+  log({ level: 'LOCK_TIMEOUT', file: filePath });
+  return fn(); // proceed unlocked rather than lose the entry
+}
+
+// Best-effort masking of the most common inline-secret shapes on a single
+// command line. NOT a guarantee — see the header note. Conservative by design:
+// we'd rather miss an exotic secret than mangle legitimate commands in the log.
+function redactSecrets(cmd) {
+  return cmd
+    // Sensitive-looking env-style assignments: TOKEN=…, AWS_SECRET_ACCESS_KEY=…
+    .replace(/\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL|AUTH)[A-Z0-9_]*)=(\S+)/gi, '$1=***')
+    // Long-form flags with a value: --password foo, --token=foo, --api-key foo
+    .replace(/(--(?:password|token|secret|api[-_]?key)[= ])\S+/gi, '$1***')
+    // Authorization: Bearer <token>
+    .replace(/(Bearer\s+)[A-Za-z0-9._\-]+/gi, '$1***')
+    // Well-known token prefixes (GitHub, Slack, OpenAI, AWS, Stripe)
+    .replace(/\b(gh[pousr]_|xox[baprs]-|sk-|AKIA|ASIA|sk_live_|rk_live_)[A-Za-z0-9\-_]{6,}/g, '$1***');
+}
+
 function handleSessionStart(data) {
   const { session_id, cwd } = data;
   const started = new Date().toISOString();
@@ -139,7 +203,7 @@ function handleSessionStart(data) {
     '',
     `**Started:** ${started}`,
     `**Working dir:** \`${cwd || process.cwd()}\``,
-    git.repo ? `**Repo:** ${git.repo} (${git.branch || 'detached'})` : '',
+    git.repo ? `**Repo:** ${git.repo} (${git.branch || 'detached'})` : null,
     '',
     '## Files Touched',
     '',
@@ -173,7 +237,7 @@ function handlePostToolUse(data) {
     section = '## Files Touched';
   } else if (tool_name === 'Bash') {
     let cmd = tool_input?.command || '';
-    cmd = cmd.split('\n')[0];
+    cmd = redactSecrets(cmd.split('\n')[0]);
     if (cmd.length > BASH_TRUNCATE) cmd = cmd.slice(0, BASH_TRUNCATE) + '…';
     entry = `- \`${ts}\` \`${cmd}\``;
     section = '## Commands Run';
@@ -185,26 +249,28 @@ function handlePostToolUse(data) {
 }
 
 function appendUnderSection(filePath, section, entry) {
-  const body = fs.readFileSync(filePath, 'utf8');
-  const lines = body.split('\n');
-  const sectionIdx = lines.findIndex(l => l.trim() === section);
-  if (sectionIdx === -1) {
-    // Section missing — append at end
-    fs.appendFileSync(filePath, `\n${section}\n\n${entry}\n`);
-    return;
-  }
-  // Find end of section (next ## heading or EOF)
-  let insertAt = lines.length;
-  for (let i = sectionIdx + 1; i < lines.length; i++) {
-    if (/^##\s/.test(lines[i])) {
-      insertAt = i;
-      break;
+  withLock(filePath, () => {
+    const body = fs.readFileSync(filePath, 'utf8');
+    const lines = body.split('\n');
+    const sectionIdx = lines.findIndex(l => l.trim() === section);
+    if (sectionIdx === -1) {
+      // Section missing — append at end
+      fs.appendFileSync(filePath, `\n${section}\n\n${entry}\n`);
+      return;
     }
-  }
-  // Skip trailing blank lines in the section
-  while (insertAt > sectionIdx + 1 && lines[insertAt - 1].trim() === '') insertAt--;
-  lines.splice(insertAt, 0, entry);
-  fs.writeFileSync(filePath, lines.join('\n'));
+    // Find end of section (next ## heading or EOF)
+    let insertAt = lines.length;
+    for (let i = sectionIdx + 1; i < lines.length; i++) {
+      if (/^##\s/.test(lines[i])) {
+        insertAt = i;
+        break;
+      }
+    }
+    // Skip trailing blank lines in the section
+    while (insertAt > sectionIdx + 1 && lines[insertAt - 1].trim() === '') insertAt--;
+    lines.splice(insertAt, 0, entry);
+    fs.writeFileSync(filePath, lines.join('\n'));
+  });
 }
 
 function handleSessionEnd(data) {
@@ -215,38 +281,42 @@ function handleSessionEnd(data) {
     return;
   }
 
-  // Idempotent: skip if already finalized (defensive — protects against the
-  // user accidentally registering against Stop, which fires every turn).
-  // The frontmatter is seeded with a literal "ended:" line; once we fill it,
-  // this regex no longer matches and we skip.
-  let body = fs.readFileSync(filePath, 'utf8');
-  if (!/^ended:[ \t]*$/m.test(body)) {
-    log({ level: 'SKIP', reason: 'already finalized', session_id });
-    return;
-  }
-
   const ended = new Date().toISOString();
 
-  // Update frontmatter `ended:` line
-  body = body.replace(/^ended:\s*$/m, `ended: ${ended}`);
-
-  // Try to capture final git status (short)
+  // Capture final git status (short) outside the lock — no need to hold it
+  // during a subprocess call.
   let gitStatus = '';
   try {
     gitStatus = execSync('git status --short', { cwd: cwd || process.cwd(), stdio: 'pipe' }).toString().trim();
   } catch {}
 
-  const footer = [
-    '',
-    '## Session End',
-    '',
-    `**Ended:** ${ended}`,
-  ];
-  if (gitStatus) {
-    footer.push('', '**Final git status:**', '```', gitStatus, '```');
-  }
-  fs.writeFileSync(filePath, body + footer.join('\n') + '\n');
-  log({ level: 'END', session_id, file: filePath });
+  withLock(filePath, () => {
+    // Idempotent: skip if already finalized (defensive — protects against the
+    // user accidentally registering against Stop, which fires every turn).
+    // The frontmatter is seeded with a literal "ended:" line; once we fill it,
+    // this regex no longer matches and we skip. The check + write are inside the
+    // lock so a duplicate SessionEnd can't race past the guard.
+    let body = fs.readFileSync(filePath, 'utf8');
+    if (!/^ended:[ \t]*$/m.test(body)) {
+      log({ level: 'SKIP', reason: 'already finalized', session_id });
+      return;
+    }
+
+    // Update frontmatter `ended:` line
+    body = body.replace(/^ended:[ \t]*$/m, `ended: ${ended}`);
+
+    const footer = [
+      '',
+      '## Session End',
+      '',
+      `**Ended:** ${ended}`,
+    ];
+    if (gitStatus) {
+      footer.push('', '**Final git status:**', '```', gitStatus, '```');
+    }
+    fs.writeFileSync(filePath, body + footer.join('\n') + '\n');
+    log({ level: 'END', session_id, file: filePath });
+  });
 }
 
 async function main() {
@@ -275,6 +345,8 @@ if (require.main === module) {
     sessionFilePath,
     findExistingFile,
     appendUnderSection,
+    redactSecrets,
+    withLock,
     handleSessionStart,
     handlePostToolUse,
     handleSessionEnd,

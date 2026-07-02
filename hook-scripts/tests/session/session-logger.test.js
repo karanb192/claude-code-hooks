@@ -23,6 +23,7 @@ const {
   sessionFilePath,
   findExistingFile,
   appendUnderSection,
+  redactSecrets,
   handleSessionStart,
   handlePostToolUse,
   handleSessionEnd,
@@ -299,6 +300,81 @@ describe('Integration: error handling', () => {
       child.stdin.end();
     });
     assert.strictEqual(result.output, '{}');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unit: redactSecrets
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Unit: redactSecrets()', () => {
+  beforeEach(cleanSessionsDir);
+
+  it('masks sensitive env-style assignments', () => {
+    const out = redactSecrets('AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIabc123 aws s3 ls');
+    assert.ok(out.includes('AWS_SECRET_ACCESS_KEY=***'));
+    assert.ok(!out.includes('wJalrXUtnFEMIabc123'));
+  });
+
+  it('masks --password / --token flag values', () => {
+    assert.ok(redactSecrets('mysql --password=Hunter2secret -e x').includes('--password=***'));
+    assert.ok(redactSecrets('deploy --token abcdef123456').includes('--token ***'));
+  });
+
+  it('masks Bearer tokens and well-known key prefixes', () => {
+    assert.ok(!redactSecrets('curl -H "Authorization: Bearer ghp_abcd1234efgh"').includes('ghp_abcd1234efgh'));
+    assert.ok(redactSecrets('echo sk-proj-ABCDEF123456').includes('sk-***'));
+  });
+
+  it('leaves ordinary commands untouched (no false positives)', () => {
+    const cmd = 'git clone https://github.com/foo/bar && cp -pr a b';
+    assert.strictEqual(redactSecrets(cmd), cmd);
+  });
+
+  it('redacts inline secrets end-to-end via PostToolUse', async () => {
+    await runHook({ hook_event_name: 'SessionStart', session_id: 'sess-redact01', cwd: '/tmp' });
+    await runHook({
+      hook_event_name: 'PostToolUse',
+      session_id: 'sess-redact01',
+      tool_name: 'Bash',
+      tool_input: { command: 'GITHUB_TOKEN=ghp_supersecretvalue123 gh pr view' },
+    });
+    const f = fs.readdirSync(TMP_SESSIONS).find(x => x.endsWith('.md'));
+    const body = fs.readFileSync(path.join(TMP_SESSIONS, f), 'utf8');
+    assert.ok(!body.includes('ghp_supersecretvalue123'), 'raw secret must not be logged');
+    assert.ok(body.includes('GITHUB_TOKEN=***'));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Concurrency: parallel async PostToolUse must not lose entries
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Concurrency: parallel PostToolUse writes', () => {
+  beforeEach(cleanSessionsDir);
+
+  it('preserves every entry under concurrent appends (no lost updates)', async () => {
+    const sid = 'sess-concur99';
+    await runHook({ hook_event_name: 'SessionStart', session_id: sid, cwd: '/tmp' });
+    const N = 15;
+    await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        runHook({
+          hook_event_name: 'PostToolUse',
+          session_id: sid,
+          tool_name: 'Bash',
+          tool_input: { command: `concurrent-cmd-${i}` },
+        })
+      )
+    );
+    const f = fs.readdirSync(TMP_SESSIONS).find(x => x.endsWith('.md'));
+    const body = fs.readFileSync(path.join(TMP_SESSIONS, f), 'utf8');
+    for (let i = 0; i < N; i++) {
+      assert.ok(body.includes(`concurrent-cmd-${i}`), `entry ${i} should be preserved`);
+    }
+    // No lockfiles should be left behind.
+    const locks = fs.readdirSync(TMP_SESSIONS).filter(x => x.endsWith('.lock'));
+    assert.strictEqual(locks.length, 0, 'no leftover .lock files');
   });
 });
 
