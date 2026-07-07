@@ -179,6 +179,14 @@ Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ---
 
+## 👤 Author
+
+Built by [Karan Bansal](https://karanbansal.in), Head of AI at ArmorCode. These hooks are the basis of my OWASP GenAI Summit talk, [Hardening AI Coding Agents with Hooks](https://karanbansal.in/talks/) (slides and recording there).
+
+I write about Claude Code, MCP, and production agentic AI at [karanbansal.in/blog](https://karanbansal.in/blog/).
+
+---
+
 ## 📄 License
 
 MIT © [karanb192](https://github.com/karanb192)
