@@ -325,6 +325,14 @@ I write about Claude Code, MCP, and production agentic AI at [karanbansal.in/blo
 
 ---
 
+## 👤 Author
+
+Built by [Karan Bansal](https://karanbansal.in), Head of AI at ArmorCode. These hooks are the basis of my OWASP GenAI Summit talk, [Hardening AI Coding Agents with Hooks](https://karanbansal.in/talks/) (slides + recording there).
+
+I write about Claude Code, MCP, and production agentic AI at [karanbansal.in/blog](https://karanbansal.in/blog/). New posts by email: subscribe on any post.
+
+---
+
 ## 📄 License
 
 MIT © [karanb192](https://github.com/karanb192)
