@@ -13,7 +13,7 @@
  * {
  *   "hooks": {
  *     "PreToolUse": [{
- *       "matcher": "Read|Edit|Write|Bash",
+ *       "matcher": "Read|Edit|Write|Bash|PowerShell",
  *       "hooks": [{ "type": "command", "command": "node /path/to/protect-secrets.js" }]
  *     }]
  *   }
@@ -22,6 +22,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const SAFETY_LEVEL = 'high';
 
@@ -111,11 +112,18 @@ const BASH_PATTERNS = [
   // STRICT
   { level: 'strict', id: 'grep-password',        regex: /\bgrep\b[^|;]*(-r|--recursive)[^|;]*(password|secret|api.?key|token|credential)/i, reason: 'Grep for secrets may expose them' },
   { level: 'strict', id: 'base64-secrets',       regex: /\bbase64\b[^|;]*(\.env|credentials|secrets|id_rsa|\.pem)/i,       reason: 'Base64 encoding secrets' },
+
+  // HIGH - PowerShell equivalents
+  { level: 'high', id: 'ps-read-env',            regex: /\b(Get-Content|gc)\b[^|;]*(\.env\b|id_rsa|id_ed25519|\.pem|\.key\b|credentials)/i, reason: 'Reading secrets via Get-Content' },
+  { level: 'high', id: 'ps-echo-secret-var',     regex: /\$env:[A-Za-z_]*(SECRET|KEY|TOKEN|PASSWORD|CREDENTIAL|AUTH|PRIVATE)[A-Za-z_]*/i,   reason: 'Accessing secret environment variable' },
+  { level: 'high', id: 'ps-env-dump',            regex: /\b(Get-ChildItem|gci|dir|ls)\s+env:/i,                            reason: 'Environment dump may expose secrets' },
+  { level: 'high', id: 'ps-upload-secrets',      regex: /\b(Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b[^|;]*(\.env\b|credentials|secrets|id_rsa|\.pem|\.key\b)/i, reason: 'Uploading secrets via PowerShell web request' },
+  { level: 'high', id: 'ps-copy-move-secrets',   regex: /\b(Copy-Item|Move-Item|Remove-Item|cpi?|mv|ri|del)\b[^|;]*(\.env\b|id_rsa|id_ed25519|\.pem|\.key\b|credentials)/i, reason: 'Copying/moving/deleting secrets file' },
 ];
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
 const EMOJIS = { critical: '🔐', high: '🛡️', strict: '⚠️' };
-const LOG_DIR = path.join(process.env.HOME, '.claude', 'hooks-logs');
+const LOG_DIR = path.join(os.homedir(), '.claude', 'hooks-logs');
 
 function log(data) {
   try {
@@ -130,6 +138,8 @@ function isAllowlisted(filePath) {
 }
 
 function checkFilePath(filePath, safetyLevel = SAFETY_LEVEL) {
+  // regexes assume forward slashes; normalize Windows separators first
+  if (filePath) filePath = filePath.replace(/\\/g, '/');
   if (!filePath || isAllowlisted(filePath)) return { blocked: false, pattern: null };
   const threshold = LEVELS[safetyLevel] || 2;
   for (const p of SENSITIVE_FILES) {
@@ -158,7 +168,7 @@ function check(toolName, toolInput, safetyLevel = SAFETY_LEVEL) {
   if (['Read', 'Edit', 'Write'].includes(toolName)) {
     return checkFilePath(toolInput?.file_path, safetyLevel);
   }
-  if (toolName === 'Bash') {
+  if (toolName === 'Bash' || toolName === 'PowerShell') {
     return checkBashCommand(toolInput?.command, safetyLevel);
   }
   return { blocked: false, pattern: null };
@@ -172,7 +182,7 @@ async function main() {
     const data = JSON.parse(input);
     const { tool_name, tool_input, session_id, cwd, permission_mode } = data;
 
-    if (!['Read', 'Edit', 'Write', 'Bash'].includes(tool_name)) {
+    if (!['Read', 'Edit', 'Write', 'Bash', 'PowerShell'].includes(tool_name)) {
       return console.log('{}');
     }
 
@@ -183,7 +193,7 @@ async function main() {
       const target = tool_input?.file_path || tool_input?.command?.slice(0, 100);
       log({ level: 'BLOCKED', id: p.id, priority: p.level, tool: tool_name, target, session_id, cwd, permission_mode });
 
-      const action = { Read: 'read', Edit: 'modify', Write: 'write to', Bash: 'execute' }[tool_name];
+      const action = { Read: 'read', Edit: 'modify', Write: 'write to', Bash: 'execute', PowerShell: 'execute' }[tool_name];
       return console.log(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
