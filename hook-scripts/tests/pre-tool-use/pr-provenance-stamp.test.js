@@ -449,6 +449,265 @@ describe('Unit: rewriteBodyArg()', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Adversarial: command-rewrite safety (splice must never corrupt a command)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Adversarial: rewriteBodyArg() command-position detection', () => {
+  const stamp = `${STAMP_BEGIN}\nSTAMP\n${STAMP_END}`;
+
+  it('does NOT touch echo "gh pr create" (quoted substring)', () => {
+    const cmd = 'echo "gh pr create"';
+    const r = rewriteBodyArg(cmd, stamp);
+    assert.strictEqual(r.changed, false);
+    assert.strictEqual(r.command, cmd, 'command left byte-for-byte unchanged');
+  });
+
+  it('does NOT touch echo gh pr create (not in command position)', () => {
+    const cmd = 'echo gh pr create';
+    const r = rewriteBodyArg(cmd, stamp);
+    assert.strictEqual(r.changed, false);
+    assert.strictEqual(r.command, cmd);
+  });
+
+  it('matches gh pr create after && in a compound command', () => {
+    const r = rewriteBodyArg('git push && gh pr create --body "x" && echo done', stamp);
+    assert.strictEqual(r.changed, true);
+    assert.ok(r.command.startsWith('git push && gh pr create --body '), r.command);
+    assert.ok(r.command.endsWith(' && echo done'), 'suffix preserved verbatim: ' + r.command);
+    assert.ok(r.command.includes('STAMP'));
+  });
+
+  it('matches gh pr create on its own line of a multi-line command', () => {
+    const r = rewriteBodyArg('git push\ngh pr create --body "x"', stamp);
+    assert.strictEqual(r.changed, true);
+    assert.ok(r.command.startsWith('git push\ngh pr create'), 'newline preserved: ' + JSON.stringify(r.command));
+    assert.ok(r.command.includes('STAMP'));
+  });
+
+  it('matches with leading env assignments', () => {
+    const r = rewriteBodyArg('GH_TOKEN=x gh pr create --body "y"', stamp);
+    assert.strictEqual(r.changed, true);
+    assert.ok(r.command.startsWith('GH_TOKEN=x gh pr create'), r.command);
+  });
+
+  it('handlePreToolUse no-ops on echo "gh pr create"', () => {
+    const dir = freshDir();
+    try {
+      const out = handlePreToolUse({ tool_name: 'Bash', tool_input: { command: 'echo "gh pr create"' }, session_id: 'echo-s' }, dir);
+      assert.deepStrictEqual(out, {});
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Adversarial: rewriteBodyArg() splices only the body value', () => {
+  const stamp = `${STAMP_BEGIN}\nSTAMP\n${STAMP_END}`;
+
+  it('leaves a $VAR in ANOTHER argument untouched', () => {
+    const r = rewriteBodyArg(`gh pr create --title "$BRANCH" --body 'plain'`, stamp);
+    assert.strictEqual(r.changed, true);
+    assert.ok(r.command.includes('--title "$BRANCH"'), 'title expansion preserved verbatim: ' + r.command);
+    assert.ok(r.command.includes('STAMP'));
+  });
+
+  it('defers when the body value itself contains $VAR (would literalize)', () => {
+    const cmd = 'gh pr create --body "Version $VERSION done"';
+    const r = rewriteBodyArg(cmd, stamp);
+    assert.strictEqual(r.changed, false);
+    assert.strictEqual(r.command, cmd);
+    assert.strictEqual(r.deferred, true);
+  });
+
+  it('defers on a backslash inside a double-quoted body (escape semantics)', () => {
+    const cmd = 'gh pr create --body "path C:\\new"';
+    const r = rewriteBodyArg(cmd, stamp);
+    assert.strictEqual(r.changed, false);
+    assert.strictEqual(r.command, cmd);
+  });
+
+  it('handles single quotes inside a double-quoted body', () => {
+    const r = rewriteBodyArg(`gh pr create --body "don't panic"`, stamp);
+    assert.strictEqual(r.changed, true);
+    assert.ok(r.command.includes(`don'\\''t panic`), 'apostrophe re-quoted safely: ' + r.command);
+    assert.ok(r.command.includes('STAMP'));
+  });
+
+  it('handles a mixed-quoting body value', () => {
+    const r = rewriteBodyArg(`gh pr create --body "part one"' and two'`, stamp);
+    assert.strictEqual(r.changed, true);
+    assert.ok(r.command.includes('part one and two'), r.command);
+  });
+
+  it('stamps the LAST --body when the flag repeats (gh last-wins semantics)', () => {
+    const r = rewriteBodyArg('gh pr create --body "a" --body "b"', stamp);
+    assert.strictEqual(r.changed, true);
+    assert.ok(r.command.includes('--body "a"'), 'first body untouched: ' + r.command);
+    const last = r.command.lastIndexOf('--body');
+    assert.ok(r.command.slice(last).includes('b'), r.command);
+    assert.ok(r.command.slice(last).includes('STAMP'), 'stamp lives in the winning body: ' + r.command);
+  });
+
+  it('defers when --body has no value (malformed command left as-is)', () => {
+    const cmd = 'gh pr create --title t --body';
+    const r = rewriteBodyArg(cmd, stamp);
+    assert.strictEqual(r.changed, false);
+    assert.strictEqual(r.command, cmd);
+  });
+
+  it('defers when the unquoted body value carries a shell metacharacter', () => {
+    const cmd = 'gh pr create --body hi;rm -rf /tmp/x';
+    const r = rewriteBodyArg(cmd, stamp);
+    assert.strictEqual(r.changed, false);
+    assert.strictEqual(r.command, cmd);
+  });
+});
+
+describe('Adversarial: body-file / fill / short-flag forms', () => {
+  const stamp = `${STAMP_BEGIN}\nSTAMP\n${STAMP_END}`;
+
+  for (const cmd of [
+    'gh pr create --body-file=notes.md',
+    'gh pr create -F notes.md',
+    'gh pr create -Fnotes.md',
+    'gh pr create --fill-first',
+    'gh pr create --fill-verbose',
+    'gh pr create -bhello --title t', // attached short-flag value
+    'gh pr create -db "x"', // short-flag cluster containing b
+  ]) {
+    it(`defers on: ${cmd}`, () => {
+      const r = rewriteBodyArg(cmd, stamp);
+      assert.strictEqual(r.changed, false, cmd);
+      assert.strictEqual(r.command, cmd, 'left byte-for-byte unchanged');
+      assert.strictEqual(r.deferred, true);
+    });
+  }
+
+  it('defers append when a body-like flag exists outside the gh window', () => {
+    const cmd = 'gh pr create --title t && other-tool --body x';
+    const r = rewriteBodyArg(cmd, stamp);
+    assert.strictEqual(r.changed, false);
+    assert.strictEqual(r.command, cmd);
+  });
+
+  it('append path inserts --body right after create, not at command end', () => {
+    const r = rewriteBodyArg('gh pr create --title t && echo done', stamp);
+    assert.strictEqual(r.changed, true);
+    assert.ok(/^gh pr create --body '/.test(r.command), 'inserted after create: ' + r.command);
+    assert.ok(r.command.endsWith('--title t && echo done'), 'tail preserved verbatim: ' + r.command);
+  });
+});
+
+describe('Adversarial: idempotency with a REAL stamp (backticks, $ amounts)', () => {
+  it('re-stamps a previously stamped command instead of deferring or duplicating', () => {
+    const l = emptyLedger('re');
+    l.agent_lines = 5;
+    l.tests = [{ cmd: 'npm test -- --grep smoke', exit: 0, ok: true }];
+    const realStamp = renderStamp(buildProvenance(l, parseTranscript(
+      JSON.stringify({ type: 'assistant', message: { model: 'claude-sonnet-4', usage: { input_tokens: 1_000_000, output_tokens: 0 } } })
+    )));
+    assert.ok(realStamp.includes('`'), 'real stamp contains markdown backticks');
+    assert.ok(realStamp.includes('$'), 'real stamp contains a dollar figure');
+
+    const once = rewriteBodyArg('gh pr create --body "orig"', realStamp);
+    assert.strictEqual(once.changed, true);
+    const twice = rewriteBodyArg(once.command, realStamp);
+    assert.strictEqual(twice.changed, true, 'single-quoted stamp content must not trip the unsafe scan');
+    assert.strictEqual(twice.command.split(STAMP_BEGIN).length - 1, 1, 'exactly one stamp block');
+    assert.ok(twice.command.includes('orig'), 'original body survives the round trip');
+  });
+
+  it('body containing the sentinel inside quotes is replaced, not doubled', () => {
+    const stamp = `${STAMP_BEGIN}\nNEW\n${STAMP_END}`;
+    const prior = `gh pr create --body 'desc\n\n${STAMP_BEGIN}\nOLD \`code\`\n${STAMP_END}'`;
+    const r = rewriteBodyArg(prior, stamp);
+    assert.strictEqual(r.changed, true);
+    assert.ok(r.command.includes('NEW'));
+    assert.ok(!r.command.includes('OLD'));
+    assert.strictEqual(r.command.split(STAMP_BEGIN).length - 1, 1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Security: nothing secret-shaped may reach the public PR body
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Security: secret redaction in ledger test commands', () => {
+  it('redacts env-style secrets from a recorded test command', () => {
+    const r = extractTestResult('API_KEY=sk-live-abc123 npm test', { exit_code: 0 });
+    assert.ok(!r.cmd.includes('sk-live-abc123'), r.cmd);
+    assert.ok(r.cmd.includes('[redacted]'), r.cmd);
+    assert.ok(r.cmd.includes('npm test'), r.cmd);
+  });
+
+  it('redacts --token style flags', () => {
+    const r = extractTestResult('npm test --token ghp_secret123', { exit_code: 0 });
+    assert.ok(!r.cmd.includes('ghp_secret123'), r.cmd);
+  });
+
+  it('collapses newlines in recorded commands (markdown-safe)', () => {
+    const r = extractTestResult('cd /tmp/x &&\n  npm test', { exit_code: 0 });
+    assert.ok(!r.cmd.includes('\n'), JSON.stringify(r.cmd));
+    assert.ok(r.cmd.includes('npm test'), r.cmd);
+  });
+
+  it('redacts at render time too (ledgers written by older versions)', () => {
+    const l = emptyLedger('old');
+    l.tests = [{ cmd: 'GITHUB_TOKEN=ghp_oldleak npm test', exit: 0, ok: true }];
+    const stamp = renderStamp(buildProvenance(l, parseTranscript('')));
+    assert.ok(!stamp.includes('ghp_oldleak'), stamp);
+    assert.ok(stamp.includes('[redacted]'), stamp);
+  });
+
+  it('stamped body never escapes its single-quote context', () => {
+    const l = emptyLedger('sec');
+    l.tests = [{ cmd: "npm test -- --grep 'it'", exit: 0, ok: true }];
+    l.agent_lines = 1;
+    const stampBlock = renderStamp(buildProvenance(l, parseTranscript('')));
+    const r = rewriteBodyArg('gh pr create --body "x"', stampBlock);
+    assert.strictEqual(r.changed, true);
+    // Every single quote in the spliced value must be the '\'' escape form.
+    const spliced = r.command.slice(r.command.indexOf("--body '") + '--body '.length);
+    const bare = spliced.replace(/'\\''/g, '');
+    // After removing escape sequences, only the outer wrapping quotes remain.
+    assert.strictEqual(bare.split("'").length - 1, 2, 'no unescaped quote breaks out: ' + spliced);
+  });
+});
+
+describe('Unit: exit-code inference does not misread zero-count summaries', () => {
+  it('"0 failed" is a pass', () => {
+    const r = extractTestResult('npm test', { stdout: 'Tests: 12 passed, 0 failed' });
+    assert.strictEqual(r.ok, true);
+  });
+  it('"0 failing" is a pass', () => {
+    const r = extractTestResult('npm test', { stdout: '12 passing\n0 failing' });
+    assert.strictEqual(r.ok, true);
+  });
+  it('node --test style "fail 0" is a pass', () => {
+    const r = extractTestResult('node --test x.test.js', { stdout: 'pass 12\nfail 0' });
+    assert.strictEqual(r.ok, true);
+  });
+  it('a real failure still fails', () => {
+    const r = extractTestResult('npm test', { stdout: 'Tests: 1 failed, 11 passed' });
+    assert.strictEqual(r.ok, false);
+  });
+});
+
+describe('Unit: dollar figures are labeled as estimates', () => {
+  it('summary and table mark spend as approximate', () => {
+    const transcript = parseTranscript(JSON.stringify({
+      type: 'assistant',
+      message: { model: 'claude-sonnet-4', usage: { input_tokens: 1_000_000, output_tokens: 0 } },
+    }));
+    const p = buildProvenance(emptyLedger('d'), transcript);
+    assert.ok(renderSummaryLine(p).includes('~$'), renderSummaryLine(p));
+    const stamp = renderStamp(p);
+    assert.ok(stamp.includes('Spend (est.)'), stamp);
+    assert.ok(stamp.includes('~$'), stamp);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // must-fix #1: defer on shell constructs the re-quoter would corrupt
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -652,8 +911,11 @@ describe('Unit: handlePreToolUse()', () => {
     assert.ok(cmd.includes('hello'), 'preserves original body');
     assert.ok(cmd.includes('Provenance'), 'includes stamp');
     assert.ok(cmd.includes('90% agent-authored') || cmd.includes('90%'), cmd);
-    // No permissionDecision (issue #15897 workaround).
-    assert.ok(!('permissionDecision' in out.hookSpecificOutput));
+    // Documented schema: updatedInput under hookSpecificOutput WITH
+    // permissionDecision "allow" (the only combination the docs illustrate;
+    // issue #15897 was a multi-hook aggregation bug, fixed in >= 2.1.168).
+    assert.strictEqual(out.hookSpecificOutput.permissionDecision, 'allow');
+    assert.ok(typeof out.hookSpecificOutput.permissionDecisionReason === 'string');
   });
 
   it('returns {} (skips) for --fill PR create', () => {
