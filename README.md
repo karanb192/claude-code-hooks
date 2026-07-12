@@ -53,6 +53,7 @@ Runs **after** Claude executes a tool. Can react to results.
 | -------------------------------------------------------- | ------------- | ----------------------------------------------------------------------------- |
 | [auto-stage](hook-scripts/post-tool-use/auto-stage.js)   | `Edit\|Write` | Automatically git stages files after Claude modifies them                     |
 | [format-code](hook-scripts/post-tool-use/format-code.js) | `Write\|Edit` | Auto-formats Python (ruff) and JS/TS/HTML/JSON/MD/YAML (prettier) after edits |
+| [context-hogs](hook-scripts/post-tool-use/context-hogs.js) | `Read\|Grep\|Glob\|Bash` (+ `SessionEnd`) | Attributes tool-result tokens to files; renders a per-file cost leaderboard |
 
 ### Notification
 
