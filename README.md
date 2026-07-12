@@ -44,6 +44,7 @@ Runs **before** Claude executes a tool. Can block or modify the operation.
 | [block-dangerous-commands](hook-scripts/pre-tool-use/block-dangerous-commands.js) | `Bash`                    | Blocks dangerous shell commands (rm -rf ~, fork bombs, curl\|sh) |
 | [protect-secrets](hook-scripts/pre-tool-use/protect-secrets.js)                   | `Read\|Edit\|Write\|Bash` | Prevents reading/modifying/exfiltrating sensitive files          |
 | [git-safety](hook-scripts/pre-tool-use/git-safety.js)                             | `Bash`                    | Branch-aware git guardrails + destructive gh CLI protection      |
+| [pr-provenance-stamp](hook-scripts/pre-tool-use/pr-provenance-stamp.js)           | `Bash` (+ `Edit\|Write\|Bash` PostToolUse) | Embeds a prompt/$/tests/agent-authored receipt into the PR body on `gh pr create` |
 
 ### Post-Tool-Use
 
@@ -53,6 +54,7 @@ Runs **after** Claude executes a tool. Can react to results.
 | -------------------------------------------------------- | ------------- | ----------------------------------------------------------------------------- |
 | [auto-stage](hook-scripts/post-tool-use/auto-stage.js)   | `Edit\|Write` | Automatically git stages files after Claude modifies them                     |
 | [format-code](hook-scripts/post-tool-use/format-code.js) | `Write\|Edit` | Auto-formats Python (ruff) and JS/TS/HTML/JSON/MD/YAML (prettier) after edits |
+| [pr-provenance-stamp](hook-scripts/pre-tool-use/pr-provenance-stamp.js) | `Edit\|Write\|Bash` | Builds the per-session provenance ledger consumed by the Pre-Tool-Use stamp (same script) |
 
 ### Notification
 
