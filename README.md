@@ -68,7 +68,7 @@ Fires when a session ends (and related lifecycle events) — good for recording 
 
 | Hook                                                       | Matcher                | Description                                                                                        |
 | ---------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------- |
-| [nerf-receipts](hook-scripts/session-end/nerf-receipts.js) | `SessionEnd` (+3 more) | Flight recorder: logs failure rate, edit churn & tokens/task per session, flags shifts across models |
+| [nerf-receipts](hook-scripts/session-end/nerf-receipts.js) | `SessionEnd` (+5 more) | Flight recorder: logs failure rate, edit churn & tokens/task per session, flags shifts across models |
 
 ### Utils
 

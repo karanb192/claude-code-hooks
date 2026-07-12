@@ -17,8 +17,10 @@ const {
   isToolFailure,
   editTargetPath,
   applyToolEvent,
+  foldState,
   totalChurn,
   parseTranscript,
+  readTranscriptStats,
   buildSessionRecord,
   extractMeta,
   mean,
@@ -26,6 +28,7 @@ const {
   detectShifts,
   renderTrendCard,
   MIN_SESSIONS_FOR_TREND,
+  MAX_TRANSCRIPT_BYTES,
 } = require('../../session-end/nerf-receipts.js');
 
 const SCRIPT_PATH = path.join(__dirname, '../../session-end/nerf-receipts.js');
@@ -165,6 +168,39 @@ describe('Unit: applyToolEvent() and churn', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Unit: foldState (append-only event log -> session state)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Unit: foldState()', () => {
+  it('folds tool/stop/meta events preserving churn order', () => {
+    const state = foldState([
+      { t: 'tool', failed: true, target: '/a' },
+      { t: 'tool', failed: false, target: '/a' }, // re-edit after fail => +1 churn
+      { t: 'tool', failed: false, target: null },
+      { t: 'stop' },
+      { t: 'meta', model: 'claude-m', cc_version: '2.0.1' },
+    ]);
+    assert.strictEqual(state.toolCalls, 3);
+    assert.strictEqual(state.toolFailures, 1);
+    assert.strictEqual(totalChurn(state), 1);
+    assert.strictEqual(state.stopEvents, 1);
+    assert.strictEqual(state.model, 'claude-m');
+    assert.strictEqual(state.cc_version, '2.0.1');
+  });
+
+  it('skips junk events without throwing', () => {
+    const state = foldState([null, 42, { t: 'wat' }, { t: 'tool', failed: false, target: 7 }]);
+    assert.strictEqual(state.toolCalls, 1);
+    assert.strictEqual(totalChurn(state), 0);
+  });
+
+  it('handles empty/undefined event lists', () => {
+    assert.strictEqual(foldState([]).toolCalls, 0);
+    assert.strictEqual(foldState(undefined).stopEvents, 0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Unit: parseTranscript (transcript JSONL — issue #11008 caveat)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -218,6 +254,90 @@ describe('Unit: parseTranscript()', () => {
     const r = parseTranscript(jsonl);
     assert.strictEqual(r.totalTokens, 10);
   });
+
+  it('dedupes usage repeated across content-block lines of one message', () => {
+    // Real transcripts split one assistant message over several JSONL lines
+    // (one per content block), each repeating the same message.usage.
+    const usage = { input_tokens: 100, output_tokens: 50 };
+    const jsonl = [
+      JSON.stringify({ type: 'assistant', message: { id: 'msg_1', usage } }),
+      JSON.stringify({ type: 'assistant', message: { id: 'msg_1', usage } }),
+      JSON.stringify({ type: 'assistant', message: { id: 'msg_1', usage } }),
+      JSON.stringify({ type: 'assistant', message: { id: 'msg_2', usage: { input_tokens: 10, output_tokens: 5 } } }),
+    ].join('\n');
+    const r = parseTranscript(jsonl);
+    assert.strictEqual(r.inputTokens, 110);
+    assert.strictEqual(r.outputTokens, 55);
+    assert.strictEqual(r.totalTokens, 165);
+  });
+
+  it('extracts the dominant assistant model, skipping synthetic entries', () => {
+    const jsonl = [
+      JSON.stringify({ type: 'assistant', message: { id: 'a', model: 'claude-minor', usage: { input_tokens: 1, output_tokens: 1 } } }),
+      JSON.stringify({ type: 'assistant', message: { id: 'b', model: 'claude-main', usage: { input_tokens: 1, output_tokens: 1 } } }),
+      JSON.stringify({ type: 'assistant', message: { id: 'c', model: 'claude-main', usage: { input_tokens: 1, output_tokens: 1 } } }),
+      JSON.stringify({ type: 'assistant', message: { id: 'd', model: '<synthetic>' } }),
+      JSON.stringify({ type: 'assistant', message: { id: 'e', model: '<synthetic>' } }),
+      JSON.stringify({ type: 'assistant', message: { id: 'f', model: '<synthetic>' } }),
+    ].join('\n');
+    assert.strictEqual(parseTranscript(jsonl).model, 'claude-main');
+  });
+
+  it('extracts the Claude Code version from transcript lines', () => {
+    const jsonl = [
+      JSON.stringify({ type: 'user', version: '2.1.100', message: { role: 'user', content: 'hi' } }),
+      JSON.stringify({ type: 'assistant', version: '2.1.207', message: { id: 'a', usage: { input_tokens: 1, output_tokens: 1 } } }),
+    ].join('\n');
+    assert.strictEqual(parseTranscript(jsonl).ccVersion, '2.1.207');
+  });
+
+  it('does not count sidechain (subagent) or isMeta user lines as prompts', () => {
+    const jsonl = [
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'real prompt' } }),
+      JSON.stringify({ type: 'user', isSidechain: true, message: { role: 'user', content: 'subagent task prompt' } }),
+      JSON.stringify({ type: 'user', isMeta: true, message: { role: 'user', content: 'meta line' } }),
+    ].join('\n');
+    assert.strictEqual(parseTranscript(jsonl).userPrompts, 1);
+  });
+
+  it('returns null model/version when transcript lacks them', () => {
+    const r = parseTranscript(JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } }));
+    assert.strictEqual(r.model, null);
+    assert.strictEqual(r.ccVersion, null);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unit: readTranscriptStats (disk-level: missing + huge files)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Unit: readTranscriptStats()', () => {
+  it('degrades to nulls for missing/invalid paths', () => {
+    assert.strictEqual(readTranscriptStats(null).totalTokens, null);
+    assert.strictEqual(readTranscriptStats('/nope/definitely/missing.jsonl').totalTokens, null);
+  });
+
+  it('caps huge transcripts to a bounded tail read without blowing up', () => {
+    const home = makeTempHome();
+    const p = path.join(home, 'huge.jsonl');
+    const filler = JSON.stringify({ type: 'system', pad: 'x'.repeat(1024) }) + '\n';
+    const chunk = filler.repeat(4096); // ~4MB
+    const fd = fs.openSync(p, 'w');
+    const chunks = Math.ceil((MAX_TRANSCRIPT_BYTES + 4 * 1024 * 1024) / chunk.length);
+    for (let i = 0; i < chunks; i++) fs.writeSync(fd, chunk);
+    fs.writeSync(fd, JSON.stringify({
+      type: 'assistant',
+      version: '9.9.9',
+      message: { id: 'tail', model: 'claude-tail', usage: { input_tokens: 7, output_tokens: 3 } },
+    }) + '\n');
+    fs.closeSync(fd);
+    assert.ok(fs.statSync(p).size > MAX_TRANSCRIPT_BYTES, 'test file must exceed the cap');
+
+    const r = readTranscriptStats(p);
+    assert.strictEqual(r.totalTokens, 10);
+    assert.strictEqual(r.model, 'claude-tail');
+    assert.strictEqual(r.ccVersion, '9.9.9');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -250,6 +370,25 @@ describe('Unit: buildSessionRecord()', () => {
     const rec = buildSessionRecord({ toolCalls: 1 }, { totalTokens: null }, {});
     assert.strictEqual(rec.model, 'unknown');
     assert.strictEqual(rec.cc_version, 'unknown');
+  });
+
+  it('prefers transcript model/version over hook-input meta', () => {
+    const rec = buildSessionRecord(
+      { toolCalls: 1 },
+      { totalTokens: 10, userPrompts: 1, model: 'claude-from-transcript', ccVersion: '2.1.207' },
+      { model: 'claude-from-input', cc_version: '1.0.0' }
+    );
+    assert.strictEqual(rec.model, 'claude-from-transcript');
+    assert.strictEqual(rec.cc_version, '2.1.207');
+  });
+
+  it('uses meta model when the transcript has none', () => {
+    const rec = buildSessionRecord(
+      { toolCalls: 1 },
+      { totalTokens: null, userPrompts: 0, model: null, ccVersion: null },
+      { model: 'claude-from-session-start' }
+    );
+    assert.strictEqual(rec.model, 'claude-from-session-start');
   });
 });
 
@@ -355,6 +494,39 @@ describe('Unit: detectShifts()', () => {
     // m1 -> m2 is flat, so no shift despite huge 'old' values.
     assert.deepStrictEqual(detectShifts(recs), []);
   });
+
+  it('handles interleaved models via contiguous runs (A,B,A never blames B for A)', () => {
+    const recs = [
+      sess('A', 0.10, 1000), sess('A', 0.10, 1000), sess('A', 0.10, 1000),
+      sess('B', 0.10, 1000), sess('B', 0.10, 1000), sess('B', 0.10, 1000),
+      sess('A', 0.40, 1000), sess('A', 0.40, 1000), sess('A', 0.40, 1000),
+    ];
+    const shifts = detectShifts(recs);
+    const fail = shifts.find((s) => s.metric === 'failure_rate');
+    assert.ok(fail, 'expected a failure_rate shift');
+    // The current era is A's return, compared against B's era — not a stale
+    // global "A group" polluted with A's old sessions.
+    assert.strictEqual(fail.toModel, 'A');
+    assert.strictEqual(fail.fromModel, 'B');
+    assert.strictEqual(fail.n, 6);
+  });
+
+  it('never claims a shift to/from unknown-model sessions', () => {
+    const known = Array.from({ length: 4 }, () => sess('claude-x', 0.10, 1000));
+    const unknown = Array.from({ length: 4 }, () => sess('unknown', 0.50, 5000));
+    assert.deepStrictEqual(detectShifts([...known, ...unknown]), []);
+    assert.deepStrictEqual(detectShifts([...unknown, ...known]), []);
+  });
+
+  it('honors explicit zero-ish option overrides', () => {
+    const recs = [
+      sess('m1', 0.10, 1000), sess('m1', 0.10, 1000), sess('m1', 0.10, 1000),
+      sess('m2', 0.11, 1000), sess('m2', 0.11, 1000), sess('m2', 0.11, 1000),
+    ];
+    // threshold: 0 must not silently fall back to the 25% default.
+    const shifts = detectShifts(recs, { threshold: 0 });
+    assert.ok(shifts.find((s) => s.metric === 'failure_rate'));
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -386,6 +558,27 @@ describe('Unit: renderTrendCard()', () => {
     assert.ok(card.includes('claude-x-2'));
     assert.ok(card.toLowerCase().includes("not in your head"));
   });
+
+  it('is honest about unknown-model sessions instead of claiming shifts', () => {
+    const recs = [
+      ...Array.from({ length: 4 }, () => sess('claude-x-1', 0.10, 1000)),
+      ...Array.from({ length: 4 }, () => sess('unknown', 0.40, 9000)),
+    ];
+    const card = renderTrendCard(recs);
+    assert.ok(!card.includes('⚠'), 'must not claim a shift driven by unknown sessions');
+    assert.ok(card.includes('missing a model id'));
+    assert.ok(card.includes('4/8'));
+  });
+
+  it('keeps every card row the same width even with long values', () => {
+    const recs = [
+      ...Array.from({ length: 4 }, () => sess('claude-extremely-long-model-name-4-6-20260601-preview', 0.1, 98765432)),
+      ...Array.from({ length: 4 }, () => sess('claude-another-very-long-model-name-5-0-20260901-rc', 0.9, 12345678)),
+    ];
+    const card = renderTrendCard(recs);
+    const widths = new Set(card.split('\n').map((l) => [...l].length));
+    assert.strictEqual(widths.size, 1, `expected uniform row width, got ${[...widths]}`);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -404,11 +597,12 @@ describe('Integration: event routing', () => {
     }, home);
     assert.strictEqual(code, 0);
     assert.deepStrictEqual(output, {});
-    const statePath = path.join(home, '.claude', 'nerf-receipts', 'sessions', 'int1.json');
-    assert.ok(fs.existsSync(statePath), 'expected per-session state file');
-    const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-    assert.strictEqual(state.toolCalls, 1);
-    assert.strictEqual(state.toolFailures, 1);
+    const statePath = path.join(home, '.claude', 'nerf-receipts', 'sessions', 'int1.jsonl');
+    assert.ok(fs.existsSync(statePath), 'expected per-session event log');
+    const events = fs.readFileSync(statePath, 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].t, 'tool');
+    assert.strictEqual(events[0].failed, true);
   });
 
   it('accumulates across multiple PostToolUse events then finalizes on SessionEnd', async () => {
@@ -431,8 +625,80 @@ describe('Integration: event routing', () => {
     assert.strictEqual(rec.model, 'claude-x');
 
     // in-flight state cleared after finalization
-    const statePath = path.join(home, '.claude', 'nerf-receipts', 'sessions', `${sid}.json`);
+    const statePath = path.join(home, '.claude', 'nerf-receipts', 'sessions', `${sid}.jsonl`);
     assert.ok(!fs.existsSync(statePath));
+  });
+
+  it('routes SubagentStop to the stop counter', async () => {
+    const home = makeTempHome();
+    const sid = 'int-sub';
+    await runHook({ hook_event_name: 'SubagentStop', session_id: sid }, home);
+    await runHook({ hook_event_name: 'Stop', session_id: sid }, home);
+    await runHook({ hook_event_name: 'SessionEnd', session_id: sid }, home);
+    const rec = readLedgerFile(home)[0];
+    assert.strictEqual(rec.stop_events, 2);
+  });
+
+  it('counts PostToolUseFailure as a failed tool call', async () => {
+    const home = makeTempHome();
+    const sid = 'int-ptuf';
+    await runHook({
+      hook_event_name: 'PostToolUseFailure',
+      session_id: sid,
+      tool_name: 'Edit',
+      tool_input: { file_path: '/x.js' },
+      error: 'String to replace not found',
+    }, home);
+    await runHook({ hook_event_name: 'PostToolUse', session_id: sid, tool_name: 'Edit', tool_input: { file_path: '/x.js' }, tool_response: { success: true } }, home);
+    await runHook({ hook_event_name: 'SessionEnd', session_id: sid }, home);
+    const rec = readLedgerFile(home)[0];
+    assert.strictEqual(rec.tool_calls, 2);
+    assert.strictEqual(rec.tool_failures, 1);
+    assert.strictEqual(rec.edit_churn, 1); // fail -> re-edit loop on /x.js
+  });
+
+  it('does not lose events when PostToolUse hooks fire concurrently', async () => {
+    const home = makeTempHome();
+    const sid = 'int-race';
+    // Parallel tool calls fire hooks concurrently; a read-modify-write state
+    // blob would drop increments here. Append-only event logs must not.
+    await Promise.all(Array.from({ length: 8 }, (_, i) => runHook({
+      hook_event_name: 'PostToolUse',
+      session_id: sid,
+      tool_name: 'Bash',
+      tool_input: { command: `step-${i}` },
+      tool_response: { exit_code: i % 2 },
+    }, home)));
+    await runHook({ hook_event_name: 'SessionEnd', session_id: sid }, home);
+    const rec = readLedgerFile(home)[0];
+    assert.strictEqual(rec.tool_calls, 8);
+    assert.strictEqual(rec.tool_failures, 4);
+  });
+
+  it('skips malformed in-flight state lines instead of crashing', async () => {
+    const home = makeTempHome();
+    const sid = 'int-badstate';
+    await runHook({ hook_event_name: 'PostToolUse', session_id: sid, tool_name: 'Bash', tool_input: { command: 'x' }, tool_response: { exit_code: 1 } }, home);
+    fs.appendFileSync(path.join(home, '.claude', 'nerf-receipts', 'sessions', `${sid}.jsonl`), 'not json{{\n');
+    await runHook({ hook_event_name: 'Stop', session_id: sid }, home);
+    const { code, output } = await runHook({ hook_event_name: 'SessionEnd', session_id: sid }, home);
+    assert.strictEqual(code, 0);
+    assert.deepStrictEqual(output, {});
+    const rec = readLedgerFile(home)[0];
+    assert.strictEqual(rec.tool_calls, 1);
+    assert.strictEqual(rec.stop_events, 1);
+  });
+
+  it('never persists tool commands into state or ledger', async () => {
+    const home = makeTempHome();
+    const sid = 'int-secret';
+    const secret = 'export TOKEN=sk-super-secret-value';
+    await runHook({ hook_event_name: 'PostToolUse', session_id: sid, tool_name: 'Bash', tool_input: { command: secret }, tool_response: { exit_code: 1, stderr: secret } }, home);
+    const stateRaw = fs.readFileSync(path.join(home, '.claude', 'nerf-receipts', 'sessions', `${sid}.jsonl`), 'utf-8');
+    assert.ok(!stateRaw.includes('sk-super-secret-value'));
+    await runHook({ hook_event_name: 'SessionEnd', session_id: sid }, home);
+    const ledgerRaw = fs.readFileSync(ledgerPath(home), 'utf-8');
+    assert.ok(!ledgerRaw.includes('sk-super-secret-value'));
   });
 
   it('SessionEnd on an empty session does not pollute the ledger', async () => {
@@ -459,6 +725,31 @@ describe('Integration: event routing', () => {
     assert.strictEqual(rec.total_tokens, 4000);
     assert.strictEqual(rec.prompts, 2);
     assert.strictEqual(rec.tokens_per_task, 2000);
+  });
+
+  it('recovers model + Claude Code version from the transcript (hooks input has neither)', async () => {
+    const home = makeTempHome();
+    const sid = 'int-model';
+    const transcript = path.join(home, 'transcript.jsonl');
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: 'user', version: '2.1.207', message: { role: 'user', content: 'go' } }),
+      JSON.stringify({ type: 'assistant', version: '2.1.207', message: { id: 'm1', model: 'claude-sonnet-5', usage: { input_tokens: 100, output_tokens: 10 } } }),
+    ].join('\n'));
+    await runHook({ hook_event_name: 'Stop', session_id: sid }, home);
+    await runHook({ hook_event_name: 'SessionEnd', session_id: sid, transcript_path: transcript }, home);
+    const rec = readLedgerFile(home)[0];
+    assert.strictEqual(rec.model, 'claude-sonnet-5');
+    assert.strictEqual(rec.cc_version, '2.1.207');
+  });
+
+  it('falls back to the SessionStart-provided model when there is no transcript', async () => {
+    const home = makeTempHome();
+    const sid = 'int-ssmodel';
+    await runHook({ hook_event_name: 'SessionStart', session_id: sid, source: 'startup', model: 'claude-from-start' }, home);
+    await runHook({ hook_event_name: 'PostToolUse', session_id: sid, tool_name: 'Bash', tool_input: { command: 'x' }, tool_response: { exit_code: 0 } }, home);
+    await runHook({ hook_event_name: 'SessionEnd', session_id: sid }, home);
+    const rec = readLedgerFile(home)[0];
+    assert.strictEqual(rec.model, 'claude-from-start');
   });
 
   it('SessionStart returns {} with too few sessions, then a card once enough exist', async () => {
