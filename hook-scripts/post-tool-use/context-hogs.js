@@ -27,13 +27,17 @@
  *   "hooks": {
  *     "PostToolUse": [{
  *       "matcher": "Read|Grep|Glob|Bash",
- *       "hooks": [{ "type": "command", "command": "node /path/to/context-hogs.js" }]
+ *       "hooks": [{ "type": "command", "command": "node /path/to/context-hogs.js", "async": true }]
  *     }],
  *     "SessionEnd": [{
  *       "hooks": [{ "type": "command", "command": "node /path/to/context-hogs.js" }]
  *     }]
  *   }
  * }
+ *
+ * The PostToolUse entry only appends a ledger row (its stdout is ignored), so
+ * "async": true is safe and gives zero added latency per tool call. Keep the
+ * SessionEnd entry synchronous — its systemMessage is what renders the card.
  */
 
 const fs = require('fs');
@@ -43,11 +47,13 @@ const HOME = process.env.HOME || process.env.USERPROFILE || '';
 const LOG_DIR = path.join(HOME, '.claude', 'hooks-logs');
 const STATE_ROOT = path.join(HOME, '.claude', 'context-hogs');
 
-// Estimation constants. Both are overridable via env for accuracy tuning.
-const BYTES_PER_TOKEN = 4; // rough English/code average
-const DOLLARS_PER_MTOK = Number(process.env.CONTEXT_HOGS_USD_PER_MTOK) || 3.0; // input $/1M tok
+// Estimation constants. All are overridable via env for accuracy tuning.
+const BYTES_PER_TOKEN = Number(process.env.CONTEXT_HOGS_BYTES_PER_TOKEN) || 4; // rough English/code average
+const DOLLARS_PER_MTOK = Number(process.env.CONTEXT_HOGS_USD_PER_MTOK) || 3.0; // input $/1M tok — an ESTIMATE; update to your model's current input rate
 const TOP_N = Number(process.env.CONTEXT_HOGS_TOP_N) || 10;
-const LEDGER_CAP = 50000; // hard cap on ledger rows read (latency discipline)
+// Hard cap on ledger rows kept/read. At SessionEnd the ledger file is compacted
+// down to the most recent LEDGER_CAP rows, so disk usage stays bounded too.
+const LEDGER_CAP = Number(process.env.CONTEXT_HOGS_LEDGER_CAP) || 50000;
 
 // Repeat-offender heuristics: filename/path patterns that are chronic context hogs.
 const OFFENDER_PATTERNS = [
@@ -98,6 +104,11 @@ function normalizePath(p, cwd) {
   if (!s) return null;
   // strip surrounding quotes
   s = s.replace(/^['"]|['"]$/g, '');
+  // strip control chars (incl. newlines): paths are rendered into the
+  // systemMessage card and the suggested CLAUDE.md block, so a hostile
+  // filename must not be able to inject extra lines/directives there.
+  s = s.replace(/[\x00-\x1f\x7f]/g, '');
+  if (!s) return null;
   if (cwd && path.isAbsolute(s)) {
     const rel = path.relative(cwd, s);
     // only relativize if it stays inside the repo (no leading ..)
@@ -108,23 +119,31 @@ function normalizePath(p, cwd) {
 
 /**
  * Measure the byte size of a tool_response. Responses come in several shapes:
- *  - Read: { type:'text', file:{ numLines, ... } } or a plain string
+ *  - Read: { type:'text', file:{ content, numLines, ... } } or a plain string
  *  - Grep/Glob/Bash: string, or { stdout, stderr }, or { content:[{type,text}] }
+ *  - some tools return a bare array of content blocks: [{ type:'text', text }]
  */
 function responseBytes(toolResponse) {
   if (toolResponse == null) return 0;
   if (typeof toolResponse === 'string') return Buffer.byteLength(toolResponse, 'utf8');
   let total = 0;
+  const blockText = (c) => (c && typeof c.text === 'string' ? Buffer.byteLength(c.text, 'utf8') : 0);
+  if (Array.isArray(toolResponse)) {
+    for (const c of toolResponse) total += blockText(c);
+    if (total > 0) return total;
+  }
   const tr = toolResponse;
   if (typeof tr.stdout === 'string') total += Buffer.byteLength(tr.stdout, 'utf8');
   if (typeof tr.stderr === 'string') total += Buffer.byteLength(tr.stderr, 'utf8');
   if (typeof tr.content === 'string') total += Buffer.byteLength(tr.content, 'utf8');
   if (Array.isArray(tr.content)) {
-    for (const c of tr.content) {
-      if (c && typeof c.text === 'string') total += Buffer.byteLength(c.text, 'utf8');
-    }
+    for (const c of tr.content) total += blockText(c);
   }
   if (typeof tr.text === 'string') total += Buffer.byteLength(tr.text, 'utf8');
+  // Read tool shape: { type:'text', file:{ content: '...' } }
+  if (tr.file && typeof tr.file === 'object' && typeof tr.file.content === 'string') {
+    total += Buffer.byteLength(tr.file.content, 'utf8');
+  }
   if (total === 0) {
     // last resort: serialize whatever we got (bounded)
     try { total = Buffer.byteLength(JSON.stringify(tr).slice(0, 2_000_000), 'utf8'); } catch {}
@@ -146,6 +165,10 @@ function responseBytes(toolResponse) {
  *     Complex pipelines, redirects, or unusual commands may under- or
  *     mis-attribute. This is intentional: better a mostly-right leaderboard
  *     than none, and Read (the dominant context source) is always exact.
+ *
+ * When one event attributes to multiple paths (e.g. `cat a.txt b.txt`), the
+ * caller SPLITS the response bytes evenly across them — bytes are never
+ * double-counted by attributing the full total to every path.
  */
 function attributePaths(toolName, toolInput, cwd) {
   const ti = toolInput || {};
@@ -206,8 +229,10 @@ function aggregate(rows, opts = {}) {
   const byPath = new Map();
   let totalTokens = 0;
   let totalBytes = 0;
+  let totalReads = 0;
   for (const r of rows) {
     if (!r || !r.path) continue;
+    totalReads += 1;
     const bytes = Number(r.bytes) || 0;
     const tokens = Number(r.tokens) || estimateTokens(bytes);
     totalTokens += tokens;
@@ -230,7 +255,7 @@ function aggregate(rows, opts = {}) {
     allRows: list,
     totals: {
       files: byPath.size,
-      reads: rows.length,
+      reads: totalReads,
       tokens: totalTokens,
       bytes: totalBytes,
       dollars: estimateDollars(totalTokens, usd),
@@ -249,7 +274,9 @@ function fmtTokens(t) {
 }
 
 function fmtDollars(d) {
-  if (d >= 1) return '$' + d.toFixed(2);
+  // These are ~4-bytes-per-token estimates: round honestly instead of
+  // printing fabricated cent-level precision on large numbers.
+  if (d >= 10) return '$' + Math.round(d);
   if (d >= 0.01) return '$' + d.toFixed(2);
   return '$' + d.toFixed(4);
 }
@@ -290,12 +317,19 @@ function suggestClaudeMdBlock(agg) {
   lines.push('<!-- context-hogs: paste into CLAUDE.md to stop burning tokens on these -->');
   lines.push('## Context budget');
   lines.push('Do NOT read these files in full unless explicitly required — they are large and rarely relevant:');
+  const listed = [];
   for (const r of picks) {
     if (seen.has(r.path)) continue;
     seen.add(r.path);
+    listed.push(r.path);
     const why = r.offender ? r.offender : `${fmtDollars(r.dollars)} est over ${fmtInt(r.reads)} reads`;
     lines.push(`- \`${r.path}\` (${why})`);
   }
+  lines.push('');
+  lines.push('To hard-block instead of just discouraging, add permission deny rules to .claude/settings.json:');
+  lines.push('```json');
+  lines.push(JSON.stringify({ permissions: { deny: listed.slice(0, 5).map((p) => `Read(${p})`) } }, null, 2));
+  lines.push('```');
   return lines.join('\n');
 }
 
@@ -318,15 +352,28 @@ function readLedger(cwd) {
   let raw;
   try { raw = fs.readFileSync(file, 'utf8'); } catch { return []; }
   const rows = [];
-  const lines = raw.split('\n');
+  const lines = raw.split('\n').filter(Boolean);
   // read only the most recent LEDGER_CAP rows to bound latency
   const start = Math.max(0, lines.length - LEDGER_CAP);
   for (let i = start; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line) continue;
-    try { rows.push(JSON.parse(line)); } catch {}
+    try { rows.push(JSON.parse(lines[i])); } catch {}
   }
+  rows.overCap = lines.length > LEDGER_CAP; // hint for compaction
   return rows;
+}
+
+/**
+ * Rewrite the ledger down to its most recent LEDGER_CAP rows so the file
+ * doesn't grow unbounded across months of sessions. Called at SessionEnd
+ * (never on the hot PostToolUse path). Best-effort: a row appended by a
+ * concurrent session during the rewrite may be lost, which is acceptable
+ * for an estimates ledger.
+ */
+function compactLedger(cwd, rows) {
+  try {
+    const file = path.join(stateDir(cwd), 'ledger.jsonl');
+    fs.writeFileSync(file, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+  } catch {}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -363,6 +410,7 @@ function handleSessionEnd(data) {
   const { cwd, session_id } = data;
   const rows = readLedger(cwd);
   if (rows.length === 0) return {};
+  if (rows.overCap) compactLedger(cwd, rows); // bound on-disk growth
 
   const agg = aggregate(rows);
   const meta = { repo: path.basename(cwd || '') || undefined };
@@ -384,15 +432,10 @@ function handleSessionEnd(data) {
   });
 
   // NOTE: at SessionEnd, additionalContext is NOT honored by Claude Code
-  // (it only surfaces for SessionStart/UserPromptSubmit). The sibling
-  // `systemMessage` field is what actually renders the card, so we emit only
-  // that here and deliberately omit a no-op additionalContext branch.
-  return {
-    systemMessage: card,
-    hookSpecificOutput: {
-      hookEventName: 'SessionEnd',
-    },
-  };
+  // (it only surfaces for SessionStart/UserPromptSubmit), and SessionEnd has
+  // no decision control at all — so `systemMessage` is the only output field
+  // that does anything here. Emit just that; no no-op hookSpecificOutput.
+  return { systemMessage: card };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -401,6 +444,7 @@ function handleSessionEnd(data) {
 
 async function main() {
   let input = '';
+  process.stdin.setEncoding('utf8'); // don't split multibyte chars across chunks
   for await (const chunk of process.stdin) input += chunk;
 
   let data;
@@ -449,5 +493,6 @@ if (require.main === module) {
     handleSessionEnd,
     stateDir,
     readLedger,
+    compactLedger,
   };
 }
