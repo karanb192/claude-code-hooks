@@ -62,6 +62,14 @@ Fires when Claude needs user attention.
 | ------------------------------------------------------------------- | -------------------------------- | ------------------------------------------ |
 | [notify-permission](hook-scripts/notification/notify-permission.js) | `permission_prompt\|idle_prompt` | Sends Slack alerts when Claude needs input |
 
+### Session Lifecycle
+
+Fires on session boundaries — capture outcomes and inject context across sessions.
+
+| Hook                                                                  | Event(s)                        | Description                                                                              |
+| --------------------------------------------------------------------- | ------------------------------- | --------------------------------------------------------------------------------------- |
+| [standup-autopilot](hook-scripts/session-end/standup-autopilot.js)    | `SessionEnd\|Stop\|SessionStart` | Writes your daily standup from what your agents actually did; re-injects open blockers |
+
 ### Utils
 
 Tools to help you build and debug hooks.
