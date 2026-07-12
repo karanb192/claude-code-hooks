@@ -132,6 +132,45 @@ describe('Unit: parseTestCounts', () => {
     assert.strictEqual(parseTestCounts(''), null);
     assert.strictEqual(parseTestCounts(null), null);
   });
+  it('does not count compile-error prose as failing tests', () => {
+    assert.strictEqual(parseTestCounts('2 modules failed to compile'), null);
+    assert.strictEqual(parseTestCounts('Compilation failed with errors'), null);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unit: redactSecrets — transcript text must not leak credentials into ledgers
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Unit: redactSecrets', () => {
+  const { redactSecrets } = mod;
+
+  it('redacts GitHub tokens', () => {
+    const out = redactSecrets('export GITHUB_TOKEN=ghp_abcdefghij1234567890KLMNOP && npm test');
+    assert.ok(!out.includes('ghp_abcdefghij'), out);
+    assert.ok(out.includes('[REDACTED]'), out);
+    assert.ok(out.includes('npm test'), out);
+  });
+  it('redacts sk- style API keys', () => {
+    const out = redactSecrets('using key sk-ant-abcdefghijklmnop1234');
+    assert.ok(!out.includes('sk-ant-abcdefghijklmnop1234'), out);
+  });
+  it('redacts key=value secrets', () => {
+    const out = redactSecrets('login with token=supersecret123 now');
+    assert.ok(!out.includes('supersecret123'), out);
+    assert.ok(out.includes('token=[REDACTED]'), out);
+  });
+  it('redacts JWTs', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N';
+    assert.ok(!redactSecrets(`saw ${jwt} in logs`).includes(jwt));
+  });
+  it('redacts AWS access key ids', () => {
+    assert.ok(!redactSecrets('creds AKIAIOSFODNN7EXAMPLE found').includes('AKIAIOSFODNN7EXAMPLE'));
+  });
+  it('leaves benign text untouched', () => {
+    const s = 'ran npm test, 14 passing, refactored the auth module';
+    assert.strictEqual(redactSecrets(s), s);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -234,6 +273,98 @@ describe('Unit: buildDigest', () => {
     const d = buildDigest(msgs, { session_id: 's9' });
     assert.ok(d.blockers.length <= 5, `got ${d.blockers.length}`);
   });
+
+  it('pairs test results by tool_use_id when tool calls run in parallel', () => {
+    const msgs = [
+      { type: 'assistant', message: { role: 'assistant', content: [
+        { type: 'tool_use', id: 'tu_ls', name: 'Bash', input: { command: 'ls -la' } },
+        { type: 'tool_use', id: 'tu_test', name: 'Bash', input: { command: 'npm test' } },
+      ] } },
+      // Results arrive out of order: ls result lands first.
+      { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_ls', content: 'total 0' }] } },
+      { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_test', content: '7 passing\n1 failing' }] } },
+    ];
+    const d = buildDigest(msgs, { session_id: 's10' });
+    assert.strictEqual(d.tests.length, 1);
+    assert.strictEqual(d.tests[0].passed, 7);
+    assert.strictEqual(d.tests[0].failed, 1);
+  });
+
+  it('does NOT flag incidental "failed" prose in a clean tool result', () => {
+    const msgs = [
+      toolUse('Read', { file_path: '/docs/postmortem.md' }),
+      toolResult('the deploy failed last week and we could not find the cause'),
+    ];
+    const d = buildDigest(msgs, { session_id: 's11' });
+    assert.strictEqual(d.blockers.length, 0, `blockers: ${JSON.stringify(d.blockers)}`);
+  });
+
+  it('still flags a strong error signature even when is_error is false', () => {
+    const msgs = [
+      toolUse('Bash', { command: 'node run.js' }),
+      toolResult("TypeError: cannot read properties of undefined (reading 'foo')"),
+    ];
+    const d = buildDigest(msgs, { session_id: 's12' });
+    assert.strictEqual(d.blockers.length, 1, `blockers: ${JSON.stringify(d.blockers)}`);
+  });
+
+  it('redacts secrets from test commands and blocker snippets', () => {
+    const token = 'ghp_' + 'a'.repeat(30);
+    const msgs = [
+      toolUse('Bash', { command: `GITHUB_TOKEN=${token} npm test` }),
+      toolResult('1 failing', true),
+      toolUse('Bash', { command: 'node deploy.js' }),
+      toolResult('Error: auth rejected for token=abc123secretvalue', true),
+    ];
+    const d = buildDigest(msgs, { session_id: 's13' });
+    const persisted = JSON.stringify(d);
+    assert.ok(!persisted.includes(token), persisted);
+    assert.ok(!persisted.includes('abc123secretvalue'), persisted);
+    assert.ok(d.tests[0].command.includes('npm test'), d.tests[0].command);
+  });
+
+  it('records branch and diffstat from ctx', () => {
+    const d = buildDigest([], { session_id: 's14', branch: 'feat/x', diffstat: '2 files changed' });
+    assert.strictEqual(d.branch, 'feat/x');
+    assert.strictEqual(d.diffstat, '2 files changed');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unit: dates — local calendar days, timezone-safe arithmetic
+// ─────────────────────────────────────────────────────────────────────────────
+
+function nodeEval(expr, env = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['-e', expr], { env: { ...process.env, ...env } });
+    let stdout = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.on('close', () => resolve(stdout.trim()));
+    child.on('error', reject);
+  });
+}
+
+describe('Unit: today() / shiftDate — local time, not UTC', () => {
+  const expr = (iso) =>
+    `const m=require(${JSON.stringify(SCRIPT_PATH)});process.stdout.write(m.today(new Date('${iso}')))`;
+
+  it('files an evening session under the LOCAL date east of UTC', async () => {
+    // 20:00 UTC on Jun 18 is already Jun 19 at UTC+14.
+    const out = await nodeEval(expr('2026-06-18T20:00:00Z'), { TZ: 'Etc/GMT-14' });
+    assert.strictEqual(out, '2026-06-19');
+  });
+
+  it('files an early-UTC session under the LOCAL date west of UTC', async () => {
+    // 05:00 UTC on Jun 19 is still Jun 18 at UTC-10.
+    const out = await nodeEval(expr('2026-06-19T05:00:00Z'), { TZ: 'Etc/GMT+10' });
+    assert.strictEqual(out, '2026-06-18');
+  });
+
+  it('shiftDate crosses month and year boundaries', () => {
+    assert.strictEqual(mod.shiftDate('2026-03-01', -1), '2026-02-28');
+    assert.strictEqual(mod.shiftDate('2026-01-01', -1), '2025-12-31');
+    assert.strictEqual(mod.shiftDate('2026-06-15', -3), '2026-06-12');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -296,6 +427,23 @@ describe('Unit: summarizeDay / renderCard / renderSlack', () => {
     const ctx = renderResumeContext([{ repo: 'app', task: 't', prs: [], blockers: [], tests: [] }]);
     assert.strictEqual(ctx, '');
   });
+
+  it('renderResumeContext caps injection at 8 blockers with a "more" marker', () => {
+    const blockers = Array.from({ length: 20 }, (_, i) => `blocker number ${i}`);
+    const ctx = renderResumeContext([{ repo: 'app', task: 't', prs: [], blockers, tests: [] }]);
+    const bullets = ctx.split('\n').filter((l) => l.startsWith('- ')).length;
+    assert.ok(bullets <= 9, ctx); // 8 blockers + 1 "more" line
+    assert.ok(/and 12 more/.test(ctx), ctx);
+    assert.ok(!ctx.includes('blocker number 19'), ctx);
+  });
+
+  it('renderCard surfaces diffstat', () => {
+    const card = renderCard(
+      [{ repo: 'app', task: 'work', prs: [], blockers: [], tests: [], diffstat: '3 files changed, 42 insertions(+)' }],
+      '2026-06-18'
+    );
+    assert.ok(card.includes('3 files changed'), card);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -335,11 +483,47 @@ describe('Ledger: upsert/read with temp HOME', () => {
     const prev = mod.findPreviousLedgerDate('2026-06-19', 7);
     assert.strictEqual(prev, '2026-06-18');
   });
+
+  it('is append-only on disk: upserts never rewrite (no lost-update window)', () => {
+    const date = '2026-06-20';
+    mod.upsertLedger({ session_id: 'A', task: 'v1' }, date);
+    mod.upsertLedger({ session_id: 'B', task: 'x' }, date);
+    mod.upsertLedger({ session_id: 'A', task: 'v2' }, date);
+    const rawLines = fs.readFileSync(mod.ledgerPath(date), 'utf-8').trim().split('\n');
+    assert.strictEqual(rawLines.length, 3, 'every upsert must append a snapshot line');
+    const rows = mod.readLedger(date);
+    assert.strictEqual(rows.length, 2, 'read dedupes by session_id');
+    assert.strictEqual(rows.find((r) => r.session_id === 'A').task, 'v2', 'last write wins');
+  });
+
+  it('tolerates a torn/partial trailing line (concurrent write in flight)', () => {
+    const date = '2026-06-21';
+    mod.upsertLedger({ session_id: 'A', task: 'ok' }, date);
+    fs.appendFileSync(mod.ledgerPath(date), '{"session_id":"B","task":"tru'); // torn write
+    const rows = mod.readLedger(date);
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].session_id, 'A');
+  });
+
+  it('Monday pulls Friday across the weekend gap', () => {
+    // 2026-06-12 is a Friday; 2026-06-15 the following Monday.
+    mod.upsertLedger({ session_id: 'fri', task: 'friday work' }, '2026-06-12');
+    assert.strictEqual(mod.findPreviousLedgerDate('2026-06-15', 7), '2026-06-12');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Integration: spawn the script with temp HOME
 // ─────────────────────────────────────────────────────────────────────────────
+
+function hasGit() {
+  try {
+    require('node:child_process').execFileSync('git', ['--version'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function runHook(payload, extraArgs = [], home) {
   return new Promise((resolve, reject) => {
@@ -466,6 +650,77 @@ describe('Integration: spawn with temp HOME', () => {
     const { code, stdout } = await runHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash' }, [], tmpHome);
     assert.strictEqual(code, 0);
     assert.deepStrictEqual(JSON.parse(stdout.trim()), {});
+  });
+
+  it('concurrent sessions writing the same date file do not lose digests', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'standup-race-'));
+    try {
+      const N = 6;
+      const runs = [];
+      for (let i = 0; i < N; i++) {
+        runs.push(runHook({
+          hook_event_name: i % 2 ? 'Stop' : 'SessionEnd',
+          session_id: `race-${i}`,
+          cwd: `/work/repo-${i}`,
+        }, [], home));
+      }
+      const results = await Promise.all(runs);
+      for (const r of results) assert.strictEqual(r.code, 0);
+
+      const dir = path.join(home, '.claude', 'standup');
+      const files = fs.readdirSync(dir);
+      assert.strictEqual(files.length, 1);
+      const seen = new Set(
+        fs.readFileSync(path.join(dir, files[0]), 'utf-8')
+          .trim().split('\n')
+          .map((l) => JSON.parse(l).session_id)
+      );
+      for (let i = 0; i < N; i++) {
+        assert.ok(seen.has(`race-${i}`), `lost digest for race-${i}; saw ${[...seen]}`);
+      }
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('captures git branch and diffstat from the session cwd', { skip: !hasGit() }, async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'standup-git-'));
+    try {
+      const repo = path.join(home, 'myrepo');
+      fs.mkdirSync(repo);
+      const git = (...args) => require('node:child_process').execFileSync('git', args, { cwd: repo, stdio: 'pipe' });
+      git('init', '-q');
+      git('checkout', '-qb', 'feat/standup-test');
+      fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
+      git('add', 'a.txt');
+      git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init');
+      fs.writeFileSync(path.join(repo, 'a.txt'), 'one\ntwo\n'); // dirty working tree
+
+      const { code } = await runHook({
+        hook_event_name: 'SessionEnd',
+        session_id: 'git-1',
+        cwd: repo,
+      }, [], home);
+      assert.strictEqual(code, 0);
+
+      const dir = path.join(home, '.claude', 'standup');
+      const row = JSON.parse(fs.readFileSync(path.join(dir, fs.readdirSync(dir)[0]), 'utf-8').trim().split('\n')[0]);
+      assert.strictEqual(row.branch, 'feat/standup-test');
+      assert.ok(/1 file changed/.test(row.diffstat), `diffstat: ${JSON.stringify(row.diffstat)}`);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('--card rejects a non-date argument (no path traversal) and still renders', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'standup-badcard-'));
+    try {
+      const { code, stdout } = await runHook(null, ['--card', '../../../etc/passwd'], home);
+      assert.strictEqual(code, 0);
+      assert.ok(stdout.includes('STANDUP'), stdout);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it('Stop with missing transcript_path still persists an (empty) digest', async () => {
