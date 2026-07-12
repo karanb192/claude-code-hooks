@@ -62,6 +62,14 @@ Fires when Claude needs user attention.
 | ------------------------------------------------------------------- | -------------------------------- | ------------------------------------------ |
 | [notify-permission](hook-scripts/notification/notify-permission.js) | `permission_prompt\|idle_prompt` | Sends Slack alerts when Claude needs input |
 
+### Session-End
+
+Fires when a session ends (and related lifecycle events) — good for recording and summarizing.
+
+| Hook                                                       | Matcher                | Description                                                                                        |
+| ---------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------- |
+| [nerf-receipts](hook-scripts/session-end/nerf-receipts.js) | `SessionEnd` (+3 more) | Flight recorder: logs failure rate, edit churn & tokens/task per session, flags shifts across models |
+
 ### Utils
 
 Tools to help you build and debug hooks.
