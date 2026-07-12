@@ -66,6 +66,8 @@ Fires when Claude needs user attention.
 
 Fires on `UserPromptSubmit` (match + warn), `Stop`/`SubagentStop`/`PreCompact` (mine the transcript), and `PreToolUse` `Edit\|Write` (ask before reintroducing a reverted change).
 
+The registry is stored per-project in `~/.claude/dead-end-registry/` — outside the repo, so mined snippets (verbatim transcript code, truncated to 80 lines) can never be committed. Entries expire after 60 days and the file is compacted automatically; token costs are estimates (hooks receive no billing data).
+
 | Hook                                                                             | Matcher                                       | Description                                                                       |
 | -------------------------------------------------------------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------- |
 | [dead-end-registry](hook-scripts/user-prompt-submit/dead-end-registry.js)        | `UserPromptSubmit\|Stop\|SubagentStop\|PreCompact\|PreToolUse` | Remembers tried-and-reverted approaches (reason + token cost) and warns on retries |

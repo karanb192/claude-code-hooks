@@ -23,6 +23,16 @@
  * scanning). An OPTIONAL model pass can be layered on top by config, but is never
  * required and never contacted in tests.
  *
+ * Scope + hygiene:
+ *   - Registries are keyed per-project (hash of cwd) and live under
+ *     ~/.claude/dead-end-registry/ — OUTSIDE the repo, so nothing here can be
+ *     accidentally committed. A dead end mined in repo A never warns in repo B.
+ *   - Entries expire after MAX_AGE_DAYS and the file is compacted at mine time,
+ *     so the registry stays bounded and stale nags die off on their own.
+ *   - Mined code snapshots are truncated (MAX_CODE_LINES/MAX_CODE_CHARS): they
+ *     are verbatim transcript code and could contain secrets — keep them small,
+ *     and never execute or shell out with any transcript content.
+ *
  * Setup in .claude/settings.json:
  * {
  *   "hooks": {
@@ -67,15 +77,30 @@ const MAX_TRANSCRIPT_BYTES = 6 * 1024 * 1024; // 6MB cap
 const MAX_TRANSCRIPT_LINES = 6000;
 const MAX_REGISTRY_ENTRIES = 500; // cap what we scan on prompt-submit
 const MAX_CARD_ENTRIES = 3; // entries shown in an injected card
+// Entries older than this are ignored on read and dropped at compaction time.
+// The codebase moves on: a dead end from two months ago usually no longer
+// applies (files rewritten, deps upgraded), and stale nags erode trust.
+const MAX_AGE_DAYS = 60;
+// Persisted code snapshots are truncated: enough lines for hunk matching to
+// work, small enough that a mined 2MB Write (which might embed secrets or
+// vendored blobs) never bloats the registry or every future prompt-submit read.
+const MAX_CODE_LINES = 80;
+const MAX_CODE_CHARS = 4000;
 
 // Signals that a preceding approach was abandoned / reverted / ruled out.
+// `weak: true` patterns describe a *symptom* rather than an explicit
+// abandonment action. They are only trusted on assistant messages: a USER
+// saying "the login page is broken" is a bug report, not a dead end, and
+// mining it would poison the registry with false positives.
 const REVERT_PATTERNS = [
   { id: 'reverted', regex: /\b(revert(?:ed|ing)?|rolled?\s+back|roll\s+back|backed\s+out)\b/i, reason: 'reverted' },
   { id: 'undo', regex: /\b(undo|undid|git\s+revert|git\s+reset\s+--hard|restore\s+the\s+old)\b/i, reason: 'undone' },
-  { id: 'didnt-work', regex: /\b(didn['’]?t\s+work|does\s+not\s+work|doesn['’]?t\s+work|not\s+working|broke\s+(?:the|everything)|broken)\b/i, reason: "didn't work" },
+  { id: 'didnt-work', regex: /\b(didn['’]?t\s+work|does\s+not\s+work|doesn['’]?t\s+work|not\s+working|broke\s+(?:the|everything)|broken)\b/i, reason: "didn't work", weak: true },
   { id: 'abandon', regex: /\b(abandon(?:ed|ing)?|give\s+up|giving\s+up|gave\s+up|scrap(?:ped)?\s+that|drop\s+(?:this|that)\s+approach)\b/i, reason: 'abandoned' },
   { id: 'ruled-out', regex: /\b(ruled?\s+out|dead\s+end|won['’]?t\s+work|that\s+approach\s+(?:failed|is\s+wrong)|wrong\s+approach|bad\s+idea)\b/i, reason: 'ruled out' },
-  { id: 'race-cond', regex: /\b(race\s+condition|deadlock|infinite\s+loop|memory\s+leak|caused\s+a\s+regression)\b/i, reason: 'caused a defect' },
+  // Defect nouns alone are NOT a signal ("this mutex avoids a race condition"
+  // must not be mined). Require a causal verb: the change *caused* the defect.
+  { id: 'race-cond', regex: /\b(?:caused|causing|introduced|introducing|created|hit|ran\s+into|led\s+to|resulted?\s+in|triggered)\b[^.!?\n]{0,120}?\b(?:race\s+condition|deadlock|infinite\s+loop|memory\s+leak|regression)\b/i, reason: 'caused a defect', weak: true },
 ];
 
 // Nouns that usually name the *thing that was tried* — used to summarise the
@@ -88,6 +113,30 @@ const STOPWORDS = new Set([
   'can', 'could', 'should', 'get', 'got', 'my', 'our', 'your', 'its', 'me', 'us',
   'up', 'out', 'now', 'just', 'back', 'try', 'tried', 'trying', 'approach',
   'thing', 'stuff', 'work', 'working', 'worked', 'again', 'because', 'after',
+  // Conversational filler that carries no topical signal.
+  'lets', 'sure', 'okay', 'onto', 'into', 'when', 'what', 'how', 'why',
+  'where', 'which', 'there', 'here', 'some', 'more', 'very', 'much', 'want',
+  'wants', 'need', 'needs', 'going', 'writing', 'making', 'really', 'actually',
+  'also', 'like', 'well', 'about', 'please',
+]);
+
+// Keywords that appear in nearly every coding prompt. A prompt/entry overlap
+// consisting ONLY of these ("fix the tests", "error in the build") must never
+// fire a warning — that is the nag-until-uninstall failure mode. At least one
+// overlapping keyword must be outside this set (a project-specific term like
+// "websocket" or "worker_threads") before a card is injected.
+const GENERIC_KEYWORDS = new Set([
+  'fix', 'fixes', 'fixed', 'fixing', 'bug', 'bugs', 'error', 'errors',
+  'issue', 'issues', 'problem', 'problems', 'fail', 'fails', 'failed',
+  'failing', 'failure', 'failures', 'test', 'tests', 'testing', 'code',
+  'file', 'files', 'folder', 'line', 'lines', 'function', 'functions',
+  'method', 'methods', 'class', 'update', 'updates', 'updated', 'change',
+  'changes', 'changed', 'changing', 'add', 'adds', 'added', 'adding',
+  'remove', 'removes', 'removed', 'removing', 'refactor', 'refactoring',
+  'implement', 'implementation', 'implementing', 'run', 'runs', 'running',
+  'build', 'builds', 'building', 'check', 'checks', 'checking', 'write',
+  'written', 'create', 'creates', 'created', 'creating', 'delete', 'deleted',
+  'broken', 'breaking', 'breaks', 'help', 'still', 'make', 'makes',
 ]);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -160,10 +209,42 @@ function hunkLines(code) {
     .map((l) => l.toLowerCase());
 }
 
-/** Line-level Jaccard similarity between two code blobs: 0..1. */
+// Lines that appear in virtually every file and must not count toward hunk
+// similarity: lone brackets/punctuation, comment-only lines, and import /
+// require boilerplate. Two unrelated edits routinely share ALL of these, and
+// counting them is how a hunk matcher starts crying wolf on every file header.
+// (Input is already lowercased + trimmed by hunkLines.)
+const TRIVIAL_LINE = new RegExp(
+  '^(?:' +
+    '[{}()\\[\\];,.:`]+' + // pure punctuation: }, });, ], etc.
+    '|//.*|/\\*.*|\\*+/?.*' + // comment-only lines (// … , /* … , * …)
+    '|#(?:\\s|!).*' + // shell/python comment or shebang ("#header {" is kept)
+    '|import\\s.*|from\\s.*' + // JS/Python import boilerplate
+    '|export\\s*\\{.*' + // export { … } re-export lines
+    '|(?:const|let|var)\\s+\\S+\\s*=\\s*require\\(.*' + // CJS require lines
+    '|else\\s*\\{?|\\}?\\s*else\\s*\\{?|try\\s*\\{?|\\}?\\s*catch\\b.*|\\}?\\s*finally\\s*\\{?' +
+    '|return;?|break;?|continue;?|end' + // bare control-flow lines
+  ')$'
+);
+
+/**
+ * Only the lines that could plausibly identify a specific change: at least 4
+ * chars, contains a letter or digit, and not boilerplate per TRIVIAL_LINE.
+ */
+function substantiveLines(code) {
+  return hunkLines(code).filter(
+    (l) => l.length >= 4 && /[a-z0-9]/.test(l) && !TRIVIAL_LINE.test(l)
+  );
+}
+
+/**
+ * Line-level Jaccard similarity between two code blobs: 0..1.
+ * Computed over SUBSTANTIVE lines only — shared braces, imports, and comments
+ * are exactly the accidental overlap that produces false-positive 'ask's.
+ */
 function hunkSimilarity(a, b) {
-  const la = hunkLines(a);
-  const lb = hunkLines(b);
+  const la = substantiveLines(a);
+  const lb = substantiveLines(b);
   if (la.length === 0 || lb.length === 0) return 0;
   const sa = new Set(la);
   const sb = new Set(lb);
@@ -325,6 +406,16 @@ function findRevertedCode(messages, revertIdx, kws) {
   return best ? best.code : '';
 }
 
+/** Truncate a mined code snapshot (registry-size + secret-exposure bound). */
+function truncateCode(code) {
+  if (!code) return '';
+  let lines = code.split('\n');
+  if (lines.length > MAX_CODE_LINES) lines = lines.slice(0, MAX_CODE_LINES);
+  let out = lines.join('\n');
+  if (out.length > MAX_CODE_CHARS) out = out.slice(0, MAX_CODE_CHARS);
+  return out;
+}
+
 function extractDeadEnds(messages) {
   if (!Array.isArray(messages) || messages.length === 0) return [];
   const candidates = [];
@@ -333,8 +424,12 @@ function extractDeadEnds(messages) {
   for (let i = 0; i < messages.length; i++) {
     const text = messageText(messages[i]);
     if (!text || text.length < 8) continue;
+    const role = messageRole(messages[i]);
 
     for (const pat of REVERT_PATTERNS) {
+      // Weak (symptom-only) signals are only trusted on assistant messages —
+      // a user reporting "X is broken" is a bug report, not an abandoned approach.
+      if (pat.weak && !/assistant/i.test(role)) continue;
       const match = pat.regex.exec(text);
       if (!match) continue;
 
@@ -343,8 +438,10 @@ function extractDeadEnds(messages) {
       for (let j = Math.max(0, i - 2); j <= i; j++) ctxParts.push(messageText(messages[j]));
       const context = ctxParts.join(' ').replace(/\s+/g, ' ').trim();
 
+      // Require 3 distinct topical keywords: with fewer, later prompt matching
+      // cannot clear its own minimum-overlap bar, so the entry is pure noise.
       const kws = keywords(context, 12);
-      if (kws.length < 2) continue; // too vague to be actionable
+      if (kws.length < 3) continue; // too vague to be actionable
 
       const fp = kws.slice(0, 6).sort().join('|');
       if (seen.has(fp)) continue;
@@ -352,7 +449,12 @@ function extractDeadEnds(messages) {
 
       // Capture the code that was tried and reverted, so the PreToolUse
       // enforcement leg has a real hunk to match a future reintroduction against.
-      const code = findRevertedCode(messages, i, kws);
+      const code = truncateCode(findRevertedCode(messages, i, kws));
+
+      // Token estimate for the DETOUR only (the lookback window around the
+      // revert), not the whole session — attributing an entire session's spend
+      // to one dead end would overstate the cost and erode the card's credibility.
+      const detourTokens = estimateTokens(messages.slice(Math.max(0, i - CODE_LOOKBACK), i + 1));
 
       candidates.push({
         summary: summarise(context, match.index, text),
@@ -361,7 +463,8 @@ function extractDeadEnds(messages) {
         keywords: kws,
         fingerprint: fp,
         code: code || undefined,
-        role: messageRole(messages[i]),
+        tokens: detourTokens,
+        role,
       });
       break; // one dead-end per message
     }
@@ -384,6 +487,15 @@ function summarise(context, _idx, signalText) {
 // Registry I/O
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Entry age gate — undated (legacy/hand-written) entries are kept. */
+function isFresh(entry, now = Date.now()) {
+  const stamp = entry && (entry.ts || entry.date);
+  if (!stamp) return true;
+  const ms = Date.parse(stamp);
+  if (Number.isNaN(ms)) return true;
+  return now - ms <= MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+}
+
 function readRegistry(file) {
   try {
     if (!fs.existsSync(file)) return [];
@@ -395,10 +507,36 @@ function readRegistry(file) {
         out.push(JSON.parse(line));
       } catch {}
     }
-    return out.slice(-MAX_REGISTRY_ENTRIES);
+    // Staleness gate: never warn from entries older than MAX_AGE_DAYS —
+    // the code they describe has usually been rewritten since.
+    return out.filter((e) => isFresh(e)).slice(-MAX_REGISTRY_ENTRIES);
   } catch {
     return [];
   }
+}
+
+/**
+ * Bound registry file growth. The append path is O(1); when the file exceeds
+ * the scan cap we rewrite it with only the fresh, most recent entries. Called
+ * from the mining path only (Stop/PreCompact) so prompt-submit stays read-only
+ * and fast.
+ */
+function compactRegistry(file) {
+  try {
+    if (!fs.existsSync(file)) return;
+    const rawLines = fs.readFileSync(file, 'utf-8').split('\n').filter((l) => l.trim());
+    if (rawLines.length <= MAX_REGISTRY_ENTRIES) return;
+    const parsed = [];
+    for (const line of rawLines) {
+      try {
+        parsed.push(JSON.parse(line));
+      } catch {}
+    }
+    const keep = parsed.filter((e) => isFresh(e)).slice(-MAX_REGISTRY_ENTRIES);
+    const tmp = `${file}.tmp`;
+    fs.writeFileSync(tmp, keep.map((e) => JSON.stringify(e)).join('\n') + (keep.length ? '\n' : ''));
+    fs.renameSync(tmp, file);
+  } catch {}
 }
 
 function appendRegistry(file, entry) {
@@ -420,11 +558,13 @@ function persistDeadEnds(file, candidates, meta) {
   const known = new Set(existing.map((e) => e.fingerprint));
   const added = [];
   const totalTokens = meta.tokens || 0;
-  // Attribute a share of the detour cost per new dead end (rough, honest).
+  // Fallback share when a candidate carries no windowed estimate (rough, honest).
   const perTokens = candidates.length > 0 ? Math.round(totalTokens / candidates.length) : 0;
 
   for (const c of candidates) {
     if (known.has(c.fingerprint)) continue;
+    // Prefer the per-detour windowed estimate mined with the candidate.
+    const entryTokens = Number.isFinite(c.tokens) && c.tokens > 0 ? c.tokens : perTokens;
     const entry = {
       id: crypto.randomBytes(6).toString('hex'),
       date: new Date().toISOString().slice(0, 10),
@@ -437,8 +577,9 @@ function persistDeadEnds(file, candidates, meta) {
       // Code snapshot of the reverted change (when one was captured at mine
       // time). Enables the PreToolUse hunk-similarity enforcement leg.
       code: c.code || undefined,
-      tokens: perTokens,
-      usd: usdFor(perTokens),
+      // Always an ESTIMATE (hooks receive no billing data — see header note).
+      tokens: entryTokens,
+      usd: usdFor(entryTokens),
       session_id: meta.session_id || null,
       source_event: meta.event || null,
     };
@@ -454,16 +595,35 @@ function persistDeadEnds(file, candidates, meta) {
 // Matching new prompts against the registry (pure)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Jaccard alone is jumpy on small keyword sets (a 2-keyword prompt against a
+// 3-keyword entry scores 0.67 on two shared words). Three stacked gates keep
+// the card out of everyday prompts:
+//   1. jaccard >= PROMPT_MATCH_THRESHOLD  (overall topical overlap)
+//   2. >= MIN_PROMPT_OVERLAP shared keywords  (small-set jitter guard)
+//   3. >= 1 shared NON-generic keyword  ("fix the tests" can never match)
 const PROMPT_MATCH_THRESHOLD = 0.34;
+const MIN_PROMPT_OVERLAP = 3;
 
 /** Return registry entries whose keyword fingerprint overlaps the prompt. */
 function matchPrompt(promptText, registry, threshold = PROMPT_MATCH_THRESHOLD) {
   const pk = keywords(promptText, 16);
   if (pk.length === 0) return [];
+  const pset = new Set(pk);
   const scored = [];
   for (const entry of registry) {
     const ek = Array.isArray(entry.keywords) ? entry.keywords : [];
-    const score = jaccard(pk, ek);
+    const eset = new Set(ek);
+    if (eset.size === 0) continue;
+    let inter = 0;
+    let distinctive = false;
+    for (const w of eset) {
+      if (!pset.has(w)) continue;
+      inter++;
+      if (!GENERIC_KEYWORDS.has(w)) distinctive = true;
+    }
+    if (inter < MIN_PROMPT_OVERLAP || !distinctive) continue;
+    const union = pset.size + eset.size - inter;
+    const score = union === 0 ? 0 : inter / union;
     if (score >= threshold) scored.push({ entry, score });
   }
   scored.sort((a, b) => b.score - a.score);
@@ -475,10 +635,12 @@ function matchPrompt(promptText, registry, threshold = PROMPT_MATCH_THRESHOLD) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const HUNK_MATCH_THRESHOLD = 0.6;
-// Minimum meaningful code lines on BOTH sides before a hunk match can fire.
-// A 1-2 line reverted snippet is too generic and would produce false-positive
-// "ask" prompts — the exact failure mode the spec flags ("false positives would
-// kill it"). Require a substantive hunk before we interrupt the user.
+// Minimum SUBSTANTIVE code lines (see substantiveLines: no braces / imports /
+// comments) on BOTH sides — and shared between them — before a hunk match can
+// fire. A 1-2 line reverted snippet is too generic and would produce
+// false-positive "ask" prompts — the exact failure mode the spec flags
+// ("false positives would kill it"). Require a substantive hunk before we
+// interrupt the user.
 const MIN_HUNK_LINES = 3;
 
 /** Pull the code payload out of an Edit/Write tool_input. */
@@ -495,15 +657,24 @@ function editCode(toolName, toolInput) {
  */
 function matchEdit(code, registry, threshold = HUNK_MATCH_THRESHOLD) {
   if (!code) return null;
-  const editLines = hunkLines(code);
+  const editLines = substantiveLines(code);
   // Tiny edits are too generic to match confidently — skip to avoid false positives.
   if (editLines.length < MIN_HUNK_LINES) return null;
+  const editSet = new Set(editLines);
   let best = null;
   for (const entry of registry) {
     if (!entry.code) continue;
     // Both sides must carry a substantive hunk.
-    if (hunkLines(entry.code).length < MIN_HUNK_LINES) continue;
-    const sim = hunkSimilarity(code, entry.code);
+    const entryLines = substantiveLines(entry.code);
+    if (entryLines.length < MIN_HUNK_LINES) continue;
+    const entrySet = new Set(entryLines);
+    let inter = 0;
+    for (const l of entrySet) if (editSet.has(l)) inter++;
+    // Ratio alone is not enough: also require MIN_HUNK_LINES literally shared
+    // substantive lines, so a couple of coincidental matches can never fire.
+    if (inter < MIN_HUNK_LINES) continue;
+    const union = editSet.size + entrySet.size - inter;
+    const sim = union === 0 ? 0 : inter / union;
     if (sim >= threshold && (!best || sim > best.score)) best = { entry, score: sim };
   }
   return best;
@@ -520,8 +691,10 @@ function money(entry) {
 /** A single "DEAD END" warning line for a matched entry. */
 function deadEndLine(entry, score) {
   const cost = money(entry);
-  const bits = [`tried on ${entry.date}`, `reverted (${entry.reason})`];
-  if (cost) bits.push(`paid ${cost} in tokens`);
+  // entry.reason is the mined outcome label ('reverted', 'abandoned', …) —
+  // don't hard-code "reverted" for approaches that were merely abandoned.
+  const bits = [`tried on ${entry.date}`, `outcome: ${entry.reason}`];
+  if (cost) bits.push(`paid ${cost} in tokens (est.)`);
   const pct = score != null ? ` [${Math.round(score * 100)}% match]` : '';
   return `⚠️  DEAD END${pct}: ${entry.summary}\n    → ${bits.join(' · ')}`;
 }
@@ -538,7 +711,7 @@ function renderPromptCard(matches) {
   for (const m of top) lines.push(deadEndLine(m.entry, m.score));
   if (totalUsd > 0) {
     lines.push('');
-    lines.push(`💸  Re-exploring these dead ends already cost ~$${totalUsd.toFixed(2)}. Do NOT silently retry the same approach — confirm with the user, or explain why it will be different this time.`);
+    lines.push(`💸  These dead ends already cost an estimated ~$${totalUsd.toFixed(2)} in tokens the first time. Do NOT silently retry the same approach — confirm with the user, or explain why it will be different this time.`);
   } else {
     lines.push('');
     lines.push('Do NOT silently retry the same approach — confirm with the user, or explain why it will be different this time.');
@@ -546,11 +719,16 @@ function renderPromptCard(matches) {
   return lines.join('\n');
 }
 
-/** permissionDecisionReason for a blocked Edit/Write. */
+/**
+ * permissionDecisionReason for a blocked Edit/Write. Must carry enough context
+ * (what was tried, when, why it was walked back, what it cost) for the user to
+ * confidently dismiss OR confirm without digging through old transcripts.
+ */
 function renderEditReason(entry, score) {
   const cost = money(entry);
-  const paid = cost ? ` You have now paid for this dead end twice (${cost} in tokens the first time).` : '';
-  return `🪦 DEAD END — this change closely matches (${Math.round(score * 100)}%) something you already tried on ${entry.date} and reverted (${entry.reason}).${paid} Reintroduce it only if you know why it will be different this time.`;
+  const paid = cost ? ` You have now paid for this dead end twice (an estimated ${cost} in tokens the first time).` : '';
+  const what = entry.summary ? ` What was tried: "${entry.summary}".` : '';
+  return `🪦 DEAD END — this change closely matches (${Math.round(score * 100)}%) code you already tried on ${entry.date} and walked back (${entry.reason}).${what}${paid} Reintroduce it only if you know why it will be different this time.`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -575,6 +753,8 @@ function handleMine(data) {
     session_id: data.session_id,
     event: data.hook_event_name,
   });
+  // Bound file growth here (mining path), keeping prompt-submit read-only.
+  compactRegistry(file);
   log({
     level: 'MINED',
     event: data.hook_event_name,
@@ -687,6 +867,7 @@ if (require.main === module) {
     keywords,
     jaccard,
     hunkLines,
+    substantiveLines,
     hunkSimilarity,
     toolUseCode,
     findRevertedCode,
@@ -706,11 +887,19 @@ if (require.main === module) {
     readRegistry,
     appendRegistry,
     persistDeadEnds,
+    compactRegistry,
+    isFresh,
+    truncateCode,
     route,
     REVERT_PATTERNS,
     PROMPT_MATCH_THRESHOLD,
+    MIN_PROMPT_OVERLAP,
     HUNK_MATCH_THRESHOLD,
     MIN_HUNK_LINES,
+    MAX_AGE_DAYS,
+    MAX_REGISTRY_ENTRIES,
+    MAX_CODE_LINES,
+    MAX_CODE_CHARS,
     USD_PER_TOKEN,
   };
 }

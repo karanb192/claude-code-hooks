@@ -21,6 +21,7 @@ const {
   keywords,
   jaccard,
   hunkLines,
+  substantiveLines,
   hunkSimilarity,
   toolUseCode,
   findRevertedCode,
@@ -36,11 +37,19 @@ const {
   persistDeadEnds,
   readRegistry,
   registryFileFor,
+  compactRegistry,
+  isFresh,
+  truncateCode,
   route,
   REVERT_PATTERNS,
   PROMPT_MATCH_THRESHOLD,
+  MIN_PROMPT_OVERLAP,
   HUNK_MATCH_THRESHOLD,
   MIN_HUNK_LINES,
+  MAX_AGE_DAYS,
+  MAX_REGISTRY_ENTRIES,
+  MAX_CODE_LINES,
+  MAX_CODE_CHARS,
 } = mod;
 
 const SCRIPT_PATH = path.join(__dirname, '../../user-prompt-submit/dead-end-registry.js');
@@ -357,6 +366,202 @@ describe('Unit: extractDeadEnds', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Unit: false-positive guards (the review's near-miss corpus)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Unit: matchPrompt false-positive guards', () => {
+  it('generic prompt "fix the tests" never matches', () => {
+    const registry = [
+      { fingerprint: 'g', keywords: ['fix', 'tests', 'auth', 'login', 'timeout'] },
+    ];
+    assert.deepStrictEqual(matchPrompt('fix the tests', registry), []);
+  });
+
+  it('does not match on generic-only overlap even when jaccard is high', () => {
+    // Overlap = fix, tests, error (3 shared) — all generic dev words.
+    const registry = [{ fingerprint: 'y', keywords: ['fix', 'tests', 'error', 'websocket'] }];
+    assert.deepStrictEqual(matchPrompt('fix the tests error', registry), []);
+  });
+
+  it('requires at least MIN_PROMPT_OVERLAP shared keywords', () => {
+    assert.ok(MIN_PROMPT_OVERLAP >= 3);
+    // Only 2 shared keywords, even though jaccard would be well above threshold.
+    const registry = [{ fingerprint: 'x', keywords: ['worker', 'threads'] }];
+    assert.deepStrictEqual(matchPrompt('worker threads refactor cleanup', registry), []);
+  });
+
+  it('still matches a specific prompt with distinctive overlap', () => {
+    const registry = [
+      { fingerprint: 'z', keywords: ['websocket', 'reconnect', 'backoff', 'jitter'] },
+    ];
+    const m = matchPrompt('add websocket reconnect with backoff', registry);
+    assert.strictEqual(m.length, 1);
+    assert.strictEqual(m[0].entry.fingerprint, 'z');
+  });
+});
+
+describe('Unit: substantiveLines / matchEdit near-miss corpus', () => {
+  it('substantiveLines drops brackets, comments, and import boilerplate', () => {
+    const lines = substantiveLines(
+      "import fs from 'fs';\nconst path = require('path');\n// setup\n}\n});\nreturn;\nconst pool = createPool(4);"
+    );
+    assert.deepStrictEqual(lines, ['const pool = createpool(4);']);
+  });
+
+  it('does not fire on shared import boilerplate', () => {
+    const registry = [{
+      fingerprint: 'a',
+      code: "import fs from 'fs';\nimport path from 'path';\nimport os from 'os';\nconst cache = buildLruCache(500);",
+    }];
+    const edit = "import fs from 'fs';\nimport path from 'path';\nimport os from 'os';\nconst pool = createWorkerPool(4);";
+    assert.strictEqual(matchEdit(edit, registry), null);
+  });
+
+  it('does not fire on brackets/whitespace-only similarity', () => {
+    const registry = [{ fingerprint: 'b', code: '}\n});\n]\nconst realWork = computeThing(alpha, beta);' }];
+    const edit = '  }\n  });\n]\n\nconst differentWork = renderChart(data);';
+    assert.strictEqual(matchEdit(edit, registry), null);
+  });
+
+  it('does not fire on comment-only overlap', () => {
+    const registry = [{ fingerprint: 'd', code: '// worker pool\n// retries the job\n// with backoff\nconst a = fetchQueue();' }];
+    const edit = '// worker pool\n// retries the job\n// with backoff\nconst b = drainQueue();';
+    assert.strictEqual(matchEdit(edit, registry), null);
+  });
+
+  it('does not fire on similar-but-refactored code sharing only one real line', () => {
+    const registry = [{
+      fingerprint: 'c',
+      code: 'const worker = new Worker(workerPath);\nworker.on("message", onResult);\nworker.postMessage(job);\nreturn worker;',
+    }];
+    const edit = 'const pool = new WorkerPool(workerPath, 4);\npool.schedule(job, onResult);\nworker.postMessage(job);\nreturn pool.stats();';
+    assert.strictEqual(matchEdit(edit, registry), null);
+  });
+
+  it('still fires when a real multi-line hunk is reintroduced verbatim', () => {
+    const code = 'const w = new Worker(p);\nw.on("message", h);\nw.postMessage(j);\nconst result = awaitResult(w);';
+    const registry = [{ fingerprint: 'e', code, date: '2026-07-01', reason: 'reverted', summary: 'worker threads' }];
+    const m = matchEdit(code, registry);
+    assert.ok(m, 'verbatim reintroduction must fire');
+    assert.strictEqual(m.score, 1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unit: mining precision (churn / bug reports / defect mentions ≠ dead ends)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Unit: extractDeadEnds mining precision', () => {
+  it('does not mine a USER bug report ("X is broken") as a dead end', () => {
+    const msgs = [
+      { type: 'user', message: { role: 'user', content: 'the login page is broken and the checkout tests are not working' } },
+    ];
+    assert.deepStrictEqual(extractDeadEnds(msgs), []);
+  });
+
+  it('does not mine a mere mention of a defect noun ("avoids a race condition")', () => {
+    const msgs = [
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Using a mutex here avoids any race condition in the job queue handler.' }] } },
+    ];
+    assert.deepStrictEqual(extractDeadEnds(msgs), []);
+  });
+
+  it('still mines an assistant "didn\'t work, changing course" message', () => {
+    const msgs = [
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: "The worker threads image processing didn't work, switching to a queue instead." }] } },
+    ];
+    const ends = extractDeadEnds(msgs);
+    assert.strictEqual(ends.length, 1);
+    assert.strictEqual(ends[0].reason, "didn't work");
+  });
+
+  it('mined summary is real transcript text, not a placeholder', () => {
+    const ends = extractDeadEnds(makeTranscript());
+    assert.ok(ends[0].summary.toLowerCase().includes('revert') || ends[0].summary.toLowerCase().includes('race'));
+  });
+
+  it('truncates oversized mined code snapshots (secret/size bound)', () => {
+    const bigCode = Array.from({ length: 300 }, (_, i) => `const line${i} = compute(${i});`).join('\n');
+    const msgs = [
+      { type: 'assistant', message: { role: 'assistant', content: [
+        { type: 'text', text: 'adding the worker threads processing pipeline module' },
+        { type: 'tool_use', name: 'Write', input: { content: bigCode } },
+      ] } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'reverting the worker threads processing pipeline change' }] } },
+    ];
+    const withCode = extractDeadEnds(msgs).find((e) => e.code);
+    assert.ok(withCode, 'expected a code-carrying dead end');
+    assert.ok(withCode.code.length <= MAX_CODE_CHARS);
+    assert.ok(withCode.code.split('\n').length <= MAX_CODE_LINES);
+  });
+
+  it('windows the token estimate to the detour, not the whole session', () => {
+    const msgs = [];
+    for (let i = 0; i < 20; i++) {
+      msgs.push({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Implemented the CSS grid layout for the dashboard panels.' }], usage: { input_tokens: 100, output_tokens: 0 } } });
+    }
+    msgs.push({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'reverting the worker threads image processing change' }], usage: { input_tokens: 100, output_tokens: 0 } } });
+    const ends = extractDeadEnds(msgs);
+    assert.strictEqual(ends.length, 1);
+    // Lookback window is 10 messages + the revert message: 11 × 100 tokens,
+    // NOT the whole session's 2100.
+    assert.strictEqual(ends[0].tokens, 1100);
+  });
+
+  it('truncateCode is a no-op for small snippets', () => {
+    assert.strictEqual(truncateCode('const a = 1;\nconst b = 2;'), 'const a = 1;\nconst b = 2;');
+    assert.strictEqual(truncateCode(''), '');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unit: staleness + registry growth bounds
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Unit: staleness / compaction', () => {
+  let tmp;
+  before(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cch-de-stale-')); });
+  after(() => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {} });
+
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  it('isFresh accepts recent, rejects ancient, keeps undated entries', () => {
+    assert.strictEqual(isFresh({ ts: new Date().toISOString() }), true);
+    assert.strictEqual(isFresh({ ts: new Date(Date.now() - (MAX_AGE_DAYS + 10) * dayMs).toISOString() }), false);
+    assert.strictEqual(isFresh({}), true);
+    assert.strictEqual(isFresh({ ts: 'garbage' }), true);
+  });
+
+  it('readRegistry drops entries older than MAX_AGE_DAYS', () => {
+    const file = path.join(tmp, 'stale.jsonl');
+    const old = { fingerprint: 'old', ts: new Date(Date.now() - (MAX_AGE_DAYS + 30) * dayMs).toISOString() };
+    const fresh = { fingerprint: 'fresh', ts: new Date().toISOString() };
+    fs.writeFileSync(file, JSON.stringify(old) + '\n' + JSON.stringify(fresh) + '\n');
+    assert.deepStrictEqual(readRegistry(file).map((e) => e.fingerprint), ['fresh']);
+  });
+
+  it('compactRegistry rewrites an oversized file down to the cap, keeping the newest', () => {
+    const file = path.join(tmp, 'big.jsonl');
+    const lines = [];
+    for (let i = 0; i < MAX_REGISTRY_ENTRIES * 2 + 200; i++) {
+      lines.push(JSON.stringify({ fingerprint: `fp${i}`, ts: new Date().toISOString() }));
+    }
+    fs.writeFileSync(file, lines.join('\n') + '\n');
+    compactRegistry(file);
+    const kept = fs.readFileSync(file, 'utf-8').split('\n').filter(Boolean);
+    assert.strictEqual(kept.length, MAX_REGISTRY_ENTRIES);
+    assert.ok(kept[kept.length - 1].includes(`fp${MAX_REGISTRY_ENTRIES * 2 + 199}`), 'newest entry survives');
+  });
+
+  it('compactRegistry leaves small files untouched', () => {
+    const file = path.join(tmp, 'small.jsonl');
+    fs.writeFileSync(file, JSON.stringify({ fingerprint: 'one' }) + '\n');
+    compactRegistry(file);
+    assert.strictEqual(fs.readFileSync(file, 'utf-8').trim(), JSON.stringify({ fingerprint: 'one' }));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Unit: prompt / edit matching
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -468,6 +673,20 @@ describe('Unit: rendering cards', () => {
     assert.ok(r.includes('DEAD END'));
     assert.ok(r.includes('twice'));
     assert.ok(r.includes('72%'));
+  });
+
+  it('edit reason carries dismissal context: what was tried, when, and why walked back', () => {
+    const r = renderEditReason(entry, 0.9);
+    assert.ok(r.includes('moved image processing to worker threads'), 'summary of what was tried');
+    assert.ok(r.includes('2026-06-12'), 'when');
+    assert.ok(r.includes('race condition in the event loop'), 'why it was walked back');
+  });
+
+  it('token costs are always labeled as estimates', () => {
+    const card = renderPromptCard([{ entry, score: 0.8 }]);
+    assert.ok(/est/i.test(card), 'card labels cost as estimate');
+    const r = renderEditReason(entry, 0.9);
+    assert.ok(/estimated/i.test(r), 'edit reason labels cost as estimate');
   });
 });
 
@@ -622,6 +841,20 @@ describe('Integration: stdin/stdout hook flow', () => {
     } finally {
       fs.rmSync(emptyHome, { recursive: true, force: true });
     }
+  });
+
+  it('a dead end mined in one project does not warn in another (per-cwd scoping)', async () => {
+    // proj-alpha already has the worker-threads dead end; the SAME prompt in a
+    // different cwd must stay silent.
+    const { output } = await runHook(
+      {
+        hook_event_name: 'UserPromptSubmit',
+        cwd: path.join(home, 'proj-other'),
+        prompt: 'lets move image processing to worker threads for performance',
+      },
+      home
+    );
+    assert.deepStrictEqual(output, {});
   });
 
   it('UserPromptSubmit is a no-op for a non-matching prompt', async () => {
