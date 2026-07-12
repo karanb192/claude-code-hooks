@@ -20,7 +20,7 @@ const os = require('node:os');
 const mod = require('../../post-tool-use/dead-rules-audit.js');
 const {
   parseRules, stripMarkdown, displayText, ruleKeywords, isProhibition,
-  isRelevant, judge, scoreDiff, extractAddedText, extractFilePath,
+  isRelevant, judge, scoreDiff, ruleKey, extractAddedText, extractFilePath,
   findClaudeMd, emptyLedger, compliancePct, shouldPromote, rankRules,
   renderScorecard, stripComments, containsToken,
 } = mod;
@@ -90,6 +90,12 @@ describe('Unit: parseRules()', () => {
   });
   it('ignores content inside fenced code blocks', () => {
     assert.ok(!rules.some(r => /fenced/i.test(r.text)));
+  });
+  it('ignores content inside ~~~ fenced blocks too', () => {
+    const md = '~~~\n- Never use `foo` here\n~~~\n\n- Never use `bar` here\n';
+    const parsed = parseRules(md);
+    assert.strictEqual(parsed.length, 1);
+    assert.ok(/bar/.test(parsed[0].text));
   });
   it('marks never/do-not rules as prohibitions', () => {
     const anyRule = rules.find(r => /any type/i.test(r.text));
@@ -177,21 +183,28 @@ describe('Unit: isRelevant() + judge()', () => {
   it('not relevant when no token appears', () => {
     assert.strictEqual(isRelevant(rAny, 'src/x.ts', 'const a: number = 1'), false);
   });
+  it('not relevant when the token only appears as a substring (any vs company)', () => {
+    assert.strictEqual(isRelevant(rAny, 'src/x.ts', 'const company = getCompany()'), false);
+  });
+  it('not relevant when the token is only a path substring (log vs blog.ts)', () => {
+    assert.strictEqual(isRelevant(rConsole, 'src/blog.ts', 'const posts = [];'), false);
+  });
   it('judges a violation when the prohibited token is introduced', () => {
     const v = judge(rConsole, 'app.js', 'console.log("debug")');
     assert.strictEqual(v.relevant, true);
     assert.strictEqual(v.violated, true);
     assert.strictEqual(v.judged, true);
   });
-  it('judges FOLLOWED when relevant but the token is absent', () => {
-    // Relevance via two ordinary keywords, but no prohibited code token present.
+  it('word-only prohibitions are relevant but UN-judgeable (no manufactured violations)', () => {
+    // Relevance via two ordinary keywords, but the rule names no concrete code
+    // token — its violation tokens would be the very words that made it
+    // relevant, so "relevant" would collapse into "violated". Such rules are
+    // advisory: seen, never judged, never violated.
     const [rule] = parseRules('- Never leave debugging statements in committed code');
     const v = judge(rule, 'app.js', 'this code has debugging in a committed context');
     assert.strictEqual(v.relevant, true);
-    // "debugging","committed","code","statements" -> relevant; but prohibition
-    // judgement checks the same tokens, so this WILL count violated. Assert the
-    // shape instead: prohibitions always yield judged=true when relevant.
-    assert.strictEqual(v.judged, true);
+    assert.strictEqual(v.judged, false);
+    assert.strictEqual(v.violated, false);
   });
   it('positive (non-prohibition) rules are relevant-only, never judged', () => {
     const v = judge(rPositive, 'app.jsx', 'a functional components refactor here');
@@ -312,9 +325,9 @@ describe('Unit: scoreDiff() + ledger', () => {
     const led = emptyLedger();
     scoreDiff(led, rules, 'src/a.ts', 'const x: any = 1');
     scoreDiff(led, rules, 'src/b.ts', 'const y: any = 2');
-    const anyRuleId = String(rules.find(r => /any type/i.test(r.text)).id);
-    assert.strictEqual(led.rules[anyRuleId].relevant, 2);
-    assert.strictEqual(led.rules[anyRuleId].violated, 2);
+    const anyRule = rules.find(r => /any type/i.test(r.text));
+    assert.strictEqual(led.rules[ruleKey(anyRule)].relevant, 2);
+    assert.strictEqual(led.rules[ruleKey(anyRule)].violated, 2);
     assert.strictEqual(led.diffs, 2);
   });
 
@@ -327,10 +340,26 @@ describe('Unit: scoreDiff() + ledger', () => {
   it('increments judged only for prohibition rules', () => {
     const led = emptyLedger();
     scoreDiff(led, rules, 'app.jsx', 'a functional components refactor');
-    const posId = String(rules.find(r => /functional components/i.test(r.text)).id);
-    if (led.rules[posId]) {
-      assert.strictEqual(led.rules[posId].judged, 0);
+    const posRule = rules.find(r => /functional components/i.test(r.text));
+    if (led.rules[ruleKey(posRule)]) {
+      assert.strictEqual(led.rules[ruleKey(posRule)].judged, 0);
     }
+  });
+
+  it('keys ledger entries by rule TEXT hash, so renumbering does not split tallies', () => {
+    const led = emptyLedger();
+    const [v1] = parseRules('- Never use `eval` anywhere');
+    scoreDiff(led, [v1], 'a.js', 'eval("x")');
+    // Same rule text re-parsed at a different position (id shifted by an edit).
+    const rules2 = parseRules('- Always run tests first\n- Never use `eval` anywhere');
+    const v2 = rules2.find(r => /eval/.test(r.text));
+    assert.notStrictEqual(v1.id, v2.id);
+    scoreDiff(led, [v2], 'b.js', 'eval("y")');
+    assert.strictEqual(Object.keys(led.rules).length, 1);
+    const entry = led.rules[ruleKey(v2)];
+    assert.strictEqual(entry.relevant, 2);
+    assert.strictEqual(entry.violated, 2);
+    assert.strictEqual(entry.id, v2.id); // display id tracks the latest parse
   });
 });
 
@@ -424,16 +453,21 @@ describe('Unit: findClaudeMd()', () => {
 // Integration: spawn the script with a fresh temp HOME
 // ─────────────────────────────────────────────────────────────────────────────
 
-function runHook(payload, homeDir) {
+function runHook(payload, homeDir, opts = {}) {
+  const { args = [], expectJson = true } = opts;
   return new Promise((resolve, reject) => {
     const env = { ...process.env, HOME: homeDir };
     delete env.CCH_SLA_WEBHOOK;
-    const child = spawn('node', [SCRIPT_PATH], { env });
+    const child = spawn('node', [SCRIPT_PATH, ...args], { env });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += d; });
     child.stderr.on('data', (d) => { stderr += d; });
     child.on('close', (code) => {
+      if (!expectJson) {
+        resolve({ code, output: null, stderr, raw: stdout });
+        return;
+      }
       try {
         resolve({ code, output: JSON.parse(stdout.trim() || '{}'), stderr, raw: stdout });
       } catch (e) {
@@ -544,17 +578,30 @@ describe('Integration: defensive / no-op paths', () => {
   before(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'dra-def-')); });
   after(() => { try { fs.rmSync(home, { recursive: true, force: true }); } catch {} });
 
-  it('malformed JSON stdin => prints scorecard JSON, exit 0, no crash', async () => {
-    const { code, output } = await runHook('not json at all', home);
+  it('malformed JSON stdin => prints exactly {} and exits 0 (never a scorecard)', async () => {
+    const { code, output, raw } = await runHook('xx{bad', home);
     assert.strictEqual(code, 0);
-    // Manual/empty invocation renders the (empty) scorecard.
-    assert.ok(output.systemMessage === undefined || typeof output.systemMessage === 'string');
+    assert.strictEqual(raw.trim(), '{}');
+    assert.deepStrictEqual(output, {});
   });
 
-  it('empty stdin => exit 0 with valid JSON', async () => {
-    const { code, output } = await runHook('', home);
+  it('empty stdin => prints exactly {} and exits 0 (never a scorecard)', async () => {
+    const { code, output, raw } = await runHook('', home);
     assert.strictEqual(code, 0);
-    assert.ok(typeof output === 'object');
+    assert.strictEqual(raw.trim(), '{}');
+    assert.deepStrictEqual(output, {});
+  });
+
+  it('valid JSON without hook_event_name => {} (no implicit render)', async () => {
+    const { code, output } = await runHook({ foo: 'bar' }, home);
+    assert.strictEqual(code, 0);
+    assert.deepStrictEqual(output, {});
+  });
+
+  it('non-object JSON stdin (a bare number) => {} without crashing', async () => {
+    const { code, output } = await runHook('42', home);
+    assert.strictEqual(code, 0);
+    assert.deepStrictEqual(output, {});
   });
 
   it('unknown tool on PostToolUse is a no-op ({})', async () => {
@@ -591,5 +638,55 @@ describe('Integration: defensive / no-op paths', () => {
     const { code, output } = await runHook({ hook_event_name: 'Manual' }, home);
     assert.strictEqual(code, 0);
     assert.ok(output.systemMessage.includes('Dead-Rules Audit'));
+  });
+
+  it('--render flag prints the scorecard without any stdin', async () => {
+    const { code, raw } = await runHook(undefined, home, { args: ['--render'], expectJson: false });
+    assert.strictEqual(code, 0);
+    assert.ok(raw.includes('Dead-Rules Audit'));
+  });
+
+  it('SessionStart prunes stale session parse caches', async () => {
+    const stateDir = path.join(home, '.claude', 'dead-rules-audit');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const stale = path.join(stateDir, 'session-crashed-long-ago.json');
+    fs.writeFileSync(stale, JSON.stringify({ rules: [] }));
+    const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(stale, old, old);
+    const { code } = await runHook({ hook_event_name: 'SessionStart', session_id: 'fresh', cwd: home }, home);
+    assert.strictEqual(code, 0);
+    assert.ok(!fs.existsSync(stale), 'expected the week-old session cache to be pruned');
+  });
+});
+
+describe('Integration: CLAUDE.md edited mid-session is re-parsed (staleness)', () => {
+  let home; let repo;
+  before(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'dra-stale-home-'));
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'dra-stale-repo-'));
+    fs.writeFileSync(path.join(repo, 'CLAUDE.md'), '- Never use `alert` in UI code\n');
+  });
+  after(() => {
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(repo, { recursive: true, force: true }); } catch {}
+  });
+
+  it('picks up rules added to CLAUDE.md after SessionStart', async () => {
+    await runHook({ hook_event_name: 'SessionStart', session_id: 'stale-1', cwd: repo }, home);
+    // Rule does not exist yet: no tally for eval.
+    await runHook({
+      hook_event_name: 'PostToolUse', tool_name: 'Write', session_id: 'stale-1', cwd: repo,
+      tool_input: { file_path: path.join(repo, 'a.js'), content: 'eval("x")' },
+    }, home);
+    // CLAUDE.md grows a new rule mid-session (size/mtime change on disk).
+    fs.appendFileSync(path.join(repo, 'CLAUDE.md'), '- Never use `eval` anywhere\n');
+    await runHook({
+      hook_event_name: 'PostToolUse', tool_name: 'Write', session_id: 'stale-1', cwd: repo,
+      tool_input: { file_path: path.join(repo, 'b.js'), content: 'eval("y")' },
+    }, home);
+    const ledger = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'dead-rules-audit', 'ledger.json'), 'utf-8'));
+    const evalEntry = Object.values(ledger.rules).find(r => /eval/i.test(r.text));
+    assert.ok(evalEntry, 'expected the mid-session rule to be scored after re-parse');
+    assert.strictEqual(evalEntry.violated, 1);
   });
 });

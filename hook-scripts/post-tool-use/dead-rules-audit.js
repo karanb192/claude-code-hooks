@@ -13,15 +13,15 @@
  * Registers on THREE events (branch on hook_event_name):
  *   - SessionStart : parse CLAUDE.md, snapshot which rules loaded this session
  *   - PostToolUse (Edit|Write) : score the diff against each rule, update ledger
- *   - SessionEnd   : render + log the compliance scorecard
- * Invoke with no stdin / a `{"hook_event_name":"Manual"}` payload to just print
- * the scorecard (e.g. a weekly maintenance/cron command). The manual invocation
- * is the most reliable way to SEE the scorecard: it writes the card to
- * `{systemMessage}` which Claude Code surfaces in the terminal. The SessionEnd
- * handler emits the same `{systemMessage}` card; if your Claude Code build does
- * not render SessionEnd systemMessages prominently, run the script manually
- * (`node dead-rules-audit.js < /dev/null`) — the card is always available and
- * every SCORECARD render is also written to ~/.claude/hooks-logs/<date>.jsonl.
+ *   - SessionEnd   : log the compliance scorecard
+ * To SEE the scorecard, run the script manually with the --render flag
+ * (`node dead-rules-audit.js --render`, e.g. as a weekly maintenance/cron
+ * command) or pipe an explicit `{"hook_event_name":"Manual"}` payload. Per the
+ * official hooks docs, SessionEnd does NOT display `systemMessage`, so the
+ * SessionEnd handler persists the full card to ~/.claude/hooks-logs/<date>.jsonl
+ * (SCORECARD entries) instead of pretending the terminal will show it. On
+ * malformed, empty, or unrecognized stdin the hook prints `{}` and exits 0 —
+ * a hook must never turn garbage input into output.
  *
  * COST CAVEAT (verified, issue #11008): hooks do NOT receive token/cost data.
  * The "relevant vs violated" judgement here is a deterministic keyword/pattern
@@ -49,6 +49,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 
 function home() {
   return process.env.HOME || os.homedir();
@@ -65,6 +66,9 @@ const PROMOTE_RATE = 0.5;
 // never keep more than this many rules.
 const MAX_CLAUDE_MD_BYTES = 256 * 1024;
 const MAX_RULES = 200;
+// Session parse caches left behind by crashed sessions (SessionEnd never fired)
+// are pruned after this many milliseconds.
+const SESSION_STATE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function log(data) {
   try {
@@ -144,7 +148,7 @@ function parseRules(mdText) {
   let inFence = false;
   let n = 0;
   for (const rawLine of lines) {
-    const fence = /^\s*```/.test(rawLine);
+    const fence = /^\s*(?:```|~~~)/.test(rawLine);
     if (fence) { inFence = !inFence; continue; }
     if (inFence) continue;
     // A line is a candidate rule only if it is structurally instruction-shaped:
@@ -220,7 +224,9 @@ function extractFilePath(toolInput) {
 }
 
 // A rule is RELEVANT to a change when its distinctive keywords / code tokens
-// appear in either the target file path or the introduced text.
+// appear in either the target file path or the introduced text. Matching is
+// whole-word (containsToken) so `any` does not fire on `company` and `log`
+// does not fire on `blog.ts`.
 function isRelevant(rule, filePath, addedText) {
   const hayFile = (filePath || '').toLowerCase();
   const hayText = (addedText || '').toLowerCase();
@@ -228,11 +234,11 @@ function isRelevant(rule, filePath, addedText) {
   // Code tokens are the highest-signal relevance match.
   for (const c of kw.codey) {
     if (c.startsWith('.') && hayFile.endsWith(c)) return true; // extension rule
-    if (hayText.includes(c) || hayFile.includes(c)) return true;
+    if (containsToken(hayText, c) || containsToken(hayFile, c)) return true;
   }
   let hits = 0;
   for (const w of kw.words) {
-    if (hayText.includes(w) || hayFile.includes(w)) hits += 1;
+    if (containsToken(hayText, w) || containsToken(hayFile, w)) hits += 1;
     if (hits >= 2) return true; // two distinct keyword hits => relevant
   }
   return false;
@@ -265,9 +271,17 @@ function containsToken(hay, token) {
 
 // For a RELEVANT prohibition rule, decide FOLLOWED vs VIOLATED by checking
 // whether the prohibited token was actually introduced as live code (comments
-// are stripped first, matching is whole-word). Non-prohibition rules are counted
-// as relevant-only (we can't deterministically judge them; they still surface as
-// "seen" so the user sees which rules never bind).
+// are stripped first, matching is whole-word).
+//
+// Only prohibitions that name a concrete code token (backticked `identifier` or
+// `.ext`) are judgeable. Everything else is UN-JUDGEABLE and counted as
+// relevant-only (judged=false, never violated):
+//   - non-prohibitions ("Always run tests", "Prefer X over Y") — a diff can't
+//     prove they were followed or broken;
+//   - word-only prohibitions ("Never leave debugging statements") — their
+//     violation tokens would be the same generic words that made them relevant,
+//     so "relevant" would collapse into "violated" and manufacture false
+//     violations. They still surface as "seen" (advisory) on the scorecard.
 //
 // NOTE: this remains a HEURISTIC upper bound on violations — it counts a
 // prohibited token appearing in newly-added live code, which usually but not
@@ -275,19 +289,25 @@ function containsToken(hay, token) {
 function judge(rule, filePath, addedText) {
   const relevant = isRelevant(rule, filePath, addedText);
   if (!relevant) return { relevant: false, violated: false };
-  if (!rule.prohibition) return { relevant: true, violated: false, judged: false };
+  const kw = rule.keywords || { words: [], codey: [] };
+  if (!rule.prohibition || !kw.codey.length) {
+    return { relevant: true, violated: false, judged: false };
+  }
   const codeText = stripComments(addedText || '');
   const hayFile = (filePath || '').toLowerCase();
-  const kw = rule.keywords || { words: [], codey: [] };
   // Violated if a prohibited code token / extension shows up in live code.
   for (const c of kw.codey) {
     if (c.startsWith('.') && hayFile.endsWith(c)) return { relevant: true, violated: true, judged: true };
     if (containsToken(codeText, c)) return { relevant: true, violated: true, judged: true };
   }
-  for (const w of kw.words) {
-    if (containsToken(codeText, w)) return { relevant: true, violated: true, judged: true };
-  }
   return { relevant: true, violated: false, judged: true };
+}
+
+// Ledger entries are keyed by a stable hash of the rule TEXT, not the rule's
+// positional id: ids renumber whenever CLAUDE.md is edited, and the ledger is
+// shared across projects — keying by id would merge unrelated rules' tallies.
+function ruleKey(rule) {
+  return crypto.createHash('sha1').update(String(rule.text)).digest('hex').slice(0, 12);
 }
 
 // Apply one diff to a ledger object (in place) and return the touched rule ids.
@@ -296,12 +316,12 @@ function scoreDiff(ledger, rules, filePath, addedText) {
   for (const rule of rules) {
     const verdict = judge(rule, filePath, addedText);
     if (!verdict.relevant) continue;
-    const key = String(rule.id);
+    const key = ruleKey(rule);
     const entry = ledger.rules[key] || (ledger.rules[key] = {
       id: rule.id, text: rule.text, prohibition: rule.prohibition,
       relevant: 0, violated: 0, judged: 0,
     });
-    entry.text = rule.text; // keep latest text
+    entry.id = rule.id; // display id from the latest parse
     entry.relevant += 1;
     if (verdict.judged) entry.judged += 1;
     if (verdict.violated) entry.violated += 1;
@@ -332,11 +352,18 @@ function loadLedger() {
   return emptyLedger();
 }
 
+// Write-temp-then-rename so a concurrent reader never sees a torn file. This
+// does not serialize concurrent sessions (a simultaneous read-modify-write can
+// still lose one increment) but it guarantees the ledger stays parseable, and a
+// lost tally is self-healing noise in a heuristic counter.
 function saveLedger(ledger) {
   const dir = STATE_DIR();
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   ledger.updated = new Date().toISOString();
-  fs.writeFileSync(ledgerPath(), JSON.stringify(ledger, null, 2));
+  const target = ledgerPath();
+  const tmp = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(ledger, null, 2));
+  fs.renameSync(tmp, target);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -417,11 +444,11 @@ function sessionStatePath(sessionId) {
   return path.join(STATE_DIR(), `session-${safe}.json`);
 }
 
-function loadSessionRules(sessionId) {
+function loadSessionState(sessionId) {
   try {
     const raw = fs.readFileSync(sessionStatePath(sessionId), 'utf-8');
     const parsed = JSON.parse(raw);
-    if (parsed && Array.isArray(parsed.rules)) return parsed.rules;
+    if (parsed && Array.isArray(parsed.rules)) return parsed;
   } catch {}
   return null;
 }
@@ -429,19 +456,57 @@ function loadSessionRules(sessionId) {
 function saveSessionRules(sessionId, rules, source) {
   const dir = STATE_DIR();
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(sessionStatePath(sessionId), JSON.stringify({ source, ts: new Date().toISOString(), rules }));
+  let mtimeMs = null;
+  let size = null;
+  if (source) {
+    try {
+      const st = fs.statSync(source);
+      mtimeMs = st.mtimeMs;
+      size = st.size;
+    } catch {}
+  }
+  fs.writeFileSync(
+    sessionStatePath(sessionId),
+    JSON.stringify({ source, mtimeMs, size, ts: new Date().toISOString(), rules })
+  );
+}
+
+// Remove parse caches abandoned by crashed sessions (SessionEnd never fired),
+// so ~/.claude/dead-rules-audit does not grow without bound.
+function pruneStaleSessionState() {
+  try {
+    const dir = STATE_DIR();
+    const cutoff = Date.now() - SESSION_STATE_TTL_MS;
+    for (const f of fs.readdirSync(dir)) {
+      if (!/^session-.*\.json$/.test(f)) continue;
+      const p = path.join(dir, f);
+      try {
+        if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p);
+      } catch {}
+    }
+  } catch {}
 }
 
 // Rebuild the session's rule set lazily if SessionStart never ran (e.g. hook
-// only registered on PostToolUse). Cheap and cost-bounded.
+// only registered on PostToolUse), and re-parse when CLAUDE.md changed on disk
+// mid-session (mtime/size drift) so the session never scores against stale
+// rules. Cheap and cost-bounded: one stat per PostToolUse.
 function ensureSessionRules(sessionId, cwd) {
-  let rules = loadSessionRules(sessionId);
-  if (rules) return rules;
+  const state = loadSessionState(sessionId);
+  if (state) {
+    if (!state.source) return state.rules; // no CLAUDE.md at parse time
+    try {
+      const st = fs.statSync(state.source);
+      if (st.mtimeMs === state.mtimeMs && st.size === state.size) return state.rules;
+    } catch {
+      // Source vanished — fall through and re-resolve from scratch.
+    }
+  }
   const mdPath = findClaudeMd(cwd);
   if (!mdPath) { saveSessionRules(sessionId, [], null); return []; }
   let text = '';
   try { text = fs.readFileSync(mdPath, 'utf-8'); } catch { return []; }
-  rules = parseRules(text);
+  const rules = parseRules(text);
   saveSessionRules(sessionId, rules, mdPath);
   return rules;
 }
@@ -451,6 +516,7 @@ function ensureSessionRules(sessionId, cwd) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function handleSessionStart(data) {
+  pruneStaleSessionState();
   const mdPath = findClaudeMd(data.cwd);
   if (!mdPath) {
     saveSessionRules(data.session_id, [], null);
@@ -492,14 +558,15 @@ function handleSessionEnd(data) {
   saveLedger(ledger);
   const card = renderScorecard(ledger);
   const promote = rankRules(ledger).filter(shouldPromote);
+  // Per the hooks docs, SessionEnd does not display systemMessage — the session
+  // is over. Persist the full card to the JSONL log (retrievable any time, and
+  // re-renderable via `node dead-rules-audit.js --render`), then clean up this
+  // session's parse cache. We still return the card as a systemMessage: it is
+  // ignored by current builds but harmless, and keeps the payload inspectable.
   log({
     level: 'SCORECARD', session_id: data.session_id, tracked: Object.keys(ledger.rules).length,
-    promote: promote.map(r => r.id),
+    promote: promote.map(r => r.id), card,
   });
-  // SessionEnd cannot inject context; surface the card as a systemMessage so it
-  // prints in the terminal (the same card is also logged as SCORECARD, and is
-  // re-renderable any time via a manual invocation), then clean up this
-  // session's parse cache.
   try { fs.unlinkSync(sessionStatePath(data.session_id)); } catch {}
   return { systemMessage: '\n' + card + '\n' };
 }
@@ -511,6 +578,17 @@ async function readStdin() {
 }
 
 async function main() {
+  // Explicit manual invocation: `node dead-rules-audit.js --render` prints the
+  // scorecard without reading stdin. This is the ONLY no-stdin render path.
+  if (process.argv.includes('--render')) {
+    try {
+      process.stdout.write('\n' + renderScorecard(loadLedger()) + '\n');
+    } catch {
+      process.stdout.write('{}');
+    }
+    return;
+  }
+
   let input = '';
   try {
     input = await readStdin();
@@ -523,25 +601,24 @@ async function main() {
   try {
     data = JSON.parse(input);
   } catch {
-    // No/invalid stdin => manual maintenance invocation: just print the card.
-    try {
-      const card = renderScorecard(loadLedger());
-      process.stdout.write(JSON.stringify({ systemMessage: '\n' + card + '\n' }));
-    } catch {
-      process.stdout.write('{}');
-    }
+    // Empty or malformed stdin is NOT a render request — a hook must never turn
+    // garbage input into a scorecard. Emit a no-op and exit cleanly.
+    process.stdout.write('{}');
     return;
   }
 
   try {
-    const event = data.hook_event_name;
+    const event = data && data.hook_event_name;
     let out = {};
     if (event === 'SessionStart') out = handleSessionStart(data);
     else if (event === 'PostToolUse') out = handlePostToolUse(data);
     else if (event === 'SessionEnd') out = handleSessionEnd(data);
-    else if (event === 'Manual' || event === undefined) {
+    else if (event === 'Manual') {
+      // Explicit, well-formed manual payload — the documented scripted way to
+      // fetch the card as hook-shaped JSON.
       out = { systemMessage: '\n' + renderScorecard(loadLedger()) + '\n' };
     }
+    // Any other/missing event name is a deliberate no-op ({}).
     process.stdout.write(JSON.stringify(out || {}));
   } catch (e) {
     log({ level: 'ERROR', error: e && e.message });
@@ -555,7 +632,7 @@ if (require.main === module) {
   module.exports = {
     parseRules, stripMarkdown, displayText, ruleKeywords, isProhibition, isRelevant, judge,
     stripComments, containsToken,
-    scoreDiff, extractAddedText, extractFilePath, findClaudeMd,
+    scoreDiff, ruleKey, extractAddedText, extractFilePath, findClaudeMd,
     emptyLedger, compliancePct, shouldPromote, rankRules, renderScorecard,
     PROMOTE_MIN_VIOLATIONS, PROMOTE_RATE,
     handleSessionStart, handlePostToolUse, handleSessionEnd,

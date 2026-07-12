@@ -53,7 +53,7 @@ Runs **after** Claude executes a tool. Can react to results.
 | -------------------------------------------------------- | ------------- | ----------------------------------------------------------------------------- |
 | [auto-stage](hook-scripts/post-tool-use/auto-stage.js)   | `Edit\|Write` | Automatically git stages files after Claude modifies them                     |
 | [format-code](hook-scripts/post-tool-use/format-code.js) | `Write\|Edit` | Auto-formats Python (ruff) and JS/TS/HTML/JSON/MD/YAML (prettier) after edits |
-| [dead-rules-audit](hook-scripts/post-tool-use/dead-rules-audit.js) | `Edit\|Write` | Scores per-rule CLAUDE.md compliance (also SessionStart + SessionEnd) and renders a worst-first scorecard with promote-to-hook hints |
+| [dead-rules-audit](hook-scripts/post-tool-use/dead-rules-audit.js) | `Edit\|Write` | Scores per-rule CLAUDE.md compliance (also SessionStart + SessionEnd); run with `--render` for a worst-first scorecard with promote-to-hook hints |
 
 ### Notification
 
