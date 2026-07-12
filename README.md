@@ -62,6 +62,14 @@ Fires when Claude needs user attention.
 | ------------------------------------------------------------------- | -------------------------------- | ------------------------------------------ |
 | [notify-permission](hook-scripts/notification/notify-permission.js) | `permission_prompt\|idle_prompt` | Sends Slack alerts when Claude needs input |
 
+### User-Prompt-Submit
+
+Fires on `UserPromptSubmit` (match + warn), `Stop`/`SubagentStop`/`PreCompact` (mine the transcript), and `PreToolUse` `Edit\|Write` (ask before reintroducing a reverted change).
+
+| Hook                                                                             | Matcher                                       | Description                                                                       |
+| -------------------------------------------------------------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------- |
+| [dead-end-registry](hook-scripts/user-prompt-submit/dead-end-registry.js)        | `UserPromptSubmit\|Stop\|SubagentStop\|PreCompact\|PreToolUse` | Remembers tried-and-reverted approaches (reason + token cost) and warns on retries |
+
 ### Utils
 
 Tools to help you build and debug hooks.
