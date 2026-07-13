@@ -13,15 +13,16 @@
  * Registers on THREE events (branch on hook_event_name):
  *   - SessionStart : parse CLAUDE.md, snapshot which rules loaded this session
  *   - PostToolUse (Edit|Write) : score the diff against each rule, update ledger
- *   - SessionEnd   : log the compliance scorecard
- * To SEE the scorecard, run the script manually with the --render flag
- * (`node dead-rules-audit.js --render`, e.g. as a weekly maintenance/cron
- * command) or pipe an explicit `{"hook_event_name":"Manual"}` payload. Per the
- * official hooks docs, SessionEnd does NOT display `systemMessage`, so the
- * SessionEnd handler persists the full card to ~/.claude/hooks-logs/<date>.jsonl
- * (SCORECARD entries) instead of pretending the terminal will show it. On
- * malformed, empty, or unrecognized stdin the hook prints `{}` and exits 0 —
- * a hook must never turn garbage input into output.
+ *   - SessionEnd   : render the compliance scorecard via `systemMessage`
+ * The SessionEnd scorecard is surfaced to you through `systemMessage` (a
+ * universal hook-output field the docs show to the user across all events) and
+ * is ALSO persisted to ~/.claude/hooks-logs/<date>.jsonl (SCORECARD entries) so
+ * it stays durable and re-viewable. You can re-render on demand any time with
+ * the --render flag (`node dead-rules-audit.js --render`, e.g. as a weekly
+ * maintenance/cron command) or by piping an explicit
+ * `{"hook_event_name":"Manual"}` payload. On malformed, empty, or unrecognized
+ * stdin the hook prints `{}` and exits 0 — a hook must never turn garbage input
+ * into output.
  *
  * COST CAVEAT (verified, issue #11008): hooks do NOT receive token/cost data.
  * The "relevant vs violated" judgement here is a deterministic keyword/pattern
@@ -558,11 +559,10 @@ function handleSessionEnd(data) {
   saveLedger(ledger);
   const card = renderScorecard(ledger);
   const promote = rankRules(ledger).filter(shouldPromote);
-  // Per the hooks docs, SessionEnd does not display systemMessage — the session
-  // is over. Persist the full card to the JSONL log (retrievable any time, and
-  // re-renderable via `node dead-rules-audit.js --render`), then clean up this
-  // session's parse cache. We still return the card as a systemMessage: it is
-  // ignored by current builds but harmless, and keeps the payload inspectable.
+  // Surface the scorecard to the user via systemMessage (a universal hook-output
+  // field the docs display across all events) AND persist the full card to the
+  // JSONL log so it stays durable and re-renderable via
+  // `node dead-rules-audit.js --render`. Then clean up this session's parse cache.
   log({
     level: 'SCORECARD', session_id: data.session_id, tracked: Object.keys(ledger.rules).length,
     promote: promote.map(r => r.id), card,
