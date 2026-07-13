@@ -482,7 +482,7 @@ function renderCli() {
     if (!rows.length) {
       process.stdout.write(
         'No context-cost data recorded yet for this repo.\n' +
-        'Keep using Claude Code here (the PostToolUse hook records as you go), then run /context-hogs again.\n'
+        'Keep using Claude Code here (the PostToolUse hook records as you go), then run /context-hogs:leaderboard again.\n'
       );
       return;
     }
