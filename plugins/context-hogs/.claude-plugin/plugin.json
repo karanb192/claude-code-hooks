@@ -10,5 +10,5 @@
   "license": "MIT",
   "keywords": ["claude-code", "hooks", "cost", "context", "observability", "posttooluse"],
   "hooks": "./hooks/hooks.json",
-  "commands": ["./commands/"]
+  "skills": ["./skills/"]
 }

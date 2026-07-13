@@ -1,11 +1,12 @@
 ---
+name: leaderboard
 description: Show this repo's context-cost leaderboard — the files that pulled the most tokens into context
 disable-model-invocation: true
 ---
 
 # Context-cost leaderboard
 
-!`node "${CLAUDE_SKILL_DIR}/../context-hogs.js" --render`
+!`node "${CLAUDE_SKILL_DIR}/../../context-hogs.js" --render 2>/dev/null || node "${CLAUDE_PLUGIN_ROOT}/context-hogs.js" --render`
 
 The table above is this repository's most token-expensive files, aggregated across
 your recent sessions (read count, cumulative tokens, estimated cost). It is produced

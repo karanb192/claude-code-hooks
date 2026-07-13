@@ -97,9 +97,9 @@ This repo is also a **Claude Code plugin marketplace**, so you can install a sin
 
 | Plugin                               | What it does                                                                                                                              | Command                                     |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| [context-hogs](plugins/context-hogs) | Per-file context-cost leaderboard — attributes each tool result's tokens to the files it loaded, so you see which files cost you the most | `/context-hogs` renders the board on demand |
+| [context-hogs](plugins/context-hogs) | Per-file context-cost leaderboard — attributes each tool result's tokens to the files it loaded, so you see which files cost you the most | `/context-hogs:leaderboard` renders the board on demand |
 
-> ⚡ The `context-hogs` PostToolUse hook is **async** — it records in the background and adds **zero latency** to a tool call. The SessionEnd summary and the `/context-hogs` command render the leaderboard.
+> ⚡ The `context-hogs` PostToolUse hook is **async** — it records in the background and adds **zero latency** to a tool call. The SessionEnd summary and the `/context-hogs:leaderboard` command render the leaderboard.
 
 The hooks listed above under [🪝 Hooks](#-hooks) install the classic way (copy the script + add to `settings.json`); more are being packaged as plugins.
 
