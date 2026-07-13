@@ -13,7 +13,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const mod = require('../../post-tool-use/context-hogs.js');
+const mod = require('../context-hogs.js');
 const {
   estimateTokens,
   estimateDollars,
@@ -29,7 +29,7 @@ const {
   fmtDollars,
 } = mod;
 
-const SCRIPT_PATH = path.join(__dirname, '../../post-tool-use/context-hogs.js');
+const SCRIPT_PATH = path.join(__dirname, '../context-hogs.js');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Spawn helper — always runs with a fresh temp HOME so the real home dir is
@@ -623,3 +623,74 @@ function countLedger(home, cwd) {
   if (!fs.existsSync(ledger)) return 0;
   return fs.readFileSync(ledger, 'utf8').trim().split('\n').filter(Boolean).length;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Integration: --render CLI (powers the /context-hogs plugin command)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Spawn the script with --render and a real process.cwd() (the leaderboard reads
+// the ledger for the current working directory, not a stdin cwd). Returns raw
+// stdout (a plain-text card, not JSON).
+function runRender(home, cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('node', [SCRIPT_PATH, '--render'], {
+      cwd,
+      env: { ...process.env, HOME: home, USERPROFILE: home },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+describe('Integration: --render CLI', () => {
+  let home;
+  before(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-render-')); });
+  after(() => { try { fs.rmSync(home, { recursive: true, force: true }); } catch {} });
+
+  it('prints a friendly no-data message and exits 0 when the ledger is empty', async () => {
+    // realpathSync: on macOS mktemp lives under /var → /private/var symlink, and
+    // the spawned --render sees the resolved process.cwd(); canonicalize so the
+    // seeded ledger key (stdin cwd) and the render key (process.cwd()) match.
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-repo-')));
+    const { code, stdout } = await runRender(home, repo);
+    assert.strictEqual(code, 0);
+    assert.match(stdout, /No context-cost data recorded yet/i);
+  });
+
+  it('renders the leaderboard card for the current repo after data is recorded', async () => {
+    // Seed a ledger row via a real PostToolUse Read on this repo, then render it.
+    // realpathSync: on macOS mktemp lives under /var → /private/var symlink, and
+    // the spawned --render sees the resolved process.cwd(); canonicalize so the
+    // seeded ledger key (stdin cwd) and the render key (process.cwd()) match.
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-repo-')));
+    await runHook(
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Read',
+        tool_input: { file_path: path.join(repo, 'src/huge-utils.ts') },
+        tool_response: { type: 'text', file: { content: 'x'.repeat(40000) } },
+        cwd: repo,
+      },
+      home
+    );
+    assert.ok(countLedger(home, repo) > 0, 'precondition: a ledger row was recorded');
+
+    const { code, stdout } = await runRender(home, repo);
+    assert.strictEqual(code, 0);
+    assert.match(stdout, /huge-utils\.ts/, 'the recorded file should appear in the rendered card');
+    assert.doesNotMatch(stdout, /No context-cost data/i);
+  });
+
+  it('never throws on --render — output is plain text, not a hook JSON envelope', async () => {
+    // realpathSync: on macOS mktemp lives under /var → /private/var symlink, and
+    // the spawned --render sees the resolved process.cwd(); canonicalize so the
+    // seeded ledger key (stdin cwd) and the render key (process.cwd()) match.
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ch-repo-')));
+    const { code, stdout } = await runRender(home, repo);
+    assert.strictEqual(code, 0);
+    assert.doesNotMatch(stdout.trim(), /^\{/, 'render output is a human card, not JSON');
+  });
+});

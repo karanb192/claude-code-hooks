@@ -472,8 +472,34 @@ async function main() {
   }
 }
 
+// On-demand leaderboard for the CURRENT repo — invoked by the /context-hogs
+// command (`node context-hogs.js --render`). Prints the same card the SessionEnd
+// hook renders, straight to stdout, so you never have to wait for session end.
+function renderCli() {
+  try {
+    const cwd = process.cwd();
+    const rows = readLedger(cwd);
+    if (!rows.length) {
+      process.stdout.write(
+        'No context-cost data recorded yet for this repo.\n' +
+        'Keep using Claude Code here (the PostToolUse hook records as you go), then run /context-hogs again.\n'
+      );
+      return;
+    }
+    const agg = aggregate(rows);
+    const meta = { repo: path.basename(cwd || '') || undefined };
+    process.stdout.write(renderCard(agg, meta) + '\n');
+  } catch (e) {
+    process.stdout.write('context-hogs: could not render leaderboard (' + e.message + ')\n');
+  }
+}
+
 if (require.main === module) {
-  main();
+  if (process.argv.includes('--render')) {
+    renderCli();
+  } else {
+    main();
+  }
 } else {
   module.exports = {
     estimateTokens,
@@ -491,6 +517,7 @@ if (require.main === module) {
     OFFENDER_PATTERNS,
     handlePostToolUse,
     handleSessionEnd,
+    renderCli,
     stateDir,
     readLedger,
     compactLedger,
