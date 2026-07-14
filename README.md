@@ -73,6 +73,10 @@ Fires on session boundaries — capture outcomes and inject context across sessi
 
 > 🔌 **`nerf-receipts`** (personal model-quality flight recorder) and **`standup-autopilot`** (writes your daily standup from what your agents actually did; re-injects open blockers) now ship as installable **plugins** — see [Install as a plugin](#-install-as-a-plugin).
 
+### User-Prompt-Submit
+
+> 🔌 **`dead-end-registry`** (remembers approaches you tried and reverted, then warns before you retry them) now ships as an installable **plugin** — see [Install as a plugin](#-install-as-a-plugin).
+
 ### Utils
 
 Tools to help you build and debug hooks.
@@ -110,6 +114,7 @@ This repo is also a **Claude Code plugin marketplace**, so you can install a sin
 | [dead-rules-audit](plugins/dead-rules-audit) | CLAUDE.md compliance scorecard — tallies which rules Claude follows vs ignores as you edit (SessionStart + PostToolUse + SessionEnd), and flags chronically-ignored rules to promote into a deterministic hook | `/dead-rules-audit:scorecard` renders the scorecard on demand |
 | [pr-provenance-stamp](plugins/pr-provenance-stamp) | Stamps a provenance receipt (prompts, est. spend, tests run, agent-authored lines) into your PR body when Claude runs `gh pr create` | `/pr-provenance-stamp:receipt` renders the receipt on demand |
 | [standup-autopilot](plugins/standup-autopilot) | Writes your daily standup from what your agents actually did across repos — captures tasks, tests, PRs, and blockers from session transcripts and re-injects yesterday's open blockers next session | `/standup-autopilot:standup` renders today's card on demand |
+| [dead-end-registry](plugins/dead-end-registry) | Remembers approaches you tried and reverted (reason + estimated token cost) and warns before you retry them — a prompt-submit card plus an ask-before-edit guard | `/dead-end-registry:dead-ends` renders the registry on demand |
 
 > ⚡ The `context-hogs` PostToolUse hook is **async** — it records in the background and adds **zero latency** to a tool call. The SessionEnd summary and the `/context-hogs:leaderboard` command render the leaderboard.
 

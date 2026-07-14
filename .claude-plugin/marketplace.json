@@ -74,6 +74,20 @@
         "sessionend",
         "hooks"
       ]
+    },
+    {
+      "name": "dead-end-registry",
+      "source": "./plugins/dead-end-registry",
+      "description": "Remembers approaches you tried and reverted (with reason and estimated token cost) and warns before you retry them — via a prompt-submit card and an ask-before-edit guard.",
+      "category": "memory",
+      "tags": [
+        "memory",
+        "context",
+        "negative-knowledge",
+        "hooks",
+        "userpromptsubmit",
+        "pretooluse"
+      ]
     }
   ]
 }

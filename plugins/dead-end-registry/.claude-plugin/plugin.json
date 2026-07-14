@@ -1,0 +1,12 @@
+{
+  "name": "dead-end-registry",
+  "description": "Approach-level negative-knowledge memory for Claude Code. Mines your transcripts (Stop/PreCompact, both async and zero added latency) for approaches you TRIED and then REVERTED — with the reason, date, and estimated token cost of the detour — into a per-repo registry. On UserPromptSubmit it injects a 'you already tried this' warning card when a new prompt matches a recorded dead end; on PreToolUse (Edit|Write) it asks before an edit reintroduces a previously-reverted hunk. Review the registry any time with /dead-end-registry:dead-ends.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": ["claude-code", "hooks", "memory", "context", "negative-knowledge", "userpromptsubmit", "pretooluse", "stop", "subagentstop", "precompact"]
+}
