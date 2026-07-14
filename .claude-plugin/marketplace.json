@@ -15,6 +15,13 @@
       "tags": ["cost", "observability", "context", "hooks", "posttooluse"]
     },
     {
+      "name": "nerf-receipts",
+      "source": "./plugins/nerf-receipts",
+      "description": "A personal flight recorder for Claude Code quality — records your own per-session failure rate, edit churn, and tokens/task by model version, and flags real shifts when a model changes.",
+      "category": "observability",
+      "tags": ["quality", "observability", "model-drift", "hooks", "sessionend"]
+    },
+    {
       "name": "dead-rules-audit",
       "source": "./plugins/dead-rules-audit",
       "description": "CLAUDE.md compliance scorecard — tallies which rules Claude actually follows vs ignores as you edit, and flags chronically-ignored rules to promote into a deterministic hook.",
