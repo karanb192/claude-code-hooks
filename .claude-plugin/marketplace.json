@@ -88,6 +88,20 @@
         "userpromptsubmit",
         "pretooluse"
       ]
+    },
+    {
+      "name": "bounty-board",
+      "source": "./plugins/bounty-board",
+      "description": "Prices your repo's TODO/FIXME/HACK debt as aging XP bounties, injects the top 3 as opportunistic side quests, and verifies + pays out bounties you genuinely clear.",
+      "category": "productivity",
+      "tags": [
+        "tech-debt",
+        "todo",
+        "gamification",
+        "hooks",
+        "sessionstart",
+        "posttooluse"
+      ]
     }
   ]
 }

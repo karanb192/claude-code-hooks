@@ -59,6 +59,12 @@ Runs **after** Claude executes a tool. Can react to results.
 
 > 🔌 **`dead-rules-audit`** (CLAUDE.md compliance scorecard) now ships as an installable **plugin** — see [Install as a plugin](#-install-as-a-plugin).
 
+### Session-Start
+
+Runs when a session starts. Can inject context for the session.
+
+> 🔌 **`bounty-board`** (repo TODO/FIXME/HACK debt priced as aging XP bounties) now ships as an installable **plugin** — see [Install as a plugin](#-install-as-a-plugin).
+
 ### Notification
 
 Fires when Claude needs user attention.
@@ -115,6 +121,7 @@ This repo is also a **Claude Code plugin marketplace**, so you can install a sin
 | [pr-provenance-stamp](plugins/pr-provenance-stamp) | Stamps a provenance receipt (prompts, est. spend, tests run, agent-authored lines) into your PR body when Claude runs `gh pr create` | `/pr-provenance-stamp:receipt` renders the receipt on demand |
 | [standup-autopilot](plugins/standup-autopilot) | Writes your daily standup from what your agents actually did across repos — captures tasks, tests, PRs, and blockers from session transcripts and re-injects yesterday's open blockers next session | `/standup-autopilot:standup` renders today's card on demand |
 | [dead-end-registry](plugins/dead-end-registry) | Remembers approaches you tried and reverted (reason + estimated token cost) and warns before you retry them — a prompt-submit card plus an ask-before-edit guard | `/dead-end-registry:dead-ends` renders the registry on demand |
+| [bounty-board](plugins/bounty-board) | Prices your repo's TODO/FIXME/HACK/skip debt as aging XP bounties, injects the top 3 as opportunistic side quests, and verifies + pays out bounties you genuinely clear | `/bounty-board:board` renders the board on demand |
 
 > ⚡ The `context-hogs` PostToolUse hook is **async** — it records in the background and adds **zero latency** to a tool call. The SessionEnd summary and the `/context-hogs:leaderboard` command render the leaderboard.
 
