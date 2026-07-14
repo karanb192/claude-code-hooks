@@ -17,15 +17,15 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 
-const mod = require('../../post-tool-use/dead-rules-audit.js');
+const mod = require('../dead-rules-audit.js');
 const {
   parseRules, stripMarkdown, displayText, ruleKeywords, isProhibition,
   isRelevant, judge, scoreDiff, ruleKey, extractAddedText, extractFilePath,
   findClaudeMd, emptyLedger, compliancePct, shouldPromote, rankRules,
-  renderScorecard, stripComments, containsToken,
+  renderScorecard, stripComments, containsToken, renderCli,
 } = mod;
 
-const SCRIPT_PATH = path.join(__dirname, '../../post-tool-use/dead-rules-audit.js');
+const SCRIPT_PATH = path.join(__dirname, '../dead-rules-audit.js');
 
 const SAMPLE_MD = `# Project Rules
 
@@ -688,5 +688,61 @@ describe('Integration: CLAUDE.md edited mid-session is re-parsed (staleness)', (
     const evalEntry = Object.values(ledger.rules).find(r => /eval/i.test(r.text));
     assert.ok(evalEntry, 'expected the mid-session rule to be scored after re-parse');
     assert.strictEqual(evalEntry.violated, 1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Integration: --render CLI / renderCli() — powers /dead-rules-audit:scorecard
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Integration: --render CLI (renderCli)', () => {
+  it('exports renderCli as a function', () => {
+    assert.strictEqual(typeof renderCli, 'function');
+  });
+
+  it('empty state: prints the friendly empty-state card and exits 0', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dra-render-empty-'));
+    try {
+      const { code, raw } = await runHook(undefined, home, { args: ['--render'], expectJson: false });
+      assert.strictEqual(code, 0);
+      assert.ok(raw.includes('Dead-Rules Audit'), 'expected the scorecard header');
+      assert.ok(raw.includes('No rules have been exercised'), 'expected the empty-state line');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('populated state: renders recorded rules after a real hook run', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dra-render-home-'));
+    // realpathSync: on macOS mkdtemp lives under /var → /private/var symlink and
+    // the spawned hook resolves cwd; canonicalize so CLAUDE.md discovery is stable.
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dra-render-repo-')));
+    fs.writeFileSync(path.join(repo, 'CLAUDE.md'), SAMPLE_MD);
+    try {
+      await runHook({ hook_event_name: 'SessionStart', session_id: 'r-1', cwd: repo }, home);
+      await runHook({
+        hook_event_name: 'PostToolUse', tool_name: 'Edit', session_id: 'r-1', cwd: repo,
+        tool_input: { file_path: path.join(repo, 'src/a.ts'), new_string: 'const x: any = 1;' },
+      }, home);
+      const { code, raw } = await runHook(undefined, home, { args: ['--render'], expectJson: false });
+      assert.strictEqual(code, 0);
+      assert.ok(raw.includes('Dead-Rules Audit'));
+      assert.ok(/any type/i.test(raw), 'the recorded rule should appear in the rendered card');
+      assert.ok(!raw.includes('No rules have been exercised'), 'card should show data, not the empty state');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('never throws on --render — output is plain text, not a hook JSON envelope', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dra-render-json-'));
+    try {
+      const { code, raw } = await runHook(undefined, home, { args: ['--render'], expectJson: false });
+      assert.strictEqual(code, 0);
+      assert.ok(!raw.trim().startsWith('{'), 'render output is a human card, not a JSON envelope');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });

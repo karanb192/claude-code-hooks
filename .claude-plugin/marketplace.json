@@ -13,6 +13,13 @@
       "description": "Per-file context-cost leaderboard — attributes every tool result's tokens to the files it loaded, so you know which files cost you the most.",
       "category": "cost",
       "tags": ["cost", "observability", "context", "hooks", "posttooluse"]
+    },
+    {
+      "name": "dead-rules-audit",
+      "source": "./plugins/dead-rules-audit",
+      "description": "CLAUDE.md compliance scorecard — tallies which rules Claude actually follows vs ignores as you edit, and flags chronically-ignored rules to promote into a deterministic hook.",
+      "category": "observability",
+      "tags": ["compliance", "claude-md", "observability", "hooks", "posttooluse", "sessionstart", "sessionend"]
     }
   ]
 }

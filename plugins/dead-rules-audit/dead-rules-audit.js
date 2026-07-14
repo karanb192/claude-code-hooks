@@ -45,6 +45,9 @@
  *     }]
  *   }
  * }
+ *
+ * Or install as a plugin (no settings.json edit needed):
+ *   /plugin install dead-rules-audit@claude-code-hooks
  */
 
 const fs = require('fs');
@@ -577,18 +580,22 @@ async function readStdin() {
   return input;
 }
 
-async function main() {
-  // Explicit manual invocation: `node dead-rules-audit.js --render` prints the
-  // scorecard without reading stdin. This is the ONLY no-stdin render path.
-  if (process.argv.includes('--render')) {
-    try {
-      process.stdout.write('\n' + renderScorecard(loadLedger()) + '\n');
-    } catch {
-      process.stdout.write('{}');
-    }
-    return;
+// On-demand scorecard for manual invocation — `node dead-rules-audit.js --render`
+// prints the same worst-first card the SessionEnd hook renders, straight to
+// stdout (plain text, never a hook JSON envelope), without reading stdin. This is
+// the ONLY no-stdin render path and it powers the /dead-rules-audit:scorecard
+// skill. It degrades to a friendly message on empty state and NEVER throws.
+function renderCli() {
+  try {
+    process.stdout.write('\n' + renderScorecard(loadLedger()) + '\n');
+  } catch (e) {
+    process.stdout.write(
+      '\ndead-rules-audit: could not render scorecard (' + (e && e.message) + ')\n'
+    );
   }
+}
 
+async function main() {
   let input = '';
   try {
     input = await readStdin();
@@ -627,7 +634,11 @@ async function main() {
 }
 
 if (require.main === module) {
-  main();
+  if (process.argv.includes('--render')) {
+    renderCli();
+  } else {
+    main();
+  }
 } else {
   module.exports = {
     parseRules, stripMarkdown, displayText, ruleKeywords, isProhibition, isRelevant, judge,
@@ -636,5 +647,6 @@ if (require.main === module) {
     emptyLedger, compliancePct, shouldPromote, rankRules, renderScorecard,
     PROMOTE_MIN_VIOLATIONS, PROMOTE_RATE,
     handleSessionStart, handlePostToolUse, handleSessionEnd,
+    renderCli,
   };
 }

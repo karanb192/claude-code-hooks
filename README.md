@@ -54,9 +54,10 @@ Runs **after** Claude executes a tool. Can react to results.
 | -------------------------------------------------------- | ------------- | ----------------------------------------------------------------------------- |
 | [auto-stage](hook-scripts/post-tool-use/auto-stage.js)   | `Edit\|Write` | Automatically git stages files after Claude modifies them                     |
 | [format-code](hook-scripts/post-tool-use/format-code.js) | `Write\|Edit` | Auto-formats Python (ruff) and JS/TS/HTML/JSON/MD/YAML (prettier) after edits |
-| [dead-rules-audit](hook-scripts/post-tool-use/dead-rules-audit.js) | `Edit\|Write` | Scores per-rule CLAUDE.md compliance (also SessionStart + SessionEnd); run with `--render` for a worst-first scorecard with promote-to-hook hints |
 
 > 🔌 **`context-hogs`** (per-file context-cost leaderboard) now ships as an installable **plugin** — see [Install as a plugin](#-install-as-a-plugin).
+
+> 🔌 **`dead-rules-audit`** (CLAUDE.md compliance scorecard) now ships as an installable **plugin** — see [Install as a plugin](#-install-as-a-plugin).
 
 ### Notification
 
@@ -99,6 +100,7 @@ This repo is also a **Claude Code plugin marketplace**, so you can install a sin
 | Plugin                               | What it does                                                                                                                              | Command                                     |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
 | [context-hogs](plugins/context-hogs) | Per-file context-cost leaderboard — attributes each tool result's tokens to the files it loaded, so you see which files cost you the most | `/context-hogs:leaderboard` renders the board on demand |
+| [dead-rules-audit](plugins/dead-rules-audit) | CLAUDE.md compliance scorecard — tallies which rules Claude follows vs ignores as you edit (SessionStart + PostToolUse + SessionEnd), and flags chronically-ignored rules to promote into a deterministic hook | `/dead-rules-audit:scorecard` renders the scorecard on demand |
 
 > ⚡ The `context-hogs` PostToolUse hook is **async** — it records in the background and adds **zero latency** to a tool call. The SessionEnd summary and the `/context-hogs:leaderboard` command render the leaderboard.
 
