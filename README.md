@@ -26,6 +26,7 @@ A growing collection of tested, documented hooks you can copy, paste, and custom
 ## 📑 Table of Contents
 
 - [Hooks](#-hooks)
+- [Install as a plugin](#-install-as-a-plugin)
 - [Quick Start](#-quick-start)
 - [Safety Levels](#-safety-levels)
 - [Testing](#-testing)
@@ -54,6 +55,8 @@ Runs **after** Claude executes a tool. Can react to results.
 | [auto-stage](hook-scripts/post-tool-use/auto-stage.js)   | `Edit\|Write` | Automatically git stages files after Claude modifies them                     |
 | [format-code](hook-scripts/post-tool-use/format-code.js) | `Write\|Edit` | Auto-formats Python (ruff) and JS/TS/HTML/JSON/MD/YAML (prettier) after edits |
 
+> 🔌 **`context-hogs`** (per-file context-cost leaderboard) now ships as an installable **plugin** — see [Install as a plugin](#-install-as-a-plugin).
+
 ### Session-Start
 
 Runs when a session starts. Can inject context for the session.
@@ -79,6 +82,34 @@ Tools to help you build and debug hooks.
 | [event-logger](hook-scripts/utils/event-logger.py) | Python   | Logs all hook events to inspect payload structures |
 
 > 💡 **Building a new hook?** Use `event-logger.py` to discover what data Claude Code provides for each event before writing your own hooks.
+
+---
+
+## 🔌 Install as a plugin
+
+This repo is also a **Claude Code plugin marketplace**, so you can install a single hook — no copying scripts, no editing `settings.json` by hand.
+
+**1. Add the marketplace (once):**
+
+```
+/plugin marketplace add karanb192/claude-code-hooks
+```
+
+**2. Install just the hook you want:**
+
+```
+/plugin install context-hogs@claude-code-hooks
+```
+
+**3. Restart Claude Code** — the hook is active.
+
+| Plugin                               | What it does                                                                                                                              | Command                                     |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| [context-hogs](plugins/context-hogs) | Per-file context-cost leaderboard — attributes each tool result's tokens to the files it loaded, so you see which files cost you the most | `/context-hogs:leaderboard` renders the board on demand |
+
+> ⚡ The `context-hogs` PostToolUse hook is **async** — it records in the background and adds **zero latency** to a tool call. The SessionEnd summary and the `/context-hogs:leaderboard` command render the leaderboard.
+
+The hooks listed above under [🪝 Hooks](#-hooks) install the classic way (copy the script + add to `settings.json`); more are being packaged as plugins.
 
 ---
 
