@@ -15,6 +15,20 @@
       "tags": ["cost", "observability", "context", "hooks", "posttooluse"]
     },
     {
+      "name": "nerf-receipts",
+      "source": "./plugins/nerf-receipts",
+      "description": "A personal flight recorder for Claude Code quality — records your own per-session failure rate, edit churn, and tokens/task by model version, and flags real shifts when a model changes.",
+      "category": "observability",
+      "tags": ["quality", "observability", "model-drift", "hooks", "sessionend"]
+    },
+    {
+      "name": "dead-rules-audit",
+      "source": "./plugins/dead-rules-audit",
+      "description": "CLAUDE.md compliance scorecard — tallies which rules Claude actually follows vs ignores as you edit, and flags chronically-ignored rules to promote into a deterministic hook.",
+      "category": "observability",
+      "tags": ["compliance", "claude-md", "observability", "hooks", "posttooluse", "sessionstart", "sessionend"]
+    },
+    {
       "name": "pr-provenance-stamp",
       "source": "./plugins/pr-provenance-stamp",
       "description": "Stamps a provenance receipt — prompts, estimated spend, tests run with exit codes, and a truthful agent-authored line split — into your PR body on `gh pr create`.",
