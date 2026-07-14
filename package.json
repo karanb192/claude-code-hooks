@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Production-ready hooks for Claude Code — safety, automation, notifications, and more",
   "scripts": {
-    "test": "node --test hook-scripts/tests/**/*.test.js"
+    "test": "node --test hook-scripts/tests/**/*.test.js plugins/**/tests/*.test.js"
   },
   "keywords": [
     "claude",
