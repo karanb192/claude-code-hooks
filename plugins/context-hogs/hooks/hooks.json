@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Read|Grep|Glob|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "async": true,
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/context-hogs.js\""
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/context-hogs.js\""
+          }
+        ]
+      }
+    ]
+  }
+}

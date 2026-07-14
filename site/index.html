@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>claude-code-hooks — guardrails for the Claude Code agent loop</title>
+<meta name="description" content="Six tested hooks that intercept the Claude Code agent loop. They read stdin, and return exit 0 to pass or exit 2 to block. Copy, register, restart.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;450;500;600&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --void:      #0A0B0D;
+    --panel:     #101216;
+    --panel-2:   #15181D;
+    --line:      #23272E;
+    --line-2:    #2E333B;
+    --text:      #E7EAEE;
+    --dim:       #9BA2AC;
+    --faint:     #5C636D;
+    --pass:      #3FB950;
+    --pass-dim:  #1E5128;
+    --block:     #FF5C46;
+    --block-dim: #5A211A;
+    --amber:     #E3B341;
+
+    --sans:    'Inter', system-ui, sans-serif;
+    --display: 'Space Grotesk', 'Inter', sans-serif;
+    --mono:    'JetBrains Mono', ui-monospace, Menlo, monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+  ::selection { background: var(--block); color: var(--void); }
+
+  body {
+    background: var(--void);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+
+  /* faint dotted grid + top glow, kept very quiet */
+  body::before {
+    content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background-image: radial-gradient(circle, rgba(255,255,255,0.025) 1px, transparent 1px);
+    background-size: 28px 28px;
+    mask-image: linear-gradient(180deg, #000, transparent 70%);
+    -webkit-mask-image: linear-gradient(180deg, #000, transparent 70%);
+  }
+  body::after {
+    content: ""; position: fixed; top: -20%; left: 50%; width: 90vw; height: 60vh;
+    transform: translateX(-50%); z-index: 0; pointer-events: none;
+    background: radial-gradient(ellipse at 50% 0%, rgba(255,92,70,0.10), transparent 60%);
+  }
+
+  a { color: inherit; text-decoration: none; }
+  .wrap { position: relative; z-index: 1; max-width: 1200px; margin: 0 auto; padding: 0 clamp(1.1rem, 4vw, 2.5rem); }
+
+  .mono { font-family: var(--mono); }
+  .eyebrow {
+    font-family: var(--mono); font-size: 0.72rem; font-weight: 500;
+    letter-spacing: 0.22em; text-transform: uppercase; color: var(--block);
+    display: inline-flex; align-items: center; gap: 0.6rem;
+  }
+  .eyebrow::before { content: ""; width: 1.8rem; height: 1px; background: var(--block); }
+
+  /* ─────────── Nav ─────────── */
+  .nav {
+    position: sticky; top: 0; z-index: 50;
+    background: rgba(10,11,13,0.72);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav-in {
+    max-width: 1200px; margin: 0 auto; padding: 0.85rem clamp(1.1rem, 4vw, 2.5rem);
+    display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  }
+  .brand { font-family: var(--mono); font-size: 0.9rem; font-weight: 700; letter-spacing: -0.01em; display: flex; align-items: center; gap: 0.55rem; }
+  .brand .blip { width: 7px; height: 7px; border-radius: 50%; background: var(--pass); box-shadow: 0 0 0 3px rgba(63,185,80,0.16); animation: blip 2.4s ease-in-out infinite; }
+  @keyframes blip { 0%,100% { opacity: 1 } 50% { opacity: 0.4 } }
+  .brand .dim { color: var(--faint); }
+  .nav-links { display: flex; align-items: center; gap: 1.6rem; font-family: var(--mono); font-size: 0.78rem; letter-spacing: 0.04em; }
+  .nav-links a { color: var(--dim); transition: color 0.2s; }
+  .nav-links a:hover { color: var(--text); }
+  .nav-cta {
+    color: var(--text) !important; border: 1px solid var(--line-2);
+    padding: 0.4rem 0.85rem; border-radius: 6px; transition: border-color 0.2s, background 0.2s;
+  }
+  .nav-cta:hover { border-color: var(--block); background: rgba(255,92,70,0.08); }
+  .nav-links .hide-sm { }
+
+  /* ─────────── Terminal component ─────────── */
+  .term {
+    background: linear-gradient(180deg, var(--panel-2), var(--panel));
+    border: 1px solid var(--line-2); border-radius: 10px; overflow: hidden;
+    box-shadow: 0 24px 60px -30px rgba(0,0,0,0.9), 0 1px 0 rgba(255,255,255,0.03) inset;
+  }
+  .term-bar {
+    display: flex; align-items: center; gap: 0.75rem;
+    padding: 0.6rem 0.85rem; border-bottom: 1px solid var(--line);
+    background: rgba(255,255,255,0.015);
+  }
+  .term-dots { display: flex; gap: 0.4rem; }
+  .term-dots i { width: 10px; height: 10px; border-radius: 50%; background: var(--line-2); display: block; }
+  .term-title { font-family: var(--mono); font-size: 0.7rem; color: var(--faint); letter-spacing: 0.06em; }
+  .term-body {
+    font-family: var(--mono); font-size: 0.82rem; line-height: 1.85;
+    padding: 1rem 1.15rem; color: var(--dim);
+  }
+  .term-body .l { display: block; white-space: pre-wrap; word-break: break-word; }
+  .term-body .prompt { color: var(--text); }
+  .term-body .prompt::before { content: "› "; color: var(--faint); }
+  .term-body .comment { color: var(--faint); font-style: italic; }
+  .term-body .key { color: var(--dim); }
+  .term-body .val { color: var(--text); }
+  .term-body .stage {
+    color: var(--faint); letter-spacing: 0.08em; font-size: 0.72rem; text-transform: uppercase;
+    display: flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0;
+  }
+  .term-body .stage::before { content: ""; height: 1px; width: 1.4rem; background: var(--line-2); }
+  .term-body .stage .hook { color: var(--dim); text-transform: none; letter-spacing: 0; font-size: 0.78rem; }
+  .term-body .verdict { display: flex; align-items: baseline; gap: 0.6rem; margin-top: 0.15rem; }
+  .verdict .badge { font-weight: 700; letter-spacing: 0.02em; }
+  .verdict.block .badge { color: var(--block); }
+  .verdict.pass .badge { color: var(--pass); }
+  .verdict .code { color: var(--faint); font-size: 0.74rem; }
+  .verdict-note { color: var(--faint); font-style: italic; padding-left: 0; }
+  .cursor-blink { display: inline-block; width: 8px; height: 1.05em; background: var(--block); vertical-align: -2px; margin-left: 2px; animation: cur 1.05s step-end infinite; }
+  @keyframes cur { 50% { opacity: 0 } }
+
+  /* ─────────── Hero ─────────── */
+  .hero { padding: clamp(3.5rem, 9vw, 7rem) 0 clamp(2.5rem, 5vw, 4rem); display: grid; grid-template-columns: 1.02fr 1fr; gap: clamp(2rem, 4vw, 4rem); align-items: center; }
+  .hero-copy .eyebrow { margin-bottom: 1.5rem; }
+  h1.hero-title {
+    font-family: var(--display); font-weight: 600;
+    font-size: clamp(2.5rem, 5.6vw, 4.6rem); line-height: 1.02; letter-spacing: -0.035em;
+    color: var(--text);
+  }
+  h1.hero-title .loop { color: var(--block); }
+  .hero-proto {
+    font-family: var(--mono); font-size: 0.82rem; color: var(--dim);
+    margin: 1.5rem 0 1.6rem; letter-spacing: 0.01em; line-height: 2;
+  }
+  .hero-proto .a { color: var(--text); }
+  .hero-proto .p { color: var(--pass); } .hero-proto .b { color: var(--block); }
+  .hero-proto .arw { color: var(--faint); padding: 0 0.4rem; }
+  .hero-deck { font-size: 1.06rem; color: var(--dim); max-width: 34rem; margin-bottom: 2rem; line-height: 1.65; }
+  .hero-deck b { color: var(--text); font-weight: 600; }
+  .cta-row { display: flex; flex-wrap: wrap; gap: 0.8rem; align-items: center; }
+  .btn {
+    font-family: var(--mono); font-size: 0.85rem; font-weight: 500;
+    padding: 0.72rem 1.3rem; border-radius: 7px; display: inline-flex; align-items: center; gap: 0.5rem;
+    transition: transform 0.15s, background 0.2s, border-color 0.2s; cursor: pointer; border: 1px solid transparent;
+  }
+  .btn-primary { background: var(--block); color: var(--void); font-weight: 700; }
+  .btn-primary:hover { transform: translateY(-1px); background: #ff6e5a; }
+  .btn-ghost { border-color: var(--line-2); color: var(--text); }
+  .btn-ghost:hover { border-color: var(--dim); background: rgba(255,255,255,0.03); }
+  .btn svg { width: 15px; height: 15px; }
+
+  .hero-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 9px; overflow: hidden; margin-top: 2.6rem; }
+  .hero-stats .s { background: var(--panel); padding: 1rem 1.1rem; }
+  .hero-stats .s b { font-family: var(--display); font-weight: 600; font-size: 1.7rem; display: block; letter-spacing: -0.02em; line-height: 1; margin-bottom: 0.35rem; }
+  .hero-stats .s .accent { color: var(--pass); }
+  .hero-stats .s span { font-family: var(--mono); font-size: 0.64rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint); }
+
+  /* reveal-on-load for hero terminal lines */
+  .term-body.animate .l { opacity: 0; transform: translateY(4px); animation: lineIn 0.4s ease-out forwards; }
+  .term-body.animate .l:nth-child(1){animation-delay:.25s} .term-body.animate .l:nth-child(2){animation-delay:.45s}
+  .term-body.animate .l:nth-child(3){animation-delay:.7s} .term-body.animate .l:nth-child(4){animation-delay:.95s}
+  .term-body.animate .l:nth-child(5){animation-delay:1.15s} .term-body.animate .l:nth-child(6){animation-delay:1.4s}
+  .term-body.animate .l:nth-child(7){animation-delay:1.6s} .term-body.animate .l:nth-child(8){animation-delay:1.8s}
+  @keyframes lineIn { to { opacity: 1; transform: translateY(0); } }
+
+  /* ─────────── Section scaffolding ─────────── */
+  .section { padding: clamp(3rem, 7vw, 6rem) 0; border-top: 1px solid var(--line); }
+  .sec-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 2rem; margin-bottom: 2.6rem; flex-wrap: wrap; }
+  .sec-head .kicker { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.2em; text-transform: uppercase; color: var(--block); margin-bottom: 0.7rem; }
+  .sec-head h2 { font-family: var(--display); font-weight: 600; font-size: clamp(1.8rem, 3.6vw, 2.7rem); letter-spacing: -0.03em; line-height: 1.05; }
+  .sec-head .aside { font-family: var(--mono); font-size: 0.74rem; color: var(--faint); text-align: right; line-height: 1.7; }
+
+  /* ─────────── Wire protocol strip ─────────── */
+  .proto-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+  .proto-card { border: 1px solid var(--line); border-radius: 9px; padding: 1.4rem 1.5rem; background: var(--panel); }
+  .proto-card .ic { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--faint); margin-bottom: 0.9rem; }
+  .proto-card h3 { font-family: var(--display); font-size: 1.15rem; font-weight: 500; margin-bottom: 0.4rem; }
+  .proto-card h3 code { font-family: var(--mono); color: var(--pass); font-size: 0.95rem; }
+  .proto-card h3 code.b { color: var(--block); }
+  .proto-card p { font-size: 0.92rem; color: var(--dim); }
+
+  /* ─────────── Lifecycle rail ─────────── */
+  .rail { overflow-x: auto; padding-bottom: 0.5rem; }
+  .rail-track { display: grid; grid-template-columns: repeat(7, minmax(96px, 1fr)); position: relative; min-width: 720px; padding-top: 22px; }
+  .rail-track::before { content: ""; position: absolute; top: 27px; left: 5%; right: 5%; height: 1px; background: var(--line-2); }
+  .stop { text-align: center; padding: 0 0.35rem; position: relative; }
+  .stop .tick { width: 11px; height: 11px; border-radius: 50%; background: var(--void); border: 1.5px solid var(--line-2); margin: 0 auto 1rem; position: relative; z-index: 1; }
+  .stop.on .tick { background: var(--pass); border-color: var(--pass); box-shadow: 0 0 0 4px rgba(63,185,80,0.15); }
+  .stop .nm { font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.02em; color: var(--text); }
+  .stop.off .nm { color: var(--faint); }
+  .stop .nt { font-size: 0.75rem; color: var(--faint); margin-top: 0.35rem; }
+  .rail-key { display: flex; gap: 1.6rem; margin-top: 1.6rem; font-family: var(--mono); font-size: 0.7rem; color: var(--faint); flex-wrap: wrap; }
+  .rail-key b { color: var(--pass); }
+
+  /* ─────────── Catalog ─────────── */
+  .entry { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(1.5rem, 3vw, 3rem); align-items: center; padding: 2.4rem 0; border-top: 1px solid var(--line); }
+  .entry:first-child { border-top: none; padding-top: 0; }
+  .entry-meta { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
+  .tag { font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.05em; padding: 0.22rem 0.55rem; border-radius: 5px; border: 1px solid var(--line-2); color: var(--dim); }
+  .tag.evt { color: var(--block); border-color: var(--block-dim); background: rgba(255,92,70,0.06); }
+  .tag.rt { color: var(--faint); }
+  .entry h3 { font-family: var(--mono); font-weight: 700; font-size: clamp(1.25rem, 2.4vw, 1.6rem); letter-spacing: -0.01em; margin-bottom: 0.7rem; }
+  .entry h3 .no { color: var(--faint); font-weight: 400; margin-right: 0.5rem; }
+  .entry p { color: var(--dim); font-size: 1rem; line-height: 1.62; max-width: 34rem; }
+  .entry p em { color: var(--text); font-style: normal; font-family: var(--mono); font-size: 0.92em; }
+  .entry.rev { direction: rtl; } .entry.rev > * { direction: ltr; }
+
+  /* ─────────── Install ─────────── */
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.2rem; }
+  .step { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow: hidden; display: flex; flex-direction: column; }
+  .step-head { padding: 1.2rem 1.3rem 0.9rem; }
+  .step-n { font-family: var(--mono); font-size: 0.72rem; color: var(--block); letter-spacing: 0.14em; margin-bottom: 0.6rem; }
+  .step-head h4 { font-family: var(--display); font-weight: 500; font-size: 1.15rem; margin-bottom: 0.4rem; }
+  .step-head p { font-size: 0.9rem; color: var(--dim); }
+  .step-head p code { font-family: var(--mono); font-size: 0.85em; color: var(--text); }
+  .code { position: relative; margin-top: auto; border-top: 1px solid var(--line); background: var(--void); }
+  .code pre { font-family: var(--mono); font-size: 0.76rem; line-height: 1.75; padding: 1rem 1.1rem; overflow-x: auto; color: var(--dim); }
+  .code pre .k { color: var(--pass); } .code pre .s { color: var(--text); } .code pre .c { color: var(--faint); font-style: italic; } .code pre .r { color: var(--block); }
+  .copy { position: absolute; top: 0.55rem; right: 0.55rem; font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 5px; padding: 0.28rem 0.55rem; cursor: pointer; transition: color 0.2s, border-color 0.2s; }
+  .copy:hover { color: var(--text); border-color: var(--dim); }
+  .copy.done { color: var(--pass); border-color: var(--pass-dim); }
+
+  /* ─────────── Spec cards (notes) ─────────── */
+  .specs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.2rem; }
+  .spec { border: 1px solid var(--line); border-radius: 10px; padding: 1.4rem 1.5rem; background: var(--panel); }
+  .spec .lbl { font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--block); margin-bottom: 0.9rem; }
+  .spec h4 { font-family: var(--display); font-weight: 500; font-size: 1.2rem; margin-bottom: 1rem; }
+  .row { display: grid; grid-template-columns: auto 1fr auto; gap: 0.7rem; align-items: baseline; font-family: var(--mono); font-size: 0.8rem; padding: 0.5rem 0; border-top: 1px solid var(--line); }
+  .row:first-of-type { border-top: none; }
+  .row b { color: var(--text); font-weight: 500; }
+  .row .d { color: var(--dim); font-family: var(--sans); font-size: 0.86rem; }
+  .row .n { color: var(--pass); }
+  .row.rec { position: relative; }
+  .row.rec b { color: var(--pass); }
+  .row .star { color: var(--pass); font-size: 0.7rem; }
+  .exit-row b.zero { color: var(--pass); } .exit-row b.two { color: var(--block); }
+
+  /* ─────────── Forthcoming ─────────── */
+  .index { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0 3rem; }
+  .ix { display: grid; grid-template-columns: auto 1fr auto; gap: 0.9rem; align-items: baseline; padding: 0.7rem 0; border-bottom: 1px solid var(--line); transition: padding 0.2s, background 0.2s; }
+  .ix:hover { background: rgba(255,255,255,0.02); padding-left: 0.5rem; padding-right: 0.5rem; }
+  .ix .n { font-family: var(--mono); font-size: 0.72rem; color: var(--faint); }
+  .ix .nm { font-family: var(--mono); font-size: 0.88rem; color: var(--text); }
+  .ix .nm span { color: var(--dim); font-family: var(--sans); font-size: 0.86rem; }
+  .ix .evt { font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); }
+
+  /* ─────────── Closing CTA ─────────── */
+  .close { text-align: center; padding: clamp(3.5rem, 8vw, 6rem) 0; border-top: 1px solid var(--line); }
+  .close h2 { font-family: var(--display); font-weight: 600; font-size: clamp(1.9rem, 4vw, 3rem); letter-spacing: -0.03em; margin-bottom: 1rem; }
+  .close p { color: var(--dim); max-width: 32rem; margin: 0 auto 2rem; }
+  .close .cta-row { justify-content: center; }
+
+  /* ─────────── Footer ─────────── */
+  footer { border-top: 1px solid var(--line); padding: 2rem 0 3rem; }
+  .foot-in { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; font-family: var(--mono); font-size: 0.76rem; color: var(--faint); }
+  .foot-in a { color: var(--dim); border-bottom: 1px solid transparent; transition: color 0.2s, border-color 0.2s; }
+  .foot-in a:hover { color: var(--block); border-color: var(--block); }
+
+  /* ─────────── Reveal ─────────── */
+  .obs { opacity: 0; transform: translateY(20px); transition: opacity 0.7s ease-out, transform 0.7s cubic-bezier(0.22,1,0.36,1); }
+  .obs.in { opacity: 1; transform: translateY(0); }
+
+  :focus-visible { outline: 2px solid var(--block); outline-offset: 3px; border-radius: 3px; }
+
+  /* ─────────── Responsive ─────────── */
+  @media (max-width: 900px) {
+    .hero { grid-template-columns: 1fr; }
+    .hero-term { order: 2; }
+    .proto-grid, .steps, .specs { grid-template-columns: 1fr; }
+    .entry, .entry.rev { grid-template-columns: 1fr; direction: ltr; }
+    .index { grid-template-columns: 1fr; }
+    .nav-links .hide-sm { display: none; }
+  }
+  @media (max-width: 520px) {
+    .hero-stats { grid-template-columns: 1fr 1fr; }
+    .sec-head .aside { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+    .term-body.animate .l { opacity: 1; transform: none; }
+    .obs { opacity: 1; transform: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════ NAV ═══════ -->
+<nav class="nav">
+  <div class="nav-in">
+    <div class="brand"><span class="blip"></span>claude-code-hooks</div>
+    <div class="nav-links">
+      <a href="#catalog" class="hide-sm">Hooks</a>
+      <a href="#install" class="hide-sm">Install</a>
+      <a href="#protocol" class="hide-sm">Protocol</a>
+      <a class="nav-cta" href="https://github.com/karanb192/claude-code-hooks">GitHub ↗</a>
+    </div>
+  </div>
+</nav>
+
+<div class="wrap">
+
+  <!-- ═══════ HERO ═══════ -->
+  <section class="hero">
+    <div class="hero-copy">
+      <span class="eyebrow">Guardrails for Claude Code</span>
+      <h1 class="hero-title">Intercept the<br>agent <span class="loop">loop.</span></h1>
+      <div class="hero-proto">
+        <span class="a">stdin</span><span class="arw">→</span>hook<span class="arw">→</span><span class="p">exit 0 · pass</span>&nbsp;&nbsp;/&nbsp;&nbsp;<span class="b">exit 2 · block</span>
+      </div>
+      <p class="hero-deck">
+        Six small programs that watch what <b>Claude Code</b> is about to do — and step in.
+        Block a destructive command. Refuse to read a secret. Stage and format an edit.
+        Ping you on Slack. A few hundred lines each, <b>exhaustively tested</b>, ready to copy.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="#install">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          Install a hook
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/karanb192/claude-code-hooks">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.5 2 2 6.6 2 12.2c0 4.5 2.9 8.3 6.8 9.7.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.4-3.4-1.4-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.6 2.4 1.1 3 .9.1-.7.4-1.1.6-1.4-2.2-.3-4.6-1.1-4.6-5 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.7 0 0 .8-.3 2.7 1a9.3 9.3 0 0 1 5 0c1.9-1.3 2.7-1 2.7-1 .5 1.4.2 2.4.1 2.7.6.7 1 1.6 1 2.7 0 3.9-2.4 4.7-4.6 5 .4.3.7.9.7 1.9v2.8c0 .3.2.6.7.5 3.9-1.4 6.8-5.2 6.8-9.7C22 6.6 17.5 2 12 2Z"/></svg>
+          View source
+        </a>
+      </div>
+      <div class="hero-stats">
+        <div class="s"><b>06</b><span>Hooks</span></div>
+        <div class="s"><b class="accent">420</b><span>Tests pass</span></div>
+        <div class="s"><b>~80<small style="font-size:.7rem">ms</small></b><span>Per call</span></div>
+        <div class="s"><b>0 · 2</b><span>Exit codes</span></div>
+      </div>
+    </div>
+
+    <div class="hero-term">
+      <div class="term">
+        <div class="term-bar">
+          <div class="term-dots"><i></i><i></i><i></i></div>
+          <div class="term-title">~/repo — claude</div>
+        </div>
+        <div class="term-body animate">
+          <span class="l comment"># Claude proposes an action…</span>
+          <span class="l prompt">please clean up this directory</span>
+          <span class="l"><span class="key">tool</span>    <span class="val">Bash</span></span>
+          <span class="l"><span class="key">command</span> <span class="val">rm -rf ~</span></span>
+          <span class="l stage">PreToolUse<span class="hook">block-dangerous-commands</span></span>
+          <span class="l verdict block"><span class="badge">⊘ blocked</span><span class="code">exit 2</span></span>
+          <span class="l verdict-note">"rm -rf on home directory"</span>
+          <span class="l prompt"><span class="cursor-blink"></span></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════ PROTOCOL ═══════ -->
+  <section class="section" id="protocol">
+    <div class="sec-head">
+      <div>
+        <div class="kicker">The contract</div>
+        <h2>No SDK. Just a wire protocol.</h2>
+      </div>
+      <div class="aside">plain executables<br>any language<br>the exit code decides</div>
+    </div>
+    <div class="proto-grid">
+      <div class="proto-card obs">
+        <div class="ic">01 — in</div>
+        <h3>Claude sends <code class="b">stdin</code></h3>
+        <p>On every lifecycle event, Claude Code pipes a JSON payload — the tool, its input, the session — to your hook's standard input.</p>
+      </div>
+      <div class="proto-card obs">
+        <div class="ic">02 — decide</div>
+        <h3>Your hook runs</h3>
+        <p>A few hundred lines in Node, Python, or shell. Inspect the payload, check it against your rules, and choose a verdict.</p>
+      </div>
+      <div class="proto-card obs">
+        <div class="ic">03 — out</div>
+        <h3>Return <code>exit 0</code> or <code class="b">exit 2</code></h3>
+        <p><strong style="color:var(--pass)">0</strong> lets the tool run. <strong style="color:var(--block)">2</strong> blocks it and hands your message back to Claude as guidance.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════ LIFECYCLE ═══════ -->
+  <section class="section">
+    <div class="sec-head">
+      <div>
+        <div class="kicker">Where they attach</div>
+        <h2>Nine stops in the loop.</h2>
+      </div>
+      <div class="aside">● covered here<br>○ open to contribute</div>
+    </div>
+    <div class="rail">
+      <div class="rail-track">
+        <div class="stop off"><div class="tick"></div><div class="nm">SessionStart</div><div class="nt">prepare context</div></div>
+        <div class="stop off"><div class="tick"></div><div class="nm">UserPrompt</div><div class="nt">inspect / inject</div></div>
+        <div class="stop on"><div class="tick"></div><div class="nm">PreToolUse</div><div class="nt">block or pass</div></div>
+        <div class="stop off"><div class="tick"></div><div class="nm">— tool —</div><div class="nt">execution</div></div>
+        <div class="stop on"><div class="tick"></div><div class="nm">PostToolUse</div><div class="nt">react / log</div></div>
+        <div class="stop on"><div class="tick"></div><div class="nm">Notification</div><div class="nt">alert you</div></div>
+        <div class="stop off"><div class="tick"></div><div class="nm">Stop</div><div class="nt">finalize</div></div>
+      </div>
+    </div>
+    <div class="rail-key">
+      <span><b>●</b> covered by this repo — PreToolUse, PostToolUse, Notification</span>
+      <span>○ everything else is open for contribution</span>
+    </div>
+  </section>
+
+  <!-- ═══════ CATALOG ═══════ -->
+  <section class="section" id="catalog">
+    <div class="sec-head">
+      <div>
+        <div class="kicker">The catalog</div>
+        <h2>Six hooks, tested.</h2>
+      </div>
+      <div class="aside">node + python<br>MIT licensed</div>
+    </div>
+
+    <!-- 01 -->
+    <article class="entry obs">
+      <div>
+        <div class="entry-meta"><span class="tag evt">PreToolUse</span><span class="tag">Bash</span><span class="tag rt">Node · ~80ms</span></div>
+        <h3><span class="no">01</span>block-dangerous-commands</h3>
+        <p>Refuses <em>rm -rf ~</em>, fork bombs, <em>curl | sh</em>, <em>dd</em> to a raw disk, and the long tail of catastrophes that look harmless in a one-liner. Three tunable safety levels decide where the line sits.</p>
+      </div>
+      <div class="term">
+        <div class="term-bar"><div class="term-dots"><i></i><i></i><i></i></div><div class="term-title">block-dangerous-commands</div></div>
+        <div class="term-body">
+          <span class="l"><span class="key">tool</span>    <span class="val">Bash</span></span>
+          <span class="l"><span class="key">command</span> <span class="val">rm -rf ~</span></span>
+          <span class="l verdict block"><span class="badge">⊘ blocked</span><span class="code">exit 2</span></span>
+          <span class="l verdict-note">"deletes home directory"</span>
+        </div>
+      </div>
+    </article>
+
+    <!-- 02 -->
+    <article class="entry rev obs">
+      <div>
+        <div class="entry-meta"><span class="tag evt">PreToolUse</span><span class="tag">Read·Edit·Write·Bash</span><span class="tag rt">Node · ~80ms</span></div>
+        <h3><span class="no">02</span>protect-secrets</h3>
+        <p>Stops Claude from reading, editing, or quietly exfiltrating <em>.env</em> files, SSH keys, AWS credentials, kubeconfig — anything load-bearing. Catches the obvious paths and the clever ones: a <em>cat</em> piped to <em>curl</em> is still exfiltration.</p>
+      </div>
+      <div class="term">
+        <div class="term-bar"><div class="term-dots"><i></i><i></i><i></i></div><div class="term-title">protect-secrets</div></div>
+        <div class="term-body">
+          <span class="l"><span class="key">tool</span> <span class="val">Read</span></span>
+          <span class="l"><span class="key">path</span> <span class="val">.env.production</span></span>
+          <span class="l verdict block"><span class="badge">⊘ blocked</span><span class="code">exit 2</span></span>
+          <span class="l verdict-note">"sensitive credential file"</span>
+        </div>
+      </div>
+    </article>
+
+    <!-- 03 -->
+    <article class="entry obs">
+      <div>
+        <div class="entry-meta"><span class="tag evt">PreToolUse</span><span class="tag">Bash</span><span class="tag rt">Node · ~80ms</span></div>
+        <h3><span class="no">03</span>git-safety</h3>
+        <p>Branch-aware guardrails: blocks commit, merge, rebase, reset and push while you're on <em>main</em>, plus destructive <em>gh</em> CLI calls like <em>gh repo delete</em>. Complements block-dangerous-commands rather than overlapping it.</p>
+      </div>
+      <div class="term">
+        <div class="term-bar"><div class="term-dots"><i></i><i></i><i></i></div><div class="term-title">git-safety</div></div>
+        <div class="term-body">
+          <span class="l"><span class="key">branch</span>  <span class="val">main</span></span>
+          <span class="l"><span class="key">command</span> <span class="val">git push --force origin main</span></span>
+          <span class="l verdict block"><span class="badge">⊘ blocked</span><span class="code">exit 2</span></span>
+          <span class="l verdict-note">"force-push to a protected branch"</span>
+        </div>
+      </div>
+    </article>
+
+    <!-- 04 -->
+    <article class="entry rev obs">
+      <div>
+        <div class="entry-meta"><span class="tag evt">PostToolUse</span><span class="tag">Edit·Write</span><span class="tag rt">Node · ~60ms</span></div>
+        <h3><span class="no">04</span>auto-stage</h3>
+        <p>After Claude edits or creates a file, runs <em>git add</em> on it — so <em>git diff --cached</em> becomes the canonical "what did the agent just do" view. One less accounting step in your loop.</p>
+      </div>
+      <div class="term">
+        <div class="term-bar"><div class="term-dots"><i></i><i></i><i></i></div><div class="term-title">auto-stage</div></div>
+        <div class="term-body">
+          <span class="l comment"># after Edit succeeds</span>
+          <span class="l prompt">git add src/api.ts</span>
+          <span class="l verdict pass"><span class="badge">✓ staged</span><span class="code">exit 0</span></span>
+          <span class="l verdict-note">review → git diff --cached</span>
+        </div>
+      </div>
+    </article>
+
+    <!-- 05 -->
+    <article class="entry obs">
+      <div>
+        <div class="entry-meta"><span class="tag evt">PostToolUse</span><span class="tag">Write·Edit</span><span class="tag rt">Node</span></div>
+        <h3><span class="no">05</span>format-code</h3>
+        <p>Runs the right formatter on whatever Claude just wrote — <em>ruff</em> for Python, <em>prettier</em> for JS/TS/HTML/JSON/Markdown/YAML. The agent's output lands already clean, so diffs stay about logic, not whitespace.</p>
+      </div>
+      <div class="term">
+        <div class="term-bar"><div class="term-dots"><i></i><i></i><i></i></div><div class="term-title">format-code</div></div>
+        <div class="term-body">
+          <span class="l comment"># after Write app.py</span>
+          <span class="l prompt">ruff format app.py</span>
+          <span class="l verdict pass"><span class="badge">✓ formatted</span><span class="code">exit 0</span></span>
+          <span class="l verdict-note">1 file reformatted</span>
+        </div>
+      </div>
+    </article>
+
+    <!-- 06 -->
+    <article class="entry rev obs">
+      <div>
+        <div class="entry-meta"><span class="tag evt">Notification</span><span class="tag">permission · idle</span><span class="tag rt">Node · ~80ms</span></div>
+        <h3><span class="no">06</span>notify-permission</h3>
+        <p>Pings a Slack channel when Claude is stuck on a permission prompt or has gone idle waiting on you. Start a long agentic run, switch tabs, and trust you'll be pulled back when it actually needs a human.</p>
+      </div>
+      <div class="term">
+        <div class="term-bar"><div class="term-dots"><i></i><i></i><i></i></div><div class="term-title">notify-permission</div></div>
+        <div class="term-body">
+          <span class="l"><span class="key">event</span> <span class="val">permission_prompt</span></span>
+          <span class="l"><span class="key">tool</span>  <span class="val">Bash (sudo)</span></span>
+          <span class="l verdict pass"><span class="badge">↗ slack</span><span class="code">#claude-runs</span></span>
+          <span class="l verdict-note">"Claude needs you in repo X"</span>
+        </div>
+      </div>
+    </article>
+
+    <p style="font-family:var(--mono);font-size:.8rem;color:var(--faint);margin-top:2rem;padding-top:1.5rem;border-top:1px solid var(--line)">
+      + <span style="color:var(--dim)">event-logger</span> — a Python diagnostic that dumps every event's JSON so you can see an event's shape before you write a hook against it. The thing you reach for first.
+    </p>
+  </section>
+
+  <!-- ═══════ INSTALL ═══════ -->
+  <section class="section" id="install">
+    <div class="sec-head">
+      <div>
+        <div class="kicker">Apparatus</div>
+        <h2>Copy. Register. Restart.</h2>
+      </div>
+      <div class="aside">~60 seconds<br>no build step</div>
+    </div>
+    <div class="steps">
+      <div class="step obs">
+        <div class="step-head">
+          <div class="step-n">STEP i</div>
+          <h4>Place the script</h4>
+          <p>Anywhere your shell can <code>chmod +x</code>. Convention is <code>~/.claude/hooks/</code>.</p>
+        </div>
+        <div class="code">
+          <button class="copy">copy</button>
+<pre><span class="c">$</span> mkdir -p ~/.claude/hooks
+<span class="c">$</span> cp hook-scripts/pre-tool-use/<span class="k">block-dangerous-commands.js</span> \
+     ~/.claude/hooks/</pre>
+        </div>
+      </div>
+      <div class="step obs">
+        <div class="step-head">
+          <div class="step-n">STEP ii</div>
+          <h4>Register it</h4>
+          <p>In <code>.claude/settings.json</code>, bind the hook to an event and matcher.</p>
+        </div>
+        <div class="code">
+          <button class="copy">copy</button>
+<pre>{
+  <span class="s">"hooks"</span>: {
+    <span class="s">"PreToolUse"</span>: [{
+      <span class="s">"matcher"</span>: <span class="s">"Bash"</span>,
+      <span class="s">"hooks"</span>: [{
+        <span class="s">"type"</span>: <span class="s">"command"</span>,
+        <span class="s">"command"</span>: <span class="s">"node ~/.claude/hooks/block-dangerous-commands.js"</span>
+      }]
+    }]
+  }
+}</pre>
+        </div>
+      </div>
+      <div class="step obs">
+        <div class="step-head">
+          <div class="step-n">STEP iii</div>
+          <h4>Restart Claude Code</h4>
+          <p>The hook is live. Ask Claude to do something reckless and watch it refuse.</p>
+        </div>
+        <div class="code">
+          <button class="copy">copy</button>
+<pre><span class="c">$</span> claude
+<span class="c">›</span> please <span class="r">rm -rf ~</span>
+<span class="c">…</span> hook blocked:
+  deletes home directory.</pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════ NOTES / SPECS ═══════ -->
+  <section class="section">
+    <div class="sec-head">
+      <div>
+        <div class="kicker">Marginalia</div>
+        <h2>Tradeoffs, in brief.</h2>
+      </div>
+    </div>
+    <div class="specs">
+      <div class="spec obs">
+        <div class="lbl">Safety</div>
+        <h4>Three levels of paranoia</h4>
+        <div class="row"><b>critical</b><span class="d">catastrophes only — rm -rf ~, fork bombs, dd</span><span></span></div>
+        <div class="row rec"><b>high</b><span class="d">+ risky — force push, secrets, hard reset</span><span class="star">★ default</span></div>
+        <div class="row"><b>strict</b><span class="d">+ cautionary — any force push, sudo rm</span><span></span></div>
+      </div>
+      <div class="spec obs">
+        <div class="lbl">Runtime</div>
+        <h4>Match language to event rate</h4>
+        <div class="row"><b>Bash</b><span class="d">tiny guards</span><span class="n">10–20ms</span></div>
+        <div class="row"><b>Node</b><span class="d">per-tool, JSON-heavy</span><span class="n">50–100ms</span></div>
+        <div class="row"><b>Python</b><span class="d">session events</span><span class="n">200–400ms</span></div>
+      </div>
+      <div class="spec obs">
+        <div class="lbl">Exits</div>
+        <h4>Two numbers do the work</h4>
+        <div class="row exit-row"><b class="zero">0</b><span class="d">pass — let the tool run</span><span></span></div>
+        <div class="row exit-row"><b class="two">2</b><span class="d">block — message goes back to Claude</span><span></span></div>
+        <div class="row exit-row"><b>·</b><span class="d">other — non-blocking warning, logged</span><span></span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════ FORTHCOMING ═══════ -->
+  <section class="section">
+    <div class="sec-head">
+      <div>
+        <div class="kicker">Open</div>
+        <h2>Forthcoming hooks.</h2>
+      </div>
+      <div class="aside">contributions welcome<br>see CONTRIBUTING.md</div>
+    </div>
+    <div class="index">
+      <div class="ix"><span class="n">07</span><span class="nm">protect-tests <span>— block test deletion or disabling</span></span><span class="evt">PreToolUse</span></div>
+      <div class="ix"><span class="n">08</span><span class="nm">context-snapshot <span>— preserve before compaction</span></span><span class="evt">PreCompact</span></div>
+      <div class="ix"><span class="n">09</span><span class="nm">session-summary <span>— generate a digest on Stop</span></span><span class="evt">Stop</span></div>
+      <div class="ix"><span class="n">10</span><span class="nm">ntfy-notify <span>— free mobile push</span></span><span class="evt">Notification</span></div>
+      <div class="ix"><span class="n">11</span><span class="nm">discord-notify <span>— webhook alerts</span></span><span class="evt">Notification</span></div>
+      <div class="ix"><span class="n">12</span><span class="nm">cost-tracker <span>— tally tokens, estimate cost</span></span><span class="evt">PostToolUse</span></div>
+      <div class="ix"><span class="n">13</span><span class="nm">rules-injector <span>— auto-attach CLAUDE.md</span></span><span class="evt">UserPromptSubmit</span></div>
+      <div class="ix"><span class="n">14</span><span class="nm">rate-limiter <span>— cap tool calls per minute</span></span><span class="evt">PreToolUse</span></div>
+    </div>
+  </section>
+
+  <!-- ═══════ CLOSING ═══════ -->
+  <section class="close">
+    <h2>Put a hook in the loop.</h2>
+    <p>Six tested guardrails, MIT licensed, no framework to learn. Copy one and restart Claude Code — you're protected in under a minute.</p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/karanb192/claude-code-hooks">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.5 2 2 6.6 2 12.2c0 4.5 2.9 8.3 6.8 9.7.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.4-3.4-1.4-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.6 2.4 1.1 3 .9.1-.7.4-1.1.6-1.4-2.2-.3-4.6-1.1-4.6-5 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.7 0 0 .8-.3 2.7 1a9.3 9.3 0 0 1 5 0c1.9-1.3 2.7-1 2.7-1 .5 1.4.2 2.4.1 2.7.6.7 1 1.6 1 2.7 0 3.9-2.4 4.7-4.6 5 .4.3.7.9.7 1.9v2.8c0 .3.2.6.7.5 3.9-1.4 6.8-5.2 6.8-9.7C22 6.6 17.5 2 12 2Z"/></svg>
+        Star on GitHub
+      </a>
+      <a class="btn btn-ghost" href="https://karanbansal.in/blog/claude-code-hooks/">Read the essay</a>
+    </div>
+  </section>
+
+</div>
+
+<!-- ═══════ FOOTER ═══════ -->
+<footer>
+  <div class="wrap foot-in">
+    <span>github.com/<a href="https://github.com/karanb192/claude-code-hooks">karanb192/claude-code-hooks</a></span>
+    <span>MIT · 2026 · built by <a href="https://karanbansal.in">Karan Bansal</a></span>
+  </div>
+</footer>
+
+<script>
+  // copy buttons — grab the sibling <pre>, strip shell prompts
+  document.querySelectorAll('.copy').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const pre = btn.parentNode.querySelector('pre');
+      if (!pre) return;
+      const text = pre.innerText.replace(/^[$›…] ?/gm, '').trim();
+      try {
+        await navigator.clipboard.writeText(text);
+        btn.textContent = 'copied'; btn.classList.add('done');
+        setTimeout(() => { btn.textContent = 'copy'; btn.classList.remove('done'); }, 1600);
+      } catch (e) { btn.textContent = 'error'; }
+    });
+  });
+
+  // scroll reveal
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, { threshold: 0.12, rootMargin: '0px 0px -50px 0px' });
+  document.querySelectorAll('.obs').forEach(el => io.observe(el));
+</script>
+
+</body>
+</html>

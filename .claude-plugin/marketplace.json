@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-code-hooks",
+  "description": "Production-ready Claude Code hooks, each installable on its own as a plugin.",
+  "owner": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "plugins": [
+    {
+      "name": "context-hogs",
+      "source": "./plugins/context-hogs",
+      "description": "Per-file context-cost leaderboard — attributes every tool result's tokens to the files it loaded, so you know which files cost you the most.",
+      "category": "cost",
+      "tags": ["cost", "observability", "context", "hooks", "posttooluse"]
+    }
+  ]
+}
