@@ -2,7 +2,7 @@
 /**
  * Tests for pr-provenance-stamp.js
  *
- * Run: node --test hook-scripts/tests/pre-tool-use/pr-provenance-stamp.test.js
+ * Run: node --test plugins/pr-provenance-stamp/tests/pr-provenance-stamp.test.js
  * Or:  npm test
  *
  * Hermetic: every filesystem touch is redirected to a fresh temp dir; spawned
@@ -16,7 +16,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const mod = require('../../pre-tool-use/pr-provenance-stamp.js');
+const mod = require('../pr-provenance-stamp.js');
 const {
   emptyLedger,
   ledgerPath,
@@ -44,7 +44,7 @@ const {
   STAMP_END,
 } = mod;
 
-const SCRIPT_PATH = path.join(__dirname, '../../pre-tool-use/pr-provenance-stamp.js');
+const SCRIPT_PATH = path.join(__dirname, '../pr-provenance-stamp.js');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Fresh temp dir per describe-block that needs the filesystem
@@ -1053,5 +1053,97 @@ describe('Integration: stdin/stdout hook flow', () => {
     assert.ok(output.hookSpecificOutput);
     const cmd = output.hookSpecificOutput.updatedInput.command;
     assert.ok(cmd.includes('Provenance'), cmd);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Integration: --render CLI (powers the /pr-provenance-stamp:receipt command)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Integration: --render CLI', () => {
+  let home;
+  before(() => { home = freshDir(); });
+  after(() => { fs.rmSync(home, { recursive: true, force: true }); });
+
+  // Feed a hook payload on stdin (writes the ledger under this temp HOME).
+  function runHookHome(payload, homeDir) {
+    return new Promise((resolve, reject) => {
+      const child = spawn('node', [SCRIPT_PATH], { env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir } });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (d) => { stdout += d; });
+      child.stderr.on('data', (d) => { stderr += d; });
+      child.on('close', (code) => resolve({ code, stdout, stderr }));
+      child.stdin.write(JSON.stringify(payload));
+      child.stdin.end();
+    });
+  }
+
+  // Spawn `--render` with a real cwd. The receipt reads the newest ledger under
+  // HOME/.claude/pr-provenance-stamp; cwd only affects the git denominator.
+  function runRender(homeDir, cwd) {
+    return new Promise((resolve) => {
+      const child = spawn('node', [SCRIPT_PATH, '--render'], {
+        cwd,
+        env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir },
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (d) => { stdout += d; });
+      child.stderr.on('data', (d) => { stderr += d; });
+      child.on('close', (code) => resolve({ code, stdout, stderr }));
+    });
+  }
+
+  it('prints a friendly no-ledger message and exits 0 when nothing is recorded', async () => {
+    // realpathSync: macOS mktemp lives under /var → /private/var; canonicalize the
+    // spawned cwd so any git-denominator lookup is stable (observed live).
+    const emptyHome = fs.realpathSync(freshDir());
+    const cwd = fs.realpathSync(freshDir());
+    try {
+      const { code, stdout } = await runRender(emptyHome, cwd);
+      assert.strictEqual(code, 0);
+      assert.match(stdout, /No provenance ledger recorded yet/i);
+      assert.doesNotMatch(stdout.trim(), /^\{/, 'friendly message is plain text, not JSON');
+    } finally {
+      fs.rmSync(emptyHome, { recursive: true, force: true });
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('renders the receipt block after a real hook records a ledger', async () => {
+    const cwd = fs.realpathSync(freshDir());
+    try {
+      // Seed the ledger via real PostToolUse invocations (Write + a passing test).
+      await runHookHome({
+        hook_event_name: 'PostToolUse', tool_name: 'Write',
+        tool_input: { content: 'a\nb\nc' }, session_id: 'render-seed',
+      }, home);
+      await runHookHome({
+        hook_event_name: 'PostToolUse', tool_name: 'Bash',
+        tool_input: { command: 'npm test' }, tool_response: { exit_code: 0 },
+        session_id: 'render-seed',
+      }, home);
+
+      const { code, stdout } = await runRender(home, cwd);
+      assert.strictEqual(code, 0);
+      assert.ok(stdout.includes('Provenance'), stdout);
+      assert.ok(stdout.includes('npm test'), stdout);
+      assert.ok(stdout.includes('1/1'), stdout);
+      assert.ok(stdout.includes(STAMP_BEGIN) && stdout.includes(STAMP_END), 'wrapped in sentinels');
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('never throws — render output is plain text, not a hook JSON envelope', async () => {
+    const cwd = fs.realpathSync(freshDir());
+    try {
+      const { code, stdout } = await runRender(home, cwd);
+      assert.strictEqual(code, 0);
+      assert.doesNotMatch(stdout.trim(), /^\{/, 'render output is a human receipt, not JSON');
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
   });
 });

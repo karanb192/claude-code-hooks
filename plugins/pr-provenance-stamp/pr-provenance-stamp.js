@@ -28,6 +28,12 @@
  *
  * Logs to: ~/.claude/hooks-logs/   State: ~/.claude/pr-provenance-stamp/
  *
+ * PLUGIN INSTALL (recommended): this hook also ships as an installable plugin —
+ * `/plugin install pr-provenance-stamp@claude-code-hooks` — which wires both
+ * events automatically and adds a `/pr-provenance-stamp:receipt` command to
+ * preview the receipt on demand. The classic settings.json snippet below still
+ * works for copy-paste users.
+ *
  * COST/TOKEN CAVEAT (GitHub issue #11008): hooks do NOT receive token/cost in
  * their input, so spend is parsed from the transcript JSONL at transcript_path
  * and priced from a static table — figures are ESTIMATES and rendered as such
@@ -925,8 +931,70 @@ async function main() {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// --render CLI — preview the receipt for the most recent session ledger.
+//
+// Powers `/pr-provenance-stamp:receipt`. Prints the EXACT stamp block the
+// PreToolUse branch would splice into a PR body, built from the newest ledger
+// under STATE_DIR (via the same buildProvenance/renderStamp helpers — no logic
+// is duplicated). There is no transcript at render time, so prompt/spend/model
+// figures degrade to omitted rather than faked; the git denominator is taken
+// from the current repo so the agent-authored % is still real when available.
+// Never throws; falls back to a friendly no-ledger-yet message on empty state.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Absolute path of the most-recently-modified ledger JSON, or null. */
+function findLatestLedger(dir = STATE_DIR) {
+  try {
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+    let best = null;
+    for (const f of files) {
+      const full = path.join(dir, f);
+      let mtime = 0;
+      try { mtime = fs.statSync(full).mtimeMs; } catch { continue; }
+      if (!best || mtime > best.mtime) best = { full, mtime };
+    }
+    return best ? best.full : null;
+  } catch {
+    return null;
+  }
+}
+
+function renderCli(dir = STATE_DIR, cwd = process.cwd(), runGit = defaultRunGit) {
+  try {
+    const file = findLatestLedger(dir);
+    if (!file) {
+      process.stdout.write(
+        'No provenance ledger recorded yet.\n' +
+        'Keep working in Claude Code (the PostToolUse hook records edits and test\n' +
+        'runs as you go), then run /pr-provenance-stamp:receipt again — or just\n' +
+        '`gh pr create` and the receipt is stamped into the PR body automatically.\n'
+      );
+      return;
+    }
+    let ledger;
+    try {
+      ledger = { ...emptyLedger('unknown'), ...JSON.parse(fs.readFileSync(file, 'utf-8')) };
+    } catch {
+      ledger = emptyLedger('unknown');
+    }
+    // Real human/agent split needs a git denominator; degrades to null (→ the
+    // absolute agent line count is shown instead of a fabricated percentage).
+    let totalAdded = null;
+    try { totalAdded = totalBranchAddedLines(cwd, runGit); } catch { totalAdded = null; }
+    const prov = buildProvenance(ledger, parseTranscript(''), totalAdded);
+    process.stdout.write(renderStamp(prov) + '\n');
+  } catch (e) {
+    process.stdout.write('pr-provenance-stamp: could not render receipt (' + (e && e.message) + ')\n');
+  }
+}
+
 if (require.main === module) {
-  main();
+  if (process.argv.includes('--render')) {
+    renderCli();
+  } else {
+    main();
+  }
 } else {
   module.exports = {
     emptyLedger,
@@ -956,6 +1024,8 @@ if (require.main === module) {
     rewriteBodyArg,
     handlePostToolUse,
     handlePreToolUse,
+    findLatestLedger,
+    renderCli,
     STAMP_BEGIN,
     STAMP_END,
     TEST_CMD_RE,

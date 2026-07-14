@@ -13,6 +13,13 @@
       "description": "Per-file context-cost leaderboard — attributes every tool result's tokens to the files it loaded, so you know which files cost you the most.",
       "category": "cost",
       "tags": ["cost", "observability", "context", "hooks", "posttooluse"]
+    },
+    {
+      "name": "pr-provenance-stamp",
+      "source": "./plugins/pr-provenance-stamp",
+      "description": "Stamps a provenance receipt — prompts, estimated spend, tests run with exit codes, and a truthful agent-authored line split — into your PR body on `gh pr create`.",
+      "category": "git",
+      "tags": ["pr", "provenance", "github", "hooks", "pretooluse", "posttooluse"]
     }
   ]
 }
