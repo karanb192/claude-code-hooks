@@ -1,0 +1,12 @@
+{
+  "name": "context-hogs",
+  "description": "A per-file context-cost leaderboard for Claude Code. A PostToolUse hook (async, zero added latency) attributes every tool result's tokens to the file(s) it pulled into context; at SessionEnd — or on demand via /context-hogs:leaderboard — it renders your repo's most token-expensive files with estimated cost, so you know which files to trim.",
+  "version": "1.0.2",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": ["claude-code", "hooks", "cost", "context", "observability", "posttooluse"]
+}
