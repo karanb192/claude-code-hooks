@@ -55,6 +55,11 @@
  *     "SessionStart":       [{ "hooks": [{ "type": "command", "command": "node /path/to/nerf-receipts.js" }] }]
  *   }
  * }
+ *
+ * Or install it as a plugin (no settings.json edits, hooks auto-wired):
+ *   /plugin install nerf-receipts@claude-code-hooks
+ * The plugin also exposes the trend card on demand via /nerf-receipts:receipts,
+ * which runs this script with `--render`.
  */
 
 const fs = require('fs');
@@ -589,6 +594,18 @@ function handleSessionEnd(data) {
     edit_churn: record.edit_churn,
     tokens_per_task: record.tokens_per_task,
   });
+
+  // Surface the shareable trend card to the user at session end. At SessionEnd
+  // additionalContext is NOT honored by Claude Code (it only surfaces for
+  // SessionStart/UserPromptSubmit) and there is no decision control, so
+  // `systemMessage` is the only output field that renders here. Only emit it
+  // once there are enough sessions to tell an honest story (renderTrendCard
+  // returns null below MIN_SESSIONS_FOR_TREND).
+  const card = renderTrendCard(readLedger());
+  if (card) {
+    log({ level: 'TREND_CARD', sessions: 'session-end' });
+    return JSON.stringify({ systemMessage: card });
+  }
   return '{}';
 }
 
@@ -609,6 +626,44 @@ function handleSessionStart(data) {
       additionalContext: card,
     },
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// On-demand render (powers the /nerf-receipts:receipts skill)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Print the same trend card the SessionEnd hook renders, straight to stdout, so
+ * you never have to wait for a session to end. Reads the personal ledger
+ * (~/.claude/nerf-receipts/sessions.jsonl). Degrades to a friendly message when
+ * the ledger is empty or hasn't yet reached MIN_SESSIONS_FOR_TREND. Never throws
+ * and never prints a hook JSON envelope — this is human-facing plain text.
+ */
+function renderCli() {
+  try {
+    const records = readLedger();
+    const card = renderTrendCard(records);
+    if (card) {
+      process.stdout.write(card + '\n');
+      return;
+    }
+    if (!records.length) {
+      process.stdout.write(
+        'No nerf-receipts data recorded yet.\n' +
+        'Keep using Claude Code — the hooks quietly record your per-session quality\n' +
+        'signals (failure rate, edit churn, tokens/task) as you work. Then run\n' +
+        '/nerf-receipts:receipts again to see your model-quality trend card.\n'
+      );
+    } else {
+      process.stdout.write(
+        `Only ${records.length} session${records.length === 1 ? '' : 's'} recorded so far — ` +
+        `need at least ${MIN_SESSIONS_FOR_TREND} to draw an honest trend card.\n` +
+        'Keep using Claude Code and check back after a few more sessions.\n'
+      );
+    }
+  } catch (e) {
+    process.stdout.write('nerf-receipts: could not render trend card (' + (e && e.message) + ')\n');
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -652,7 +707,11 @@ async function main() {
 }
 
 if (require.main === module) {
-  main();
+  if (process.argv.includes('--render')) {
+    renderCli();
+  } else {
+    main();
+  }
 } else {
   module.exports = {
     isToolFailure,
@@ -668,6 +727,7 @@ if (require.main === module) {
     sparkline,
     detectShifts,
     renderTrendCard,
+    renderCli,
     MIN_SESSIONS_FOR_TREND,
     MAX_TRANSCRIPT_BYTES,
     // persistence (exported for hermetic integration-ish unit tests)

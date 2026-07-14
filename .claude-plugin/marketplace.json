@@ -13,6 +13,13 @@
       "description": "Per-file context-cost leaderboard — attributes every tool result's tokens to the files it loaded, so you know which files cost you the most.",
       "category": "cost",
       "tags": ["cost", "observability", "context", "hooks", "posttooluse"]
+    },
+    {
+      "name": "nerf-receipts",
+      "source": "./plugins/nerf-receipts",
+      "description": "A personal flight recorder for Claude Code quality — records your own per-session failure rate, edit churn, and tokens/task by model version, and flags real shifts when a model changes.",
+      "category": "observability",
+      "tags": ["quality", "observability", "model-drift", "hooks", "sessionend"]
     }
   ]
 }

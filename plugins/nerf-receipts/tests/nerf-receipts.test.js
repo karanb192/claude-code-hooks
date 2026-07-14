@@ -2,7 +2,7 @@
 /**
  * Tests for nerf-receipts.js
  *
- * Run: node --test hook-scripts/tests/session-end/nerf-receipts.test.js
+ * Run: node --test plugins/nerf-receipts/tests/nerf-receipts.test.js
  * Or:  npm test
  */
 
@@ -29,9 +29,9 @@ const {
   renderTrendCard,
   MIN_SESSIONS_FOR_TREND,
   MAX_TRANSCRIPT_BYTES,
-} = require('../../session-end/nerf-receipts.js');
+} = require('../nerf-receipts.js');
 
-const SCRIPT_PATH = path.join(__dirname, '../../session-end/nerf-receipts.js');
+const SCRIPT_PATH = path.join(__dirname, '../nerf-receipts.js');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Hermetic temp-HOME helpers
@@ -809,5 +809,105 @@ describe('Integration: defensive handling', () => {
     const { code, output } = await runHook({ hook_event_name: 'PostToolUse', session_id: 'defensive' });
     assert.strictEqual(code, 0);
     assert.deepStrictEqual(output, {});
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Integration: SessionEnd renders the trend card via systemMessage
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Integration: SessionEnd systemMessage', () => {
+  it('emits the trend card via systemMessage once enough sessions exist', async () => {
+    const home = makeTempHome();
+    // Seed the ledger just below the trend threshold with a shift-worthy history,
+    // then let a real SessionEnd append the crossing session and render the card.
+    const ledgerFile = ledgerPath(home);
+    fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
+    const seeded = [
+      ...Array.from({ length: 3 }, () => sess('claude-x-1', 0.10, 1000)),
+      ...Array.from({ length: MIN_SESSIONS_FOR_TREND - 4 }, () => sess('claude-x-2', 0.40, 1000)),
+    ].map((r) => JSON.stringify(r));
+    fs.writeFileSync(ledgerFile, seeded.join('\n') + '\n');
+
+    const sid = 'se-card';
+    await runHook({ hook_event_name: 'PostToolUse', session_id: sid, tool_name: 'Bash', tool_input: { command: 'x' }, tool_response: { exit_code: 0 } }, home);
+    const { code, output } = await runHook({ hook_event_name: 'SessionEnd', session_id: sid }, home);
+    assert.strictEqual(code, 0);
+    assert.ok(typeof output.systemMessage === 'string', 'expected a systemMessage card');
+    assert.ok(output.systemMessage.includes('NERF RECEIPTS'));
+    // and the crossing session really landed in the ledger
+    assert.strictEqual(readLedgerFile(home).length, MIN_SESSIONS_FOR_TREND);
+  });
+
+  it('stays quiet ({}) at SessionEnd when there are too few sessions', async () => {
+    const home = makeTempHome();
+    const sid = 'se-quiet';
+    await runHook({ hook_event_name: 'PostToolUse', session_id: sid, tool_name: 'Bash', tool_input: { command: 'x' }, tool_response: { exit_code: 0 } }, home);
+    const { output } = await runHook({ hook_event_name: 'SessionEnd', session_id: sid }, home);
+    assert.deepStrictEqual(output, {});
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Integration: --render CLI (powers the /nerf-receipts:receipts plugin skill)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Spawn the script with --render and a temp HOME. The ledger is keyed by HOME
+// (~/.claude/nerf-receipts/sessions.jsonl), not by cwd, so no cwd/realpath
+// juggling is needed. Returns raw stdout — a plain-text card, never a JSON
+// envelope.
+function runRender(home) {
+  return new Promise((resolve) => {
+    const child = spawn('node', [SCRIPT_PATH, '--render'], {
+      env: { PATH: process.env.PATH, HOME: home },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+describe('Integration: --render CLI', () => {
+  it('prints a friendly no-data message and exits 0 when the ledger is empty', async () => {
+    const home = makeTempHome();
+    const { code, stdout } = await runRender(home);
+    assert.strictEqual(code, 0);
+    assert.match(stdout, /No nerf-receipts data recorded yet/i);
+    assert.doesNotMatch(stdout.trim(), /^\{/, 'render output is human text, not a hook JSON envelope');
+  });
+
+  it('reflects a ledger built by a real hook invocation (below the trend threshold)', async () => {
+    const home = makeTempHome();
+    // Record one genuine session end-to-end (PostToolUse + SessionEnd).
+    const sid = 'render-real';
+    await runHook({ hook_event_name: 'PostToolUse', session_id: sid, tool_name: 'Bash', tool_input: { command: 'x' }, tool_response: { exit_code: 1 } }, home);
+    await runHook({ hook_event_name: 'SessionEnd', session_id: sid, model: 'claude-x' }, home);
+    assert.strictEqual(readLedgerFile(home).length, 1, 'precondition: a real ledger row exists');
+
+    const { code, stdout } = await runRender(home);
+    assert.strictEqual(code, 0);
+    assert.doesNotMatch(stdout, /No nerf-receipts data recorded yet/i, 'should see the recorded session');
+    assert.match(stdout, new RegExp(`at least ${MIN_SESSIONS_FOR_TREND}`));
+    assert.doesNotMatch(stdout.trim(), /^\{/, 'render output is plain text, not JSON');
+  });
+
+  it('renders the full trend card once enough sessions are recorded', async () => {
+    const home = makeTempHome();
+    const ledgerFile = ledgerPath(home);
+    fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
+    const rows = [
+      ...Array.from({ length: 4 }, () => sess('claude-x-1', 0.10, 1000)),
+      ...Array.from({ length: 4 }, () => sess('claude-x-2', 0.40, 1000)),
+    ].map((r) => JSON.stringify(r));
+    fs.writeFileSync(ledgerFile, rows.join('\n') + '\n');
+
+    const { code, stdout } = await runRender(home);
+    assert.strictEqual(code, 0);
+    assert.match(stdout, /NERF RECEIPTS/);
+    assert.match(stdout, /failure rate/);
+    assert.match(stdout, /⚠/, 'the seeded model shift should surface');
+    assert.doesNotMatch(stdout.trim(), /^\{/, 'render output is a human card, not JSON');
   });
 });
