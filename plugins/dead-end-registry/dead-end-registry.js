@@ -33,7 +33,10 @@
  *     are verbatim transcript code and could contain secrets — keep them small,
  *     and never execute or shell out with any transcript content.
  *
- * Setup in .claude/settings.json:
+ * Install as a plugin (recommended): /plugin install dead-end-registry@claude-code-hooks
+ * — auto-wires all four events and adds the /dead-end-registry:dead-ends viewer.
+ *
+ * Or wire it up the classic way in .claude/settings.json:
  * {
  *   "hooks": {
  *     "Stop": [{
@@ -830,6 +833,70 @@ function route(data) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// On-demand render (the /dead-end-registry:dead-ends plugin command)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Render this repo's recorded dead ends as a human-readable card, newest first.
+ * Pure: takes already-read registry entries, returns a string (never throws).
+ * Reuses the same money()/date/reason fields the injected cards use.
+ */
+function renderRegistry(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return (
+      'No dead ends recorded yet for this repo.\n' +
+      'Keep using Claude Code here — the Stop/PreCompact hooks mine tried-and-reverted ' +
+      'approaches as you go — then run /dead-end-registry:dead-ends again.'
+    );
+  }
+  // Newest first. Undated/legacy entries sort last (timestamp 0).
+  const sorted = entries.slice().sort((a, b) => {
+    const ta = Date.parse((a && (a.ts || a.date)) || '') || 0;
+    const tb = Date.parse((b && (b.ts || b.date)) || '') || 0;
+    return tb - ta;
+  });
+  const lines = [
+    '╔══════════════════════════════════════════════════════════════╗',
+    '║  🪦  DEAD-END REGISTRY — approaches already tried & walked back ║',
+    '╚══════════════════════════════════════════════════════════════╝',
+    `${sorted.length} recorded dead end${sorted.length === 1 ? '' : 's'} for this repo (newest first):`,
+    '',
+  ];
+  let totalUsd = 0;
+  sorted.forEach((e, i) => {
+    const cost = money(e);
+    const bits = [`tried ${e.date || 'unknown date'}`, `walked back: ${e.reason || 'ruled out'}`];
+    if (cost) {
+      bits.push(`paid ${cost} in tokens (est.)`);
+      totalUsd += e.usd || 0;
+    }
+    lines.push(`${i + 1}. ${e.summary || '(no summary recorded)'}`);
+    lines.push(`    → ${bits.join(' · ')}`);
+  });
+  if (totalUsd > 0) {
+    lines.push('');
+    lines.push(`💸  Estimated total already paid for these dead ends the first time: ~$${totalUsd.toFixed(2)} in tokens.`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * CLI entry for `node dead-end-registry.js --render`. Prints the current repo's
+ * registry straight to stdout (plain text, NOT a hook JSON envelope). Honors the
+ * per-cwd registry file and degrades to a friendly empty-state; never throws.
+ */
+function renderCli() {
+  try {
+    const cwd = process.cwd();
+    const file = registryFileFor(cwd);
+    const entries = readRegistry(file);
+    process.stdout.write(renderRegistry(entries) + '\n');
+  } catch (e) {
+    process.stdout.write('dead-end-registry: could not render registry (' + (e && e.message) + ')\n');
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -859,7 +926,11 @@ async function main() {
 }
 
 if (require.main === module) {
-  main();
+  if (process.argv.includes('--render')) {
+    renderCli();
+  } else {
+    main();
+  }
 } else {
   module.exports = {
     // pure functions for unit testing
@@ -883,6 +954,8 @@ if (require.main === module) {
     renderPromptCard,
     renderEditReason,
     deadEndLine,
+    renderRegistry,
+    renderCli,
     registryFileFor,
     readRegistry,
     appendRegistry,

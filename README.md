@@ -67,13 +67,7 @@ Fires when Claude needs user attention.
 
 ### User-Prompt-Submit
 
-Fires on `UserPromptSubmit` (match + warn), `Stop`/`SubagentStop`/`PreCompact` (mine the transcript), and `PreToolUse` `Edit\|Write` (ask before reintroducing a reverted change).
-
-The registry is stored per-project in `~/.claude/dead-end-registry/` — outside the repo, so mined snippets (verbatim transcript code, truncated to 80 lines) can never be committed. Entries expire after 60 days and the file is compacted automatically; token costs are estimates (hooks receive no billing data).
-
-| Hook                                                                             | Matcher                                       | Description                                                                       |
-| -------------------------------------------------------------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------- |
-| [dead-end-registry](hook-scripts/user-prompt-submit/dead-end-registry.js)        | `UserPromptSubmit\|Stop\|SubagentStop\|PreCompact\|PreToolUse` | Remembers tried-and-reverted approaches (reason + token cost) and warns on retries |
+> 🔌 **`dead-end-registry`** (remembers approaches you tried and reverted, then warns before you retry them) now ships as an installable **plugin** — see [Install as a plugin](#-install-as-a-plugin).
 
 ### Utils
 
@@ -108,6 +102,7 @@ This repo is also a **Claude Code plugin marketplace**, so you can install a sin
 | Plugin                               | What it does                                                                                                                              | Command                                     |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
 | [context-hogs](plugins/context-hogs) | Per-file context-cost leaderboard — attributes each tool result's tokens to the files it loaded, so you see which files cost you the most | `/context-hogs:leaderboard` renders the board on demand |
+| [dead-end-registry](plugins/dead-end-registry) | Remembers approaches you tried and reverted (reason + estimated token cost) and warns before you retry them — a prompt-submit card plus an ask-before-edit guard | `/dead-end-registry:dead-ends` renders the registry on demand |
 
 > ⚡ The `context-hogs` PostToolUse hook is **async** — it records in the background and adds **zero latency** to a tool call. The SessionEnd summary and the `/context-hogs:leaderboard` command render the leaderboard.
 

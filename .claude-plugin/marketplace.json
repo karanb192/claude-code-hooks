@@ -13,6 +13,13 @@
       "description": "Per-file context-cost leaderboard — attributes every tool result's tokens to the files it loaded, so you know which files cost you the most.",
       "category": "cost",
       "tags": ["cost", "observability", "context", "hooks", "posttooluse"]
+    },
+    {
+      "name": "dead-end-registry",
+      "source": "./plugins/dead-end-registry",
+      "description": "Remembers approaches you tried and reverted (with reason and estimated token cost) and warns before you retry them — via a prompt-submit card and an ask-before-edit guard.",
+      "category": "memory",
+      "tags": ["memory", "context", "negative-knowledge", "hooks", "userpromptsubmit", "pretooluse"]
     }
   ]
 }

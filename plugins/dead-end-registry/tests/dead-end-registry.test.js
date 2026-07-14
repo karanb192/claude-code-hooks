@@ -2,7 +2,7 @@
 /**
  * Tests for dead-end-registry.js
  *
- * Run: node --test hook-scripts/tests/user-prompt-submit/dead-end-registry.test.js
+ * Run: node --test plugins/dead-end-registry/tests/dead-end-registry.test.js
  * Or:  npm test
  */
 
@@ -15,7 +15,7 @@ const path = require('node:path');
 
 const crypto = require('node:crypto');
 
-const mod = require('../../user-prompt-submit/dead-end-registry.js');
+const mod = require('../dead-end-registry.js');
 const {
   tokenize,
   keywords,
@@ -34,6 +34,7 @@ const {
   messageText,
   renderPromptCard,
   renderEditReason,
+  renderRegistry,
   persistDeadEnds,
   readRegistry,
   registryFileFor,
@@ -52,7 +53,7 @@ const {
   MAX_CODE_CHARS,
 } = mod;
 
-const SCRIPT_PATH = path.join(__dirname, '../../user-prompt-submit/dead-end-registry.js');
+const SCRIPT_PATH = path.join(__dirname, '../dead-end-registry.js');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Fixtures
@@ -964,5 +965,92 @@ describe('Config: constants', () => {
   it('route is a function and defaults unknown events to {}', () => {
     assert.strictEqual(typeof route, 'function');
     assert.deepStrictEqual(route({ hook_event_name: 'Nope', cwd: '/x' }), {});
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unit: renderRegistry (pure)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Unit: renderRegistry', () => {
+  it('friendly empty-state for no entries', () => {
+    const out = renderRegistry([]);
+    assert.match(out, /No dead ends recorded yet/i);
+    assert.doesNotMatch(out.trim(), /^\{/); // never a JSON envelope
+  });
+
+  it('lists entries newest first with date, reason, and est. cost', () => {
+    const entries = [
+      { summary: 'older worker-threads attempt', date: '2026-06-01', ts: '2026-06-01T00:00:00Z', reason: 'reverted', usd: 3 },
+      { summary: 'newer postgres migration attempt', date: '2026-07-10', ts: '2026-07-10T00:00:00Z', reason: 'abandoned', usd: 5 },
+    ];
+    const out = renderRegistry(entries);
+    // Newest (postgres, 2026-07-10) must appear before the older worker-threads one.
+    assert.ok(out.indexOf('postgres') < out.indexOf('worker-threads'), 'newest first');
+    assert.match(out, /2026-07-10/);
+    assert.match(out, /abandoned/);
+    assert.match(out, /\$5/); // est. cost rendered
+    assert.match(out, /est\./i); // labeled as estimate
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Integration: --render CLI (powers the /dead-end-registry:dead-ends command)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Spawn the script with --render and a real process.cwd() (the registry is keyed
+// by the current working directory, not a stdin cwd). Returns raw stdout — a
+// plain-text card, never a hook JSON envelope.
+function runRender(homeDir, cwd) {
+  return new Promise((resolve) => {
+    const env = { ...process.env, HOME: homeDir };
+    delete env.CCH_SLA_WEBHOOK;
+    const child = spawn('node', [SCRIPT_PATH, '--render'], { cwd, env });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+describe('Integration: --render CLI', () => {
+  let home;
+  before(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'cch-de-render-')); });
+  after(() => { try { fs.rmSync(home, { recursive: true, force: true }); } catch {} });
+
+  it('prints a friendly empty-state and exits 0 when the registry is empty', async () => {
+    // realpathSync: macOS mktemp lives under /var → /private/var symlink, and the
+    // spawned --render sees the resolved process.cwd(); canonicalize so the render
+    // key matches the seeded registry key.
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cch-de-rrepo-')));
+    const { code, stdout } = await runRender(home, repo);
+    assert.strictEqual(code, 0);
+    assert.match(stdout, /No dead ends recorded yet/i);
+    assert.doesNotMatch(stdout.trim(), /^\{/, 'render output is a human card, not JSON');
+  });
+
+  it('renders the registry after a real Stop mine records a dead end', async () => {
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cch-de-rrepo-')));
+    const { file } = withTranscript(makeTranscript());
+    // Mine via a REAL Stop hook keyed to this repo cwd (no hand-seeded registry).
+    const mine = await runHook(
+      { hook_event_name: 'Stop', cwd: repo, transcript_path: file, session_id: 'sess-render' },
+      home
+    );
+    assert.deepStrictEqual(mine.output, {});
+
+    const { code, stdout } = await runRender(home, repo);
+    assert.strictEqual(code, 0);
+    assert.match(stdout, /DEAD[- ]END/i, 'render shows the registry card');
+    assert.ok(/worker|revert|race/i.test(stdout), 'render shows the mined dead end');
+    assert.doesNotMatch(stdout, /No dead ends recorded yet/i);
+  });
+
+  it('never throws on --render — output is plain text, not a hook JSON envelope', async () => {
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cch-de-rrepo-')));
+    const { code, stdout } = await runRender(home, repo);
+    assert.strictEqual(code, 0);
+    assert.doesNotMatch(stdout.trim(), /^\{/, 'render output is a human card, not JSON');
   });
 });
