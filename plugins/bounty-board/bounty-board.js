@@ -50,6 +50,11 @@
  *     }]
  *   }
  * }
+ *
+ * Or install as a plugin (no settings.json editing, wiring auto-discovered):
+ *   /plugin marketplace add karanb192/claude-code-hooks
+ *   /plugin install bounty-board@claude-code-hooks
+ * The plugin also adds /bounty-board:board to render the current board on demand.
  */
 
 const fs = require('fs');
@@ -715,8 +720,35 @@ async function main() {
   }
 }
 
+// On-demand bounty board for the CURRENT repo — invoked by the
+// /bounty-board:board skill (`node bounty-board.js --render`). Runs the same
+// time-boxed, capped scan the SessionStart hook uses (all latency caps intact)
+// and prints the current board straight to stdout, so you never have to wait
+// for a session boundary. Plain text, never a hook JSON envelope; never throws.
+function renderCli() {
+  try {
+    const cwd = process.cwd();
+    const { bounties } = scanRepo(cwd);
+    if (!bounties.length) {
+      process.stdout.write(
+        'No open bounties — this repo is squeaky clean, or it is not a git repo. 🏆\n' +
+        'The bounty board prices tracked TODO/FIXME/HACK/XXX/BUG/skip/lint-suppress markers; ' +
+        'add some (and run inside a git repo) then try /bounty-board:board again.\n'
+      );
+      return;
+    }
+    process.stdout.write(renderBoard(bounties, path.basename(cwd || '')) + '\n');
+  } catch (e) {
+    process.stdout.write('bounty-board: could not render the board (' + e.message + ')\n');
+  }
+}
+
 if (require.main === module) {
-  main();
+  if (process.argv.includes('--render')) {
+    renderCli();
+  } else {
+    main();
+  }
 } else {
   module.exports = {
     RULES,
@@ -737,5 +769,6 @@ if (require.main === module) {
     handlePostToolUse,
     handleSessionEnd,
     touchedPaths,
+    renderCli,
   };
 }

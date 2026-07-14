@@ -1,0 +1,12 @@
+{
+  "name": "bounty-board",
+  "description": "Turns your repo's tech debt into an aging bounty economy. A SessionStart hook scans tracked files and prices each TODO/FIXME/HACK/skip as a wanted-poster bounty whose XP grows with its git-blame age, injects the top 3 as opportunistic side quests, and — via a PostToolUse hook — verifies and pays out bounties that genuinely disappear. SessionEnd renders a payout card, and /bounty-board:board shows the current board on demand.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": ["claude-code", "hooks", "tech-debt", "todo", "gamification", "sessionstart", "posttooluse"]
+}

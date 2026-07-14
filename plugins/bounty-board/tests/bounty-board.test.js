@@ -2,7 +2,7 @@
 /**
  * Tests for bounty-board.js
  *
- * Run: node --test hook-scripts/tests/session-start/bounty-board.test.js
+ * Run: node --test plugins/bounty-board/tests/bounty-board.test.js
  * Or:  npm test
  *
  * Hermetic: every spawn/state-touching test overrides HOME to a fresh temp dir
@@ -16,7 +16,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const mod = require('../../session-start/bounty-board.js');
+const mod = require('../bounty-board.js');
 const {
   RULES,
   SEVERITY_XP,
@@ -34,7 +34,7 @@ const {
   scanRepo,
 } = mod;
 
-const SCRIPT_PATH = path.join(__dirname, '../../session-start/bounty-board.js');
+const SCRIPT_PATH = path.join(__dirname, '../bounty-board.js');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -833,6 +833,89 @@ describe('Config: RULES structure', () => {
     for (const r of RULES) {
       assert.ok(r.re instanceof RegExp, `${r.id} missing regex`);
       assert.ok(SEVERITY_XP[r.severity], `${r.id} severity ${r.severity} has no XP mapping`);
+    }
+  });
+});
+
+// ── Integration: --render CLI (powers the /bounty-board:board plugin skill) ───
+//
+// Spawn the script with --render and a real process.cwd(): the on-demand board
+// scans the current working directory (not a stdin cwd) and prints a plain-text
+// card, never a hook JSON envelope.
+
+function runRender(cwd, home) {
+  return new Promise((resolve) => {
+    const env = { ...process.env, HOME: home };
+    delete env.CCH_SLA_WEBHOOK;
+    const child = spawn('node', [SCRIPT_PATH, '--render'], { cwd, env });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => (stdout += d));
+    child.stderr.on('data', (d) => (stderr += d));
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+describe('Integration: --render CLI', () => {
+  let home;
+  before(() => (home = mkTmp('cch-bounty-render-home-')));
+  after(() => fs.rmSync(home, { recursive: true, force: true }));
+
+  it('prints a friendly empty-state message and exits 0 on a repo with no findings', async () => {
+    // realpathSync: on macOS mktemp lives under /var → /private/var symlink, and
+    // the spawned --render sees the resolved process.cwd(); canonicalize so paths line up.
+    const repo = fs.realpathSync(mkTmp('cch-bounty-render-clean-'));
+    try {
+      initGitRepo(repo);
+      fs.writeFileSync(path.join(repo, 'clean.js'), 'export const ok = true;\n');
+      commitAll(repo, 'init');
+      const { code, stdout } = await runRender(repo, home);
+      assert.strictEqual(code, 0);
+      assert.match(stdout, /No open bounties/i);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('prints a friendly empty-state message (not a crash) on a non-git directory', async () => {
+    const plain = fs.realpathSync(mkTmp('cch-bounty-render-nogit-'));
+    try {
+      fs.writeFileSync(path.join(plain, 'a.js'), '// TODO x\n');
+      const { code, stdout } = await runRender(plain, home);
+      assert.strictEqual(code, 0);
+      assert.match(stdout, /No open bounties/i);
+    } finally {
+      fs.rmSync(plain, { recursive: true, force: true });
+    }
+  });
+
+  it('renders the current board for a repo that has debt', async () => {
+    const repo = fs.realpathSync(mkTmp('cch-bounty-render-debt-'));
+    try {
+      initGitRepo(repo);
+      fs.writeFileSync(path.join(repo, 'auth.js'), 'function login() {}\n// FIXME insecure token check\n');
+      commitAll(repo, 'init');
+      const { code, stdout } = await runRender(repo, home);
+      assert.strictEqual(code, 0);
+      assert.match(stdout, /BOUNTY BOARD/);
+      assert.match(stdout, /FIXME/);
+      assert.doesNotMatch(stdout, /No open bounties/i);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('never throws on --render — output is a human card, not a JSON envelope', async () => {
+    const repo = fs.realpathSync(mkTmp('cch-bounty-render-json-'));
+    try {
+      initGitRepo(repo);
+      fs.writeFileSync(path.join(repo, 'a.js'), '// TODO tidy up\n');
+      commitAll(repo, 'init');
+      const { code, stdout } = await runRender(repo, home);
+      assert.strictEqual(code, 0);
+      assert.doesNotMatch(stdout.trim(), /^\{/, 'render output is a human card, not JSON');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
     }
   });
 });

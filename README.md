@@ -61,9 +61,7 @@ Runs **after** Claude executes a tool. Can react to results.
 
 Runs when a session starts. Can inject context for the session.
 
-| Hook                                                            | Matcher | Description                                                                   |
-| --------------------------------------------------------------- | ------- | ----------------------------------------------------------------------------- |
-| [bounty-board](hook-scripts/session-start/bounty-board.js)      | `*`     | Prices repo TODO/FIXME/skips as aging XP bounties, injects top 3 as side quests, verifies+pays out on clear |
+> 🔌 **`bounty-board`** (repo TODO/FIXME/HACK debt priced as aging XP bounties) now ships as an installable **plugin** — see [Install as a plugin](#-install-as-a-plugin).
 
 ### Notification
 
@@ -106,6 +104,7 @@ This repo is also a **Claude Code plugin marketplace**, so you can install a sin
 | Plugin                               | What it does                                                                                                                              | Command                                     |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
 | [context-hogs](plugins/context-hogs) | Per-file context-cost leaderboard — attributes each tool result's tokens to the files it loaded, so you see which files cost you the most | `/context-hogs:leaderboard` renders the board on demand |
+| [bounty-board](plugins/bounty-board) | Prices your repo's TODO/FIXME/HACK/skip debt as aging XP bounties, injects the top 3 as opportunistic side quests, and verifies + pays out bounties you genuinely clear | `/bounty-board:board` renders the board on demand |
 
 > ⚡ The `context-hogs` PostToolUse hook is **async** — it records in the background and adds **zero latency** to a tool call. The SessionEnd summary and the `/context-hogs:leaderboard` command render the leaderboard.
 
