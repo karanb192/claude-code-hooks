@@ -2,7 +2,7 @@
 /**
  * Tests for standup-autopilot.js
  *
- * Run: node --test hook-scripts/tests/session-end/standup-autopilot.test.js
+ * Run: node --test plugins/standup-autopilot/tests/standup-autopilot.test.js
  * Or:  npm test
  *
  * Hermetic: unit tests are pure (no HOME touched); integration tests spawn the
@@ -16,7 +16,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const mod = require('../../session-end/standup-autopilot.js');
+const mod = require('../standup-autopilot.js');
 const {
   messageText,
   role,
@@ -30,7 +30,7 @@ const {
   renderResumeContext,
 } = mod;
 
-const SCRIPT_PATH = path.join(__dirname, '../../session-end/standup-autopilot.js');
+const SCRIPT_PATH = path.join(__dirname, '../standup-autopilot.js');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers to build fake transcript messages (Claude Code JSONL shape).
@@ -737,6 +737,68 @@ describe('Integration: spawn with temp HOME', () => {
       const dir = path.join(home, '.claude', 'standup');
       const files = fs.readdirSync(dir);
       assert.ok(files.length >= 1);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Integration: --card render CLI (powers the /standup-autopilot:standup skill)
+//
+// The skill runs `node standup-autopilot.js --card` (no date = the most recent
+// day with recorded sessions). The ledger is HOME-keyed, so a temp HOME fully
+// isolates these; no cwd is set, so the /var→/private/var symlink is a non-issue.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Integration: --card render CLI', () => {
+  it('prints the empty-state card and exits 0 when no ledger exists', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'standup-render-empty-'));
+    try {
+      const { code, stdout } = await runHook(null, ['--card'], home);
+      assert.strictEqual(code, 0);
+      assert.ok(stdout.includes('STANDUP'), stdout);
+      assert.ok(/no sessions recorded/.test(stdout), stdout);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('renders a card populated by a real Stop hook invocation', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'standup-render-pop-'));
+    try {
+      const tp = path.join(home, 'transcript.jsonl');
+      fs.writeFileSync(tp, [
+        userMsg('refactor the billing service'),
+        assistantText('Refactored billing and opened https://github.com/acme/app/pull/900'),
+      ].map((m) => JSON.stringify(m)).join('\n') + '\n');
+
+      const rec = await runHook({
+        hook_event_name: 'Stop',
+        session_id: 'render-pop-1',
+        cwd: '/work/billing-svc',
+        transcript_path: tp,
+      }, [], home);
+      assert.strictEqual(rec.code, 0);
+
+      // Render the exact day the hook wrote (deterministic, no midnight race).
+      const dir = path.join(home, '.claude', 'standup');
+      const date = fs.readdirSync(dir)[0].replace(/\.jsonl$/, '');
+      const { code, stdout } = await runHook(null, ['--card', date], home);
+      assert.strictEqual(code, 0);
+      assert.ok(stdout.includes('billing-svc'), stdout);
+      assert.ok(stdout.includes('#900'), stdout);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('renders plain text, not a hook JSON envelope', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'standup-render-plain-'));
+    try {
+      const { code, stdout } = await runHook(null, ['--card'], home);
+      assert.strictEqual(code, 0);
+      assert.doesNotMatch(stdout.trim(), /^\{/, 'render output is a human card, not JSON');
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

@@ -69,9 +69,7 @@ Fires when Claude needs user attention.
 
 Fires on session boundaries — capture outcomes and inject context across sessions.
 
-| Hook                                                                  | Event(s)                        | Description                                                                              |
-| --------------------------------------------------------------------- | ------------------------------- | --------------------------------------------------------------------------------------- |
-| [standup-autopilot](hook-scripts/session-end/standup-autopilot.js)    | `SessionEnd\|Stop\|SessionStart` | Writes your daily standup from what your agents actually did; re-injects open blockers |
+> 🔌 **`standup-autopilot`** (writes your daily standup from what your agents actually did; re-injects open blockers) now ships as an installable **plugin** — see [Install as a plugin](#-install-as-a-plugin).
 
 ### Utils
 
@@ -106,6 +104,7 @@ This repo is also a **Claude Code plugin marketplace**, so you can install a sin
 | Plugin                               | What it does                                                                                                                              | Command                                     |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
 | [context-hogs](plugins/context-hogs) | Per-file context-cost leaderboard — attributes each tool result's tokens to the files it loaded, so you see which files cost you the most | `/context-hogs:leaderboard` renders the board on demand |
+| [standup-autopilot](plugins/standup-autopilot) | Writes your daily standup from what your agents actually did across repos — captures tasks, tests, PRs, and blockers from session transcripts and re-injects yesterday's open blockers next session | `/standup-autopilot:standup` renders today's card on demand |
 
 > ⚡ The `context-hogs` PostToolUse hook is **async** — it records in the background and adds **zero latency** to a tool call. The SessionEnd summary and the `/context-hogs:leaderboard` command render the leaderboard.
 

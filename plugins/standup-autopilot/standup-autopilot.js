@@ -35,6 +35,9 @@
  *
  * Render a standup card any time:   node standup-autopilot.js --card [YYYY-MM-DD]
  *
+ * Install as a plugin:   /plugin install standup-autopilot@claude-code-hooks
+ * (then /standup-autopilot:standup renders today's card on demand)
+ *
  * Setup in .claude/settings.json:
  * {
  *   "hooks": {
@@ -626,15 +629,21 @@ function runCli(argv) {
   process.stdout.write((slack ? renderSlack(rows, date) : renderCard(rows, date)) + '\n');
 }
 
+// On-demand standup card for the plugin skill (`node standup-autopilot.js --card`).
+// Prints the same card the SessionStart hook shows, straight to stdout, so you
+// never have to wait for a session boundary. Never throws: on any failure it
+// degrades to a friendly empty-state card (plain text, never a hook JSON envelope).
+function renderCli() {
+  try {
+    runCli(process.argv.slice(2));
+  } catch {
+    try { process.stdout.write(renderCard([], today()) + '\n'); } catch {}
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const argv = process.argv.slice(2);
-  if (argv.includes('--card')) {
-    try { runCli(argv); } catch { process.stdout.write('{}\n'); }
-    return;
-  }
-
   let input = '';
   for await (const chunk of process.stdin) input += chunk;
 
@@ -663,7 +672,11 @@ async function main() {
 }
 
 if (require.main === module) {
-  main();
+  if (process.argv.includes('--card')) {
+    renderCli();
+  } else {
+    main();
+  }
 } else {
   module.exports = {
     readTranscript,
@@ -687,5 +700,7 @@ if (require.main === module) {
     handleSessionStart,
     today,
     shiftDate,
+    runCli,
+    renderCli,
   };
 }

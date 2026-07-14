@@ -13,6 +13,13 @@
       "description": "Per-file context-cost leaderboard — attributes every tool result's tokens to the files it loaded, so you know which files cost you the most.",
       "category": "cost",
       "tags": ["cost", "observability", "context", "hooks", "posttooluse"]
+    },
+    {
+      "name": "standup-autopilot",
+      "source": "./plugins/standup-autopilot",
+      "description": "Writes your daily standup from what your agents actually did across repos — captures tasks, tests, PRs, and blockers from session transcripts and re-injects yesterday's open blockers next session.",
+      "category": "productivity",
+      "tags": ["standup", "productivity", "sessionstart", "sessionend", "hooks"]
     }
   ]
 }
