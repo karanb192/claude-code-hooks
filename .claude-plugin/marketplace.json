@@ -12,14 +12,96 @@
       "source": "./plugins/context-hogs",
       "description": "Per-file context-cost leaderboard — attributes every tool result's tokens to the files it loaded, so you know which files cost you the most.",
       "category": "cost",
-      "tags": ["cost", "observability", "context", "hooks", "posttooluse"]
+      "tags": [
+        "cost",
+        "observability",
+        "context",
+        "hooks",
+        "posttooluse"
+      ]
+    },
+    {
+      "name": "nerf-receipts",
+      "source": "./plugins/nerf-receipts",
+      "description": "A personal flight recorder for Claude Code quality — records your own per-session failure rate, edit churn, and tokens/task by model version, and flags real shifts when a model changes.",
+      "category": "observability",
+      "tags": [
+        "quality",
+        "observability",
+        "model-drift",
+        "hooks",
+        "sessionend"
+      ]
+    },
+    {
+      "name": "dead-rules-audit",
+      "source": "./plugins/dead-rules-audit",
+      "description": "CLAUDE.md compliance scorecard — tallies which rules Claude actually follows vs ignores as you edit, and flags chronically-ignored rules to promote into a deterministic hook.",
+      "category": "observability",
+      "tags": [
+        "compliance",
+        "claude-md",
+        "observability",
+        "hooks",
+        "posttooluse",
+        "sessionstart",
+        "sessionend"
+      ]
+    },
+    {
+      "name": "pr-provenance-stamp",
+      "source": "./plugins/pr-provenance-stamp",
+      "description": "Stamps a provenance receipt — prompts, estimated spend, tests run with exit codes, and a truthful agent-authored line split — into your PR body on `gh pr create`.",
+      "category": "git",
+      "tags": [
+        "pr",
+        "provenance",
+        "github",
+        "hooks",
+        "pretooluse",
+        "posttooluse"
+      ]
+    },
+    {
+      "name": "standup-autopilot",
+      "source": "./plugins/standup-autopilot",
+      "description": "Writes your daily standup from what your agents actually did across repos — captures tasks, tests, PRs, and blockers from session transcripts and re-injects yesterday's open blockers next session.",
+      "category": "productivity",
+      "tags": [
+        "standup",
+        "productivity",
+        "sessionstart",
+        "sessionend",
+        "hooks"
+      ]
+    },
+    {
+      "name": "dead-end-registry",
+      "source": "./plugins/dead-end-registry",
+      "description": "Remembers approaches you tried and reverted (with reason and estimated token cost) and warns before you retry them — via a prompt-submit card and an ask-before-edit guard.",
+      "category": "memory",
+      "tags": [
+        "memory",
+        "context",
+        "negative-knowledge",
+        "hooks",
+        "userpromptsubmit",
+        "pretooluse"
+      ]
     },
     {
       "name": "bounty-board",
       "source": "./plugins/bounty-board",
       "description": "Prices your repo's TODO/FIXME/HACK debt as aging XP bounties, injects the top 3 as opportunistic side quests, and verifies + pays out bounties you genuinely clear.",
       "category": "productivity",
-      "tags": ["tech-debt", "todo", "gamification", "hooks", "sessionstart", "posttooluse"]
+      "tags": [
+        "tech-debt",
+        "todo",
+        "gamification",
+        "hooks",
+        "sessionstart",
+        "posttooluse"
+      ]
     }
   ]
 }
