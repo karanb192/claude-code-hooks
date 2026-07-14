@@ -2,7 +2,7 @@
 /**
  * Tests for context-hogs.js
  *
- * Run: node --test hook-scripts/tests/post-tool-use/context-hogs.test.js
+ * Run: node --test plugins/context-hogs/tests/context-hogs.test.js
  * Or:  npm test
  */
 

@@ -40,13 +40,13 @@
  * {
  *   "hooks": {
  *     "Stop": [{
- *       "hooks": [{ "type": "command", "command": "node /path/to/dead-end-registry.js" }]
+ *       "hooks": [{ "type": "command", "command": "node /path/to/dead-end-registry.js", "async": true }]
  *     }],
  *     "SubagentStop": [{
- *       "hooks": [{ "type": "command", "command": "node /path/to/dead-end-registry.js" }]
+ *       "hooks": [{ "type": "command", "command": "node /path/to/dead-end-registry.js", "async": true }]
  *     }],
  *     "PreCompact": [{
- *       "hooks": [{ "type": "command", "command": "node /path/to/dead-end-registry.js" }]
+ *       "hooks": [{ "type": "command", "command": "node /path/to/dead-end-registry.js", "async": true }]
  *     }],
  *     "UserPromptSubmit": [{
  *       "hooks": [{ "type": "command", "command": "node /path/to/dead-end-registry.js" }]

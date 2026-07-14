@@ -42,7 +42,7 @@
  *       "hooks": [{ "type": "command", "command": "node /path/to/bounty-board.js" }]
  *     }],
  *     "PostToolUse": [{
- *       "matcher": "Edit|Write|Bash",
+ *       "matcher": "Edit|MultiEdit|Write|NotebookEdit|Bash",
  *       "hooks": [{ "type": "command", "command": "node /path/to/bounty-board.js" }]
  *     }],
  *     "SessionEnd": [{
@@ -52,7 +52,6 @@
  * }
  *
  * Or install as a plugin (no settings.json editing, wiring auto-discovered):
- *   /plugin marketplace add karanb192/claude-code-hooks
  *   /plugin install bounty-board@claude-code-hooks
  * The plugin also adds /bounty-board:board to render the current board on demand.
  */

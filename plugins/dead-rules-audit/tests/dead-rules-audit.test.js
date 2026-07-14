@@ -2,7 +2,7 @@
 /**
  * Tests for dead-rules-audit.js
  *
- * Run: node --test hook-scripts/tests/post-tool-use/dead-rules-audit.test.js
+ * Run: node --test plugins/dead-rules-audit/tests/dead-rules-audit.test.js
  * Or:  npm test
  *
  * Hermetic: every test that touches ~/.claude overrides HOME to a fresh temp dir

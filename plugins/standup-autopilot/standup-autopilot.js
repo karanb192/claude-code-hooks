@@ -42,7 +42,7 @@
  * {
  *   "hooks": {
  *     "Stop": [{
- *       "hooks": [{ "type": "command", "command": "node /path/to/standup-autopilot.js" }]
+ *       "hooks": [{ "type": "command", "command": "node /path/to/standup-autopilot.js", "async": true }]
  *     }],
  *     "SessionEnd": [{
  *       "hooks": [{ "type": "command", "command": "node /path/to/standup-autopilot.js" }]
@@ -490,7 +490,7 @@ function renderCard(rows, date = today()) {
   lines.push(`│  📋 STANDUP · ${date}${' '.repeat(Math.max(0, 42 - date.length))}│`);
   lines.push('└─────────────────────────────────────────────────────────┘');
   if (!rows.length) {
-    lines.push('  (no sessions recorded)');
+    lines.push('  (no sessions recorded) — run /standup-autopilot:standup again after your next session.');
     return lines.join('\n');
   }
   const summary = summarizeDay(rows);
@@ -620,7 +620,10 @@ function handleSessionStart(data) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function runCli(argv) {
-  const idx = argv.indexOf('--card');
+  // `--render` is an accepted alias for `--card` (matches the render line used by
+  // the other six plugin skills).
+  let idx = argv.indexOf('--card');
+  if (idx === -1) idx = argv.indexOf('--render');
   const slack = argv.includes('--slack');
   let date = argv[idx + 1];
   // Strict YYYY-MM-DD only — the date lands in a filesystem path.
@@ -672,7 +675,7 @@ async function main() {
 }
 
 if (require.main === module) {
-  if (process.argv.includes('--card')) {
+  if (process.argv.includes('--card') || process.argv.includes('--render')) {
     renderCli();
   } else {
     main();

@@ -2,7 +2,6 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "*",
         "hooks": [
           {
             "type": "command",
@@ -14,7 +13,6 @@
     ],
     "PostToolUseFailure": [
       {
-        "matcher": "*",
         "hooks": [
           {
             "type": "command",

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * PR Provenance Stamp - PreToolUse (Bash) + PostToolUse (Edit|Write|Bash) Hook
+ * PR Provenance Stamp - PreToolUse (Bash) + PostToolUse (Edit|MultiEdit|Write|Bash) Hook
  *
  * Embeds a reviewer-facing provenance receipt into the PR body when Claude runs
  * `gh pr create` (or `glab mr create`). PostToolUse hooks maintain a per-session
@@ -30,7 +30,7 @@
  *
  * PLUGIN INSTALL (recommended): this hook also ships as an installable plugin —
  * `/plugin install pr-provenance-stamp@claude-code-hooks` — which wires both
- * events automatically and adds a `/pr-provenance-stamp:receipt` command to
+ * events automatically and adds a `/pr-provenance-stamp:provenance` command to
  * preview the receipt on demand. The classic settings.json snippet below still
  * works for copy-paste users.
  *
@@ -68,7 +68,7 @@
  *   "hooks": {
  *     "PostToolUse": [{
  *       "matcher": "Edit|MultiEdit|Write|Bash",
- *       "hooks": [{ "type": "command", "command": "node /path/to/pr-provenance-stamp.js" }]
+ *       "hooks": [{ "type": "command", "command": "node /path/to/pr-provenance-stamp.js", "async": true }]
  *     }],
  *     "PreToolUse": [{
  *       "matcher": "Bash",
@@ -128,7 +128,7 @@ function emptyLedger(sessionId) {
     writes: 0,
     agent_lines: 0,
     // Human-authored added lines. Left 0 here; the truthful value is derived at
-    // stamp time from the git branch diff (see buildProvenance / must-fix #2).
+    // stamp time from the git branch diff (see buildProvenance).
     human_lines: 0,
     tests: [], // { cmd, exit, ok }
     models: [], // list of model ids seen
@@ -192,7 +192,15 @@ function redactSecrets(s) {
     // --token xyz / -p xyz style flags.
     .replace(/(--?(?:token|password|passwd|pwd|api-?key|secret|auth)[A-Za-z-]*)([ =])\S+/gi, '$1$2[redacted]')
     // Authorization: Bearer xyz.
-    .replace(/\b(bearer)\s+\S+/gi, '$1 [redacted]');
+    .replace(/\b(bearer)\s+\S+/gi, '$1 [redacted]')
+    // Bare credential tokens that carry no secret-ish key name — parity with
+    // standup-autopilot's REDACTION_RES. This receipt lands in a PUBLIC PR body,
+    // so prefer over-redaction.
+    .replace(/\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{16,}/g, '[redacted]')
+    .replace(/\bsk-[A-Za-z0-9_-]{16,}/g, '[redacted]')
+    .replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}/g, '[redacted]')
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, '[redacted]')
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b/g, '[redacted]');
 }
 
 /** Detect a test/typecheck command and its exit code from a Bash PostToolUse. */
@@ -325,7 +333,7 @@ function readTranscript(transcriptPath) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Human-line detection (must-fix #2): agent-authored % needs a real total.
+// Human-line detection: agent-authored % needs a real total from the git diff.
 //
 // The ledger only ever sees lines the AGENT wrote (via Edit/Write tool calls),
 // so agent_lines alone can never yield a non-100% split. To get a truthful
@@ -424,7 +432,7 @@ function fmtTokens(n) {
  * provided (and >= agent lines) it becomes the denominator for a TRUTHFUL
  * agent-authored percentage: human_lines = totalAddedLines - agent_lines.
  * When absent/unusable, we do NOT fabricate a 100% figure — agentPct stays null
- * and callers surface the absolute agent line count instead (must-fix #2).
+ * and callers surface the absolute agent line count instead.
  */
 function buildProvenance(ledger, transcript, totalAddedLines = null) {
   const tests = Array.isArray(ledger.tests) ? ledger.tests : [];
@@ -859,7 +867,7 @@ function handlePreToolUse(data, dir = STATE_DIR, runGit = defaultRunGit) {
 
   const ledger = loadLedger(session_id, dir);
   const transcript = parseTranscript(readTranscript(transcript_path) || '');
-  // Real human/agent split needs a git denominator (must-fix #2). Degrades to
+  // Real human/agent split needs a git denominator. Degrades to
   // null → percentage suppressed rather than a fake 100%.
   let totalAdded = null;
   if (cwd) {
@@ -934,7 +942,7 @@ async function main() {
 // ─────────────────────────────────────────────────────────────────────────────
 // --render CLI — preview the receipt for the most recent session ledger.
 //
-// Powers `/pr-provenance-stamp:receipt`. Prints the EXACT stamp block the
+// Powers `/pr-provenance-stamp:provenance`. Prints the EXACT stamp block the
 // PreToolUse branch would splice into a PR body, built from the newest ledger
 // under STATE_DIR (via the same buildProvenance/renderStamp helpers — no logic
 // is duplicated). There is no transcript at render time, so prompt/spend/model
@@ -967,7 +975,7 @@ function renderCli(dir = STATE_DIR, cwd = process.cwd(), runGit = defaultRunGit)
       process.stdout.write(
         'No provenance ledger recorded yet.\n' +
         'Keep working in Claude Code (the PostToolUse hook records edits and test\n' +
-        'runs as you go), then run /pr-provenance-stamp:receipt again — or just\n' +
+        'runs as you go), then run /pr-provenance-stamp:provenance again — or just\n' +
         '`gh pr create` and the receipt is stamped into the PR body automatically.\n'
       );
       return;

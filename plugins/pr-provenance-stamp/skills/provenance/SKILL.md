@@ -1,5 +1,5 @@
 ---
-name: receipt
+name: provenance
 description: Preview the provenance receipt (prompts, est. spend, tests run, agent-authored lines) for the current session ledger
 disable-model-invocation: true
 ---

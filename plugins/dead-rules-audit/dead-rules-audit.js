@@ -37,8 +37,8 @@
  *       "hooks": [{ "type": "command", "command": "node /path/to/dead-rules-audit.js" }]
  *     }],
  *     "PostToolUse": [{
- *       "matcher": "Edit|Write",
- *       "hooks": [{ "type": "command", "command": "node /path/to/dead-rules-audit.js" }]
+ *       "matcher": "Edit|MultiEdit|Write",
+ *       "hooks": [{ "type": "command", "command": "node /path/to/dead-rules-audit.js", "async": true }]
  *     }],
  *     "SessionEnd": [{
  *       "hooks": [{ "type": "command", "command": "node /path/to/dead-rules-audit.js" }]
@@ -415,7 +415,7 @@ function renderScorecard(ledger) {
   lines.push(`│ overall compliance on judgeable rules: ${overall === null ? 'n/a' : overall + '%'} (heuristic est.)`);
   lines.push('├' + '─'.repeat(68));
   if (rows.length === 0) {
-    lines.push('│ No rules have been exercised yet — edit some files and check back.');
+    lines.push('│ No rules have been exercised yet — edit some files, then run /dead-rules-audit:scorecard again.');
     lines.push('└' + '─'.repeat(68));
     return lines.join('\n');
   }

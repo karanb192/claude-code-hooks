@@ -8,5 +8,5 @@
   },
   "homepage": "https://github.com/karanb192/claude-code-hooks",
   "license": "MIT",
-  "keywords": ["claude-code", "hooks", "tech-debt", "todo", "gamification", "sessionstart", "posttooluse"]
+  "keywords": ["claude-code", "hooks", "tech-debt", "todo", "gamification", "sessionstart", "posttooluse", "sessionend"]
 }

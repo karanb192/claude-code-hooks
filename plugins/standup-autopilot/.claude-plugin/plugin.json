@@ -8,5 +8,5 @@
   },
   "homepage": "https://github.com/karanb192/claude-code-hooks",
   "license": "MIT",
-  "keywords": ["claude-code", "hooks", "standup", "productivity", "sessionstart", "sessionend"]
+  "keywords": ["claude-code", "hooks", "standup", "productivity", "stop", "sessionstart", "sessionend"]
 }

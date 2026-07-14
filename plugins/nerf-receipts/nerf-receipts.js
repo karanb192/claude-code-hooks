@@ -47,10 +47,10 @@
  * Setup in .claude/settings.json:
  * {
  *   "hooks": {
- *     "PostToolUse":        [{ "matcher": "*", "hooks": [{ "type": "command", "command": "node /path/to/nerf-receipts.js" }] }],
- *     "PostToolUseFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "node /path/to/nerf-receipts.js" }] }],
- *     "Stop":               [{ "hooks": [{ "type": "command", "command": "node /path/to/nerf-receipts.js" }] }],
- *     "SubagentStop":       [{ "hooks": [{ "type": "command", "command": "node /path/to/nerf-receipts.js" }] }],
+ *     "PostToolUse":        [{ "matcher": "*", "hooks": [{ "type": "command", "command": "node /path/to/nerf-receipts.js", "async": true }] }],
+ *     "PostToolUseFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "node /path/to/nerf-receipts.js", "async": true }] }],
+ *     "Stop":               [{ "hooks": [{ "type": "command", "command": "node /path/to/nerf-receipts.js", "async": true }] }],
+ *     "SubagentStop":       [{ "hooks": [{ "type": "command", "command": "node /path/to/nerf-receipts.js", "async": true }] }],
  *     "SessionEnd":         [{ "hooks": [{ "type": "command", "command": "node /path/to/nerf-receipts.js" }] }],
  *     "SessionStart":       [{ "hooks": [{ "type": "command", "command": "node /path/to/nerf-receipts.js" }] }]
  *   }
@@ -65,7 +65,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const HOME = process.env.HOME || process.env.USERPROFILE || '';
+const HOME = process.env.HOME || process.env.USERPROFILE || require('os').homedir();
 const LOG_DIR = path.join(HOME, '.claude', 'hooks-logs');
 const DATA_DIR = path.join(HOME, '.claude', 'nerf-receipts');
 const LEDGER = path.join(DATA_DIR, 'sessions.jsonl');

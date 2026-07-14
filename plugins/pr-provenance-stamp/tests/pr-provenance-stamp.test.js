@@ -1057,7 +1057,7 @@ describe('Integration: stdin/stdout hook flow', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Integration: --render CLI (powers the /pr-provenance-stamp:receipt command)
+// Integration: --render CLI (powers the /pr-provenance-stamp:provenance command)
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Integration: --render CLI', () => {

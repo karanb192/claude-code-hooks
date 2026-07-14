@@ -12,11 +12,10 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Edit|Write|Bash",
+        "matcher": "Edit|MultiEdit|Write|NotebookEdit|Bash",
         "hooks": [
           {
             "type": "command",
-            "async": true,
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bounty-board.js\""
           }
         ]
