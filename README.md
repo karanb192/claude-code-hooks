@@ -4,7 +4,7 @@
 
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-1149%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions)
+[![Tests](https://img.shields.io/badge/tests-1165%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions)
 
 **🌐 [Live site & catalog](https://karanb192.github.io/claude-code-hooks/)**
 
@@ -192,6 +192,29 @@ Security hooks support configurable safety levels:
 ```javascript
 const SAFETY_LEVEL = "strict"; // or 'critical', 'high'
 ```
+
+### 🙋 Ask mode (prompt instead of block)
+
+`block-dangerous-commands` and `protect-secrets` can **ask** instead of denying outright. When ask mode is on for a level, matching operations return `permissionDecision: "ask"` — Claude Code shows the reason and lets you approve or reject, instead of hard-blocking.
+
+Enable per level via environment variables (the literal string `true`; anything else means deny):
+
+| Variable            | Affects                                        |
+| ------------------- | ---------------------------------------------- |
+| `HOOK_ASK_CRITICAL` | `critical`-level patterns (rm -rf ~, .env, …)  |
+| `HOOK_ASK_HIGH`     | `high`-level patterns (git reset --hard, …)    |
+| `HOOK_ASK_STRICT`   | `strict`-level patterns (any force push, …)    |
+
+Set them inline in your hook command in `settings.json`:
+
+```json
+{
+  "type": "command",
+  "command": "HOOK_ASK_STRICT=true node ~/.claude/hooks/block-dangerous-commands.js"
+}
+```
+
+Everything defaults to **deny** — ask mode is strictly opt-in. A common setup: keep `critical` on deny, set `HOOK_ASK_STRICT=true` so cautionary patterns prompt instead of blocking.
 
 ---
 

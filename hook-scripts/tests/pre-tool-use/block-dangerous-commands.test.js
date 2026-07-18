@@ -12,7 +12,7 @@ const { spawn } = require('node:child_process');
 const path = require('node:path');
 
 // Import from the actual script
-const { PATTERNS, LEVELS, SAFETY_LEVEL, checkCommand } = require('../../pre-tool-use/block-dangerous-commands.js');
+const { PATTERNS, LEVELS, SAFETY_LEVEL, ASK, checkCommand } = require('../../pre-tool-use/block-dangerous-commands.js');
 
 const SCRIPT_PATH = path.join(__dirname, '../../pre-tool-use/block-dangerous-commands.js');
 
@@ -33,10 +33,16 @@ function shouldAllow(cmd, safetyLevel = undefined) {
   assert.strictEqual(result.blocked, false, `Expected ALLOWED but was BLOCKED by '${result.pattern?.id}': ${cmd}`);
 }
 
-// Spawns the actual script and returns parsed output
-function runHook(command) {
+// Spawns the actual script and returns parsed output.
+// Hermetic by default: HOOK_ASK_* is never inherited from the runner's shell —
+// tests opt in explicitly via envOverrides.
+function runHook(command, envOverrides = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn('node', [SCRIPT_PATH]);
+    const env = { ...process.env, ...envOverrides };
+    for (const key of Object.keys(env)) {
+      if (key.startsWith('HOOK_ASK_') && !(key in envOverrides)) delete env[key];
+    }
+    const child = spawn('node', [SCRIPT_PATH], { env });
     let stdout = '';
     let stderr = '';
 
@@ -120,22 +126,20 @@ describe('Unit: checkCommand()', () => {
     it('allows git push', () => shouldAllow('git push origin main'));
   });
 
-  describe('HIGH: secrets exposure', () => {
-    it('blocks cat .env', () => shouldBlock('cat .env', 'cat-env'));
-    it('blocks cat credentials.json', () => shouldBlock('cat credentials.json', 'cat-secrets'));
-    it('blocks printenv', () => shouldBlock('printenv', 'env-dump'));
-    it('blocks echo $SECRET_KEY', () => shouldBlock('echo $SECRET_KEY', 'echo-secret'));
-    it('allows cat package.json', () => shouldAllow('cat package.json'));
-  });
-
   describe('HIGH: chmod 777', () => {
     it('blocks chmod 777', () => shouldBlock('chmod 777 file.sh', 'chmod-777'));
     it('allows chmod 755', () => shouldAllow('chmod 755 script.sh'));
   });
 
-  describe('HIGH: docker & SSH', () => {
+  describe('HIGH: docker', () => {
     it('blocks docker volume rm', () => shouldBlock('docker volume rm vol', 'docker-vol-rm'));
-    it('blocks rm id_rsa', () => shouldBlock('rm ~/.ssh/id_rsa', 'rm-ssh'));
+  });
+
+  describe('Secrets handled by protect-secrets (not this script)', () => {
+    it('allows cat .env (delegated to protect-secrets)', () => shouldAllow('cat .env'));
+    it('allows printenv (delegated to protect-secrets)', () => shouldAllow('printenv'));
+    it('allows echo $SECRET_KEY (delegated to protect-secrets)', () => shouldAllow('echo $SECRET_KEY'));
+    it('allows rm ~/.ssh/id_rsa (delegated to protect-secrets)', () => shouldAllow('rm ~/.ssh/id_rsa'));
   });
 
   describe('STRICT: other patterns (requires strict level)', () => {
@@ -245,5 +249,58 @@ describe('Config: PATTERNS structure', () => {
     assert.strictEqual(LEVELS.critical, 1);
     assert.strictEqual(LEVELS.high, 2);
     assert.strictEqual(LEVELS.strict, 3);
+  });
+
+  it('ASK has valid boolean values for each level', () => {
+    for (const level of ['critical', 'high', 'strict']) {
+      assert.ok(level in ASK, `ASK missing level: ${level}`);
+      assert.strictEqual(typeof ASK[level], 'boolean', `ASK.${level} is not boolean`);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Integration Tests - ask mode
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Integration: ask mode', () => {
+  it('returns "ask" for a critical-level pattern when HOOK_ASK_CRITICAL=true', async () => {
+    const { output } = await runHook('rm -rf ~/', { HOOK_ASK_CRITICAL: 'true' });
+    assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'ask');
+  });
+
+  it('returns "ask" for a high-level pattern when HOOK_ASK_HIGH=true', async () => {
+    const { output } = await runHook('git reset --hard HEAD~1', { HOOK_ASK_HIGH: 'true' });
+    assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'ask');
+  });
+
+  it('keeps the pattern id and reason in the ask prompt', async () => {
+    const { output } = await runHook('git reset --hard HEAD~1', { HOOK_ASK_HIGH: 'true' });
+    assert.match(output.hookSpecificOutput?.permissionDecisionReason ?? '', /\[git-reset-hard\]/);
+  });
+
+  it('ask mode is per level: HOOK_ASK_HIGH=true does not soften a critical pattern', async () => {
+    const { output } = await runHook('rm -rf ~/', { HOOK_ASK_HIGH: 'true' });
+    assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
+  });
+
+  it('only the literal string "true" enables ask mode ("1" does not)', async () => {
+    const { output } = await runHook('git reset --hard HEAD~1', { HOOK_ASK_HIGH: '1' });
+    assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
+  });
+
+  it('explicit "false" keeps deny', async () => {
+    const { output } = await runHook('git reset --hard HEAD~1', { HOOK_ASK_HIGH: 'false' });
+    assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
+  });
+
+  it('defaults to "deny" for a critical-level pattern when no HOOK_ASK_* is set', async () => {
+    const { output } = await runHook('rm -rf ~/');
+    assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
+  });
+
+  it('defaults to "deny" for a high-level pattern when no HOOK_ASK_* is set', async () => {
+    const { output } = await runHook('git reset --hard HEAD~1');
+    assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
   });
 });

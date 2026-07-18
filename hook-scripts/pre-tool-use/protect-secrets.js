@@ -9,6 +9,11 @@
  *   high     - + secrets files, env dumps, exfiltration attempts
  *   strict   - + database configs, any config that might contain secrets
  *
+ * Ask mode (opt-in, per level): set HOOK_ASK_CRITICAL / HOOK_ASK_HIGH /
+ * HOOK_ASK_STRICT to the literal string "true" in the hook command to have
+ * that level prompt the user ("ask") instead of blocking outright ("deny").
+ * e.g. "command": "HOOK_ASK_STRICT=true node /path/to/protect-secrets.js"
+ *
  * Setup in .claude/settings.json:
  * {
  *   "hooks": {
@@ -24,6 +29,17 @@ const fs = require('fs');
 const path = require('path');
 
 const SAFETY_LEVEL = 'high';
+
+// Ask mode per level: if true, prompts the user instead of blocking outright.
+// When ask=true, the hook returns decision "ask" so Claude Code shows the
+// reason and lets the user decide. When ask=false (default), the hook denies.
+// Env overrides: HOOK_ASK_CRITICAL, HOOK_ASK_HIGH, HOOK_ASK_STRICT
+const envBool = (key, fallback) => key in process.env ? process.env[key] === 'true' : fallback;
+const ASK = {
+  critical: envBool('HOOK_ASK_CRITICAL', false),
+  high:     envBool('HOOK_ASK_HIGH', false),
+  strict:   envBool('HOOK_ASK_STRICT', false),
+};
 
 // Files explicitly safe to access (templates, examples)
 const ALLOWLIST = [
@@ -180,14 +196,16 @@ async function main() {
 
     if (result.blocked) {
       const p = result.pattern;
+      const shouldAsk = ASK[p.level] === true;
+      const decision = shouldAsk ? 'ask' : 'deny';
       const target = tool_input?.file_path || tool_input?.command?.slice(0, 100);
-      log({ level: 'BLOCKED', id: p.id, priority: p.level, tool: tool_name, target, session_id, cwd, permission_mode });
+      log({ level: shouldAsk ? 'ASK' : 'BLOCKED', id: p.id, priority: p.level, decision, tool: tool_name, target, session_id, cwd, permission_mode });
 
       const action = { Read: 'read', Edit: 'modify', Write: 'write to', Bash: 'execute' }[tool_name];
       return console.log(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
-          permissionDecision: 'deny',
+          permissionDecision: decision,
           permissionDecisionReason: `${EMOJIS[p.level]} [${p.id}] Cannot ${action}: ${p.reason}`
         }
       }));
@@ -203,7 +221,7 @@ if (require.main === module) {
   main();
 } else {
   module.exports = {
-    SENSITIVE_FILES, BASH_PATTERNS, ALLOWLIST, LEVELS, SAFETY_LEVEL,
+    SENSITIVE_FILES, BASH_PATTERNS, ALLOWLIST, LEVELS, SAFETY_LEVEL, ASK,
     check, checkFilePath, checkBashCommand, isAllowlisted,
   };
 }

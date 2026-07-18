@@ -8,6 +8,11 @@
  *   high     - + risky: force push main, secrets exposure, git reset --hard
  *   strict   - + cautionary: any force push, sudo rm, docker prune
  *
+ * Ask mode (opt-in, per level): set HOOK_ASK_CRITICAL / HOOK_ASK_HIGH /
+ * HOOK_ASK_STRICT to the literal string "true" in the hook command to have
+ * that level prompt the user ("ask") instead of blocking outright ("deny").
+ * e.g. "command": "HOOK_ASK_STRICT=true node /path/to/block-dangerous-commands.js"
+ *
  * Setup in .claude/settings.json:
  * {
  *   "hooks": {
@@ -23,6 +28,17 @@ const fs = require('fs');
 const path = require('path');
 
 const SAFETY_LEVEL = 'high';
+
+// Ask mode per level: if true, prompts the user instead of blocking outright.
+// When ask=true, the hook returns decision "ask" so Claude Code shows the
+// reason and lets the user decide. When ask=false (default), the hook denies.
+// Env overrides: HOOK_ASK_CRITICAL, HOOK_ASK_HIGH, HOOK_ASK_STRICT
+const envBool = (key, fallback) => key in process.env ? process.env[key] === 'true' : fallback;
+const ASK = {
+  critical: envBool('HOOK_ASK_CRITICAL', false),
+  high:     envBool('HOOK_ASK_HIGH', false),
+  strict:   envBool('HOOK_ASK_STRICT', false),
+};
 
 const PATTERNS = [
   // CRITICAL - Catastrophic, unrecoverable
@@ -42,12 +58,7 @@ const PATTERNS = [
   { level: 'high', id: 'git-reset-hard', regex: /\bgit\s+reset\s+--hard/,                                                 reason: 'git reset --hard loses uncommitted work' },
   { level: 'high', id: 'git-clean-f',    regex: /\bgit\s+clean\s+(-\w*f|-f)/,                                             reason: 'git clean -f deletes untracked files' },
   { level: 'high', id: 'chmod-777',      regex: /\bchmod\b.+\b777\b/,                                                     reason: 'chmod 777 is a security risk' },
-  { level: 'high', id: 'cat-env',        regex: /\b(cat|less|head|tail|more)\s+\.env\b/,                                  reason: 'reading .env file exposes secrets' },
-  { level: 'high', id: 'cat-secrets',    regex: /\b(cat|less|head|tail|more)\b.+(credentials|secrets?|\.pem|\.key|id_rsa|id_ed25519)/i, reason: 'reading secrets file' },
-  { level: 'high', id: 'env-dump',       regex: /\b(printenv|^env)\s*([;&|]|$)/,                                          reason: 'env dump may expose secrets' },
-  { level: 'high', id: 'echo-secret',    regex: /\becho\b.+\$\w*(SECRET|KEY|TOKEN|PASSWORD|API_|PRIVATE)/i,               reason: 'echoing secret variable' },
   { level: 'high', id: 'docker-vol-rm',  regex: /\bdocker\s+volume\s+(rm|prune)/,                                         reason: 'docker volume deletion loses data' },
-  { level: 'high', id: 'rm-ssh',         regex: /\brm\b.+\.ssh\/(id_|authorized_keys|known_hosts)/,                       reason: 'deleting SSH keys' },
 
   // STRICT - Cautionary, context-dependent
   { level: 'strict', id: 'git-force-any',    regex: /\bgit\s+push\b(?!.+--force-with-lease).+(--force|-f)\b/,              reason: 'force push (use --force-with-lease)' },
@@ -93,11 +104,13 @@ async function main() {
 
     if (result.blocked) {
       const p = result.pattern;
-      log({ level: 'BLOCKED', id: p.id, priority: p.level, cmd, session_id, cwd, permission_mode });
+      const shouldAsk = ASK[p.level] === true;
+      const decision = shouldAsk ? 'ask' : 'deny';
+      log({ level: shouldAsk ? 'ASK' : 'BLOCKED', id: p.id, priority: p.level, decision, cmd, session_id, cwd, permission_mode });
       return console.log(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
-          permissionDecision: 'deny',
+          permissionDecision: decision,
           permissionDecisionReason: `${EMOJIS[p.level]} [${p.id}] ${p.reason}`
         }
       }));
@@ -112,5 +125,5 @@ async function main() {
 if (require.main === module) {
   main();
 } else {
-  module.exports = { PATTERNS, LEVELS, SAFETY_LEVEL, checkCommand };
+  module.exports = { PATTERNS, LEVELS, SAFETY_LEVEL, ASK, checkCommand };
 }
