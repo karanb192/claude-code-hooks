@@ -1,0 +1,12 @@
+{
+  "name": "pr-provenance-stamp",
+  "description": "Embeds a reviewer-facing provenance receipt into your PR body when Claude runs `gh pr create` (or `glab mr create`). A PostToolUse hook (async, zero added latency) records a per-session ledger — tool calls, agent-authored lines, and every test/typecheck command with its real exit code; a PreToolUse (Bash) hook then rewrites the --body on `gh pr create` with the real prompt count, estimated spend, test tally, and a truthful agent-vs-human authored-line split. Preview it anytime via /pr-provenance-stamp:provenance.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": ["claude-code", "hooks", "pr", "provenance", "github", "receipt", "pretooluse", "posttooluse"]
+}

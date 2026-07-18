@@ -1,17 +1,31 @@
 {
   "name": "claude-code-hooks",
   "version": "1.0.0",
-  "description": "Production-ready hooks for Claude Code — safety, automation, notifications, and more",
+  "description": "Production-ready hooks for Claude Code — plus an installable plugin marketplace: safety, automation, notifications, cost/observability, git, productivity, and memory",
   "scripts": {
-    "test": "node --test hook-scripts/tests/**/*.test.js"
+    "test": "node --test hook-scripts/tests/**/*.test.js plugins/**/tests/*.test.js"
   },
   "keywords": [
     "claude",
     "claude-code",
     "hooks",
     "safety",
-    "security"
+    "security",
+    "plugin",
+    "claude-code-plugin",
+    "marketplace",
+    "observability",
+    "cost"
   ],
+  "author": "Karan Bansal (https://github.com/karanb192)",
+  "homepage": "https://karanb192.github.io/claude-code-hooks/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/karanb192/claude-code-hooks.git"
+  },
+  "bugs": {
+    "url": "https://github.com/karanb192/claude-code-hooks/issues"
+  },
   "license": "MIT",
   "engines": {
     "node": ">=18.0.0"
