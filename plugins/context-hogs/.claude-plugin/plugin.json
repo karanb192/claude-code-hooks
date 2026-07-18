@@ -8,5 +8,13 @@
   },
   "homepage": "https://github.com/karanb192/claude-code-hooks",
   "license": "MIT",
-  "keywords": ["claude-code", "hooks", "cost", "context", "observability", "posttooluse"]
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "cost",
+    "context",
+    "observability",
+    "posttooluse",
+    "sessionend"
+  ]
 }

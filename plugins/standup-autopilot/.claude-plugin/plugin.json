@@ -1,0 +1,12 @@
+{
+  "name": "standup-autopilot",
+  "description": "Turns what your agents ACTUALLY did into a standup — captured from session transcripts (not commits/tickets, which miss uncommitted work, real test exit codes, and unresolved errors) and rolled up cross-repo. Stop/SessionEnd snapshot each session's outcome (task, branch + diffstat, tests + exit codes, PRs, blockers) to a local per-day ledger; SessionStart re-injects yesterday's unresolved blockers via additionalContext and prints a standup-ready card. Render today's card any time via /standup-autopilot:standup.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": ["claude-code", "hooks", "standup", "productivity", "stop", "sessionstart", "sessionend"]
+}

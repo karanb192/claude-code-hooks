@@ -38,12 +38,15 @@
  * The PostToolUse entry only appends a ledger row (its stdout is ignored), so
  * "async": true is safe and gives zero added latency per tool call. Keep the
  * SessionEnd entry synchronous — its systemMessage is what renders the card.
+ *
+ * Install as a plugin: /plugin install context-hogs@claude-code-hooks
+ * The plugin also adds /context-hogs:leaderboard to render the board on demand.
  */
 
 const fs = require('fs');
 const path = require('path');
 
-const HOME = process.env.HOME || process.env.USERPROFILE || '';
+const HOME = process.env.HOME || process.env.USERPROFILE || require('os').homedir();
 const LOG_DIR = path.join(HOME, '.claude', 'hooks-logs');
 const STATE_ROOT = path.join(HOME, '.claude', 'context-hogs');
 
