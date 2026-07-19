@@ -22,5 +22,6 @@ jobs:
         run: |
           npm install -g prettier
           pipx install ruff
+          pipx install uv
       - name: Run test suite
         run: npm test
