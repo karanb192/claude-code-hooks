@@ -1,7 +1,7 @@
 {
   "name": "nerf-receipts",
-  "description": "A personal flight recorder for Claude Code quality. Background hooks (async, zero added latency) record your own per-session signals keyed by model id and Claude Code version — tool-failure rate, same-file edit churn, turn-end counts, and tokens-per-completed-task. At SessionEnd — or on demand via /nerf-receipts:receipts — it renders a trend card with sparklines and flags meaningful shifts that coincide with a model change, so the next time someone says \"they nerfed it\" you have data instead of vibes.",
-  "version": "1.0.0",
+  "description": "A personal flight recorder for Claude Code quality. Background hooks (async, zero added latency) record your own per-session signals keyed by model id and Claude Code version — tool-failure rate, same-file edit churn, turn-end counts, and tokens-per-completed-task. At your next SessionStart — or on demand via /nerf-receipts:receipts — it renders a trend card with sparklines and flags meaningful shifts that coincide with a model change, so the next time someone says \"they nerfed it\" you have data instead of vibes.",
+  "version": "1.0.1",
   "author": {
     "name": "Karan Bansal",
     "url": "https://github.com/karanb192"

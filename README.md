@@ -4,7 +4,8 @@
 
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-1165%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions)
+[![CI](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml/badge.svg)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-1165%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
 
 **🌐 [Live site & catalog](https://karanb192.github.io/claude-code-hooks/)**
 
@@ -45,6 +46,10 @@ A growing collection of tested, documented hooks you can copy, paste, and custom
 ### Session Lifecycle
 
 Runs at session boundaries — inject context at **SessionStart** and capture outcomes at **Stop / SessionEnd**.
+
+| Hook | Matcher | Description |
+|------|---------|-------------|
+| [session-logger](hook-scripts/session/session-logger.js) | `SessionStart` + `PostToolUse` + `SessionEnd` | Writes a durable markdown log of every session (cwd, git repo, files touched, bash commands). `PostToolUse` registers with `"async": true` so logging never blocks Claude; concurrent writes are serialized with a file lock. Bash commands get best-effort secret redaction. Drop-in for Obsidian vaults via `CC_SESSION_LOG_DIR`. |
 
 > 🔌 **`bounty-board`** (repo TODO/FIXME/HACK debt priced as aging XP bounties) now ships as an installable **plugin** — see [Install as a plugin](#-install-as-a-plugin).
 
@@ -87,14 +92,6 @@ Fires when Claude needs user attention.
 | Hook                                                                | Matcher                          | Description                                |
 | ------------------------------------------------------------------- | -------------------------------- | ------------------------------------------ |
 | [notify-permission](hook-scripts/notification/notify-permission.js) | `permission_prompt\|idle_prompt` | Sends Slack alerts when Claude needs input |
-
-### Session
-
-Runs on session lifecycle events — start, end, and tool usage during the session.
-
-| Hook | Matcher | Description |
-|------|---------|-------------|
-| [session-logger](hook-scripts/session/session-logger.js) | `SessionStart` + `PostToolUse` + `SessionEnd` | Writes a durable markdown log of every session (cwd, git repo, files touched, bash commands). `PostToolUse` registers with `"async": true` so logging never blocks Claude; concurrent writes are serialized with a file lock. Bash commands get best-effort secret redaction. Drop-in for Obsidian vaults via `CC_SESSION_LOG_DIR`. |
 
 ### Utils
 
@@ -220,7 +217,7 @@ Everything defaults to **deny** — ask mode is strictly opt-in. A common setup:
 
 ## 🧪 Testing
 
-All hooks include comprehensive tests:
+Requires **Node ≥ 18** (no dependencies to install). All hooks include comprehensive tests, run in CI on Node 18, 20, and 22:
 
 ```bash
 # Run all tests

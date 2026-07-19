@@ -11,6 +11,10 @@ const assert = require('node:assert');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 
+// Hermetic: never inherit a real webhook from the developer's shell. The hook
+// module reads CCH_SLA_WEBHOOK at require time, so scrub it before requiring.
+delete process.env.CCH_SLA_WEBHOOK;
+
 const {
   SLACK_WEBHOOK,
   getNotificationType,
