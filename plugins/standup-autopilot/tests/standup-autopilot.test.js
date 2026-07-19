@@ -688,7 +688,12 @@ describe('Integration: spawn with temp HOME', () => {
     try {
       const repo = path.join(home, 'myrepo');
       fs.mkdirSync(repo);
-      const git = (...args) => require('node:child_process').execFileSync('git', args, { cwd: repo, stdio: 'pipe' });
+      // GIT_CONFIG_GLOBAL/SYSTEM=/dev/null: a contributor's real gitconfig
+      // (e.g. commit.gpgsign=true) must not leak into this hermetic repo.
+      const git = (...args) => require('node:child_process').execFileSync('git', args, {
+        cwd: repo, stdio: 'pipe',
+        env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
+      });
       git('init', '-q');
       git('checkout', '-qb', 'feat/standup-test');
       fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');

@@ -17,6 +17,10 @@ const { getFormatter, formatFile, log, FORMATTERS } = require('../../post-tool-u
 
 const SCRIPT_PATH = path.join(__dirname, '../../post-tool-use/format-code.js');
 
+// Hermetic HOME: the hook logs to ~/.claude/hooks-logs — keep test noise
+// out of the real home directory. realpathSync: /var vs /private/var on macOS.
+const TEST_HOME = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hook-test-home-')));
+
 // ----------------------------------------------------------------------------
 // Test helpers
 // ----------------------------------------------------------------------------
@@ -44,7 +48,7 @@ function readContent(filePath) {
 
 function runHook(hookData) {
   return new Promise((resolve, reject) => {
-    const child = spawn('node', [SCRIPT_PATH]);
+    const child = spawn('node', [SCRIPT_PATH], { env: { ...process.env, HOME: TEST_HOME } });
     let stdout = '';
 
     child.stdout.on('data', (data) => { stdout += data; });
@@ -252,7 +256,7 @@ describe('Integration: stdin/stdout hook flow', () => {
   });
 
   it('returns {} for malformed JSON gracefully', async () => {
-    const child = spawn('node', [SCRIPT_PATH]);
+    const child = spawn('node', [SCRIPT_PATH], { env: { ...process.env, HOME: TEST_HOME } });
     let stdout = '';
 
     const result = await new Promise((resolve) => {

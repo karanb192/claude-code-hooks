@@ -17,13 +17,17 @@ const { isInGitRepo, stageFile } = require('../../post-tool-use/auto-stage.js');
 
 const SCRIPT_PATH = path.join(__dirname, '../../post-tool-use/auto-stage.js');
 
+// Hermetic HOME: the hook logs to ~/.claude/hooks-logs — keep test noise
+// out of the real home directory. realpathSync: /var vs /private/var on macOS.
+const TEST_HOME = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hook-test-home-')));
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Test helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 function runHook(toolName, toolInput, cwd = '/tmp') {
   return new Promise((resolve, reject) => {
-    const child = spawn('node', [SCRIPT_PATH]);
+    const child = spawn('node', [SCRIPT_PATH], { env: { ...process.env, HOME: TEST_HOME } });
     let stdout = '', stderr = '';
 
     child.stdout.on('data', d => stdout += d);
@@ -154,7 +158,7 @@ describe('Integration: stdin/stdout hook flow', () => {
   });
 
   it('handles malformed JSON', async () => {
-    const child = spawn('node', [SCRIPT_PATH]);
+    const child = spawn('node', [SCRIPT_PATH], { env: { ...process.env, HOME: TEST_HOME } });
     let stdout = '';
     const result = await new Promise(resolve => {
       child.stdout.on('data', d => stdout += d);
