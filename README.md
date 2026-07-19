@@ -91,7 +91,7 @@ Fires when Claude needs user attention.
 
 | Hook                                                                | Matcher                          | Description                                |
 | ------------------------------------------------------------------- | -------------------------------- | ------------------------------------------ |
-| [notify-permission](hook-scripts/notification/notify-permission.js) | `permission_prompt\|idle_prompt` | Sends Slack alerts when Claude needs input |
+| [notify-permission](hook-scripts/notification/notify-permission.js) | `permission_prompt\|idle_prompt\|elicitation_dialog` | Sends Slack alerts when Claude needs input |
 
 ### Utils
 
@@ -217,7 +217,7 @@ Everything defaults to **deny** — ask mode is strictly opt-in. A common setup:
 
 ## 🧪 Testing
 
-Requires **Node ≥ 18** (no dependencies to install). All hooks include comprehensive tests, run in CI on Node 18, 20, and 22:
+Requires **Node ≥ 18** (no npm dependencies). The `format-code` tests exercise the real formatters, so have `prettier`, `ruff`, and `uv` on your PATH — CI installs them — or expect those few tests to fail. All hooks include comprehensive tests, run in CI on Node 18, 20, and 22:
 
 ```bash
 # Run all tests

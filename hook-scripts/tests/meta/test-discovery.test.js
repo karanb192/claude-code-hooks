@@ -41,10 +41,10 @@ const HOOK_SHAPE = /^hook-scripts\/tests\/[^/]+\/[^/]+\.test\.js$/;
 const PLUGIN_SHAPE = /^plugins\/[^/]+\/tests\/[^/]+\.test\.js$/;
 
 test('every *.test.js is reachable by the npm test glob', () => {
-  const all = [
-    ...walk(path.join(ROOT, 'hook-scripts', 'tests')),
-    ...walk(path.join(ROOT, 'plugins')),
-  ];
+  // Walk the whole repo, not just the expected roots — a test file dropped
+  // anywhere else (hook-scripts/pre-tool-use/, site/, repo root, …) must
+  // fail this guard too, since the npm glob can't see it there either.
+  const all = walk(ROOT);
 
   assert.ok(all.length > 0, 'expected to discover at least one test file');
 

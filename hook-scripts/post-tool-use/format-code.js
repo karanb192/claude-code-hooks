@@ -95,6 +95,7 @@ async function main() {
     log({ level: 'ERROR', error: e.message });
     return console.log('{}');
   }
+  if (data === null || typeof data !== 'object') data = {};
 
   const { tool_name, tool_input, session_id, cwd } = data;
 
