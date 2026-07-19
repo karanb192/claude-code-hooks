@@ -8,7 +8,7 @@
  *     bounty) and its severity. The board is rendered as a shareable card and
  *     the top 3 are offered to Claude as opportunistic side quests via
  *     additionalContext. Re-fires on resume/compact without resetting earnings.
- *   - PostToolUse (Edit|Write|Bash): after Claude touches a file, re-checks the
+ *   - PostToolUse (Edit|MultiEdit|Write|NotebookEdit|Bash): after Claude touches a file, re-checks the
  *     bounties in that file and PAYS OUT any that verifiably disappeared
  *     (verify-then-reward). Anti-gaming: rewording a marker transfers the
  *     bounty instead of paying; bounties in a deleted file pay only if the

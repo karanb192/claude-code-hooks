@@ -72,7 +72,8 @@
         "productivity",
         "sessionstart",
         "sessionend",
-        "hooks"
+        "hooks",
+        "stop"
       ]
     },
     {
@@ -86,7 +87,10 @@
         "negative-knowledge",
         "hooks",
         "userpromptsubmit",
-        "pretooluse"
+        "pretooluse",
+        "stop",
+        "subagentstop",
+        "precompact"
       ]
     },
     {

@@ -1,7 +1,7 @@
 {
   "name": "dead-rules-audit",
-  "description": "A CLAUDE.md compliance flight-recorder for Claude Code. At SessionStart it parses CLAUDE.md into numbered atomic rules; on every Edit/Write a PostToolUse hook (async, zero added latency) passively tallies how often each rule was relevant and whether it was followed or violated; at SessionEnd — or on demand via /dead-rules-audit:scorecard — it renders a worst-first compliance scorecard with a promote-to-hook hint for chronically-ignored rules. Zero deps, zero network, fully deterministic.",
-  "version": "1.0.0",
+  "description": "A CLAUDE.md compliance flight-recorder for Claude Code. At SessionStart it parses CLAUDE.md into numbered atomic rules; on every Edit/MultiEdit/Write a PostToolUse hook (async, zero added latency) passively tallies how often each rule was relevant and whether it was followed or violated; at SessionEnd — or on demand via /dead-rules-audit:scorecard — it renders a worst-first compliance scorecard with a promote-to-hook hint for chronically-ignored rules. Zero deps, zero network, fully deterministic.",
+  "version": "1.0.1",
   "author": {
     "name": "Karan Bansal",
     "url": "https://github.com/karanb192"

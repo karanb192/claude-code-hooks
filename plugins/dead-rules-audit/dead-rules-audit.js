@@ -12,7 +12,7 @@
  *
  * Registers on THREE events (branch on hook_event_name):
  *   - SessionStart : parse CLAUDE.md, snapshot which rules loaded this session
- *   - PostToolUse (Edit|Write) : score the diff against each rule, update ledger
+ *   - PostToolUse (Edit|MultiEdit|Write) : score the diff against each rule, update ledger
  *   - SessionEnd   : render the compliance scorecard via `systemMessage`
  * The SessionEnd scorecard is surfaced to you through `systemMessage` (a
  * universal hook-output field the docs show to the user across all events) and
