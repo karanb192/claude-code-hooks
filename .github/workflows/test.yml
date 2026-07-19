@@ -18,5 +18,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
+      - name: Install formatters exercised by the format-code tests
+        run: |
+          npm install -g prettier
+          pipx install ruff
       - name: Run test suite
         run: npm test
