@@ -99,6 +99,36 @@ describe('Unit: stageFile()', () => {
     const result = stageFile(path.join(tempDir, 'nonexistent.txt'));
     assert.ok('success' in result);
   });
+
+  it('stages a filename containing shell metacharacters without executing them', () => {
+    // Regression: stageFile used to interpolate the path into a shell string,
+    // so a filename like a"b$(...).txt escaped the quotes and ran the command.
+    // Relative sentinel: git runs with cwd = dirname(filePath), so a shell
+    // would drop the file right here. A path separator cannot go in a filename.
+    const sentinel = path.join(tempDir, 'pwned');
+    const nasty = path.join(tempDir, 'a"b$(touch pwned).txt');
+    fs.writeFileSync(nasty, 'x');
+
+    const result = stageFile(nasty);
+
+    assert.strictEqual(fs.existsSync(sentinel), false, 'command substitution must not run');
+    assert.strictEqual(result.success, true);
+    // -z gives raw NUL-separated names; without it git escapes the quotes.
+    const staged = execSync('git diff --cached --name-only -z', { cwd: tempDir, encoding: 'utf8' })
+      .split('\0')
+      .filter(Boolean);
+    assert.ok(
+      staged.includes(path.basename(nasty)),
+      'the literal filename should be staged'
+    );
+  });
+
+  it('stages a filename starting with a dash', () => {
+    // `--` keeps git from reading the leading dash as an option.
+    const dashed = path.join(tempDir, '-dashed.txt');
+    fs.writeFileSync(dashed, 'x');
+    assert.strictEqual(stageFile(dashed).success, true);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
