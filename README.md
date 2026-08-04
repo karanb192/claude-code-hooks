@@ -5,7 +5,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml/badge.svg)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
-[![Tests](https://img.shields.io/badge/tests-1165%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-1216%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
 
 **🌐 [Live site & catalog](https://karanb192.github.io/claude-code-hooks/)**
 
@@ -71,6 +71,7 @@ Runs **before** Claude executes a tool. Can block or modify the operation.
 | [protect-secrets](hook-scripts/pre-tool-use/protect-secrets.js)                   | `Read\|Edit\|Write\|Bash` | Prevents reading/modifying/exfiltrating sensitive files          |
 | [git-safety](hook-scripts/pre-tool-use/git-safety.js)                             | `Bash`                    | Branch-aware git guardrails + destructive gh CLI protection      |
 | [protect-tests](hook-scripts/pre-tool-use/protect-tests.js)                       | `Bash\|Edit\|MultiEdit\|Write` | Stops "fake green": blocks deleting, renaming-away, or skip/xfail-disabling tests |
+| [case-insensitive-guard](hook-scripts/pre-tool-use/case-insensitive-guard.js)     | `Bash`                    | Stops `rm -rf content` destroying `Content` on case-insensitive filesystems (APFS/exFAT/NTFS) — resolves real targets through `cd` chains and quotes |
 
 ### Post-Tool-Use
 
@@ -192,7 +193,7 @@ const SAFETY_LEVEL = "strict"; // or 'critical', 'high'
 
 ### 🙋 Ask mode (prompt instead of block)
 
-`block-dangerous-commands` and `protect-secrets` can **ask** instead of denying outright. When ask mode is on for a level, matching operations return `permissionDecision: "ask"` — Claude Code shows the reason and lets you approve or reject, instead of hard-blocking.
+`block-dangerous-commands`, `protect-secrets`, and `case-insensitive-guard` can **ask** instead of denying outright. When ask mode is on for a level, matching operations return `permissionDecision: "ask"` — Claude Code shows the reason and lets you approve or reject, instead of hard-blocking.
 
 Enable per level via environment variables (the literal string `true`; anything else means deny):
 
