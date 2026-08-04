@@ -20,6 +20,7 @@ const os = require('node:os');
 const {
   splitSegments,
   tokenize,
+  stripHeredocs,
   analyzeCommand,
   checkCommand,
   LEVELS,
@@ -359,4 +360,104 @@ describe('Integration: real collisions', { skip: !TMP_IS_CASE_INSENSITIVE && 'tm
       const { output } = await runHook(bash('rm -rf Content', d), { HOOK_ASK_CRITICAL: 'true' });
       assert.strictEqual(deny(output), 'ask');
     }));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unit: round-2 hardening — shell-state model (background &, subshells,
+// pushd/popd stack, exit-status gating, heredocs, mv -t, quoted ~)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Unit: round-2 hardening — bypasses closed', () => {
+  it('analyzes commands after a background & separator', () => {
+    const hit = analyzeCommand('sleep 1 & rm -rf CONTENT', '/repo', ciFsx());
+    assert.strictEqual(hit?.level, 'critical');
+  });
+  it('does not treat >&/2>&1 redirects as separators', () => {
+    const hit = analyzeCommand('rm -rf CONTENT 2>&1', '/repo', ciFsx());
+    assert.strictEqual(hit?.level, 'critical');
+  });
+  it('restores the pushd directory after popd', () => {
+    const hit = analyzeCommand('pushd src; touch a.txt; popd; rm -rf CONTENT', '/repo', ciFsx());
+    assert.strictEqual(hit?.level, 'critical');
+  });
+  it('keeps tracking through a failed-cd && chain followed by ;', () => {
+    const hit = analyzeCommand('cd missing && cd src; rm -rf CONTENT', '/repo', ciFsx());
+    assert.strictEqual(hit?.level, 'critical');
+  });
+  it('tracks cd into a directory mkdir creates on the same line', () => {
+    const hit = analyzeCommand('mkdir build && cd build && rm -rf ../CONTENT', '/repo', ciFsx());
+    assert.strictEqual(hit?.level, 'critical');
+  });
+  it('a cd inside ( … ) does not leak past the closing paren', () => {
+    const hit = analyzeCommand('( cd src ); rm -rf CONTENT', '/repo', ciFsx());
+    assert.strictEqual(hit?.level, 'critical');
+  });
+  it('handles unspaced subshell parens', () => {
+    const hit = analyzeCommand('(cd src && ls); rm -rf CONTENT', '/repo', ciFsx());
+    assert.strictEqual(hit?.level, 'critical');
+  });
+  it('a cd in a pipeline does not move the parent shell', () => {
+    const hit = analyzeCommand('cd src | cat; rm -rf CONTENT', '/repo', ciFsx());
+    assert.strictEqual(hit?.level, 'critical');
+  });
+  it('peels wrapper prefixes: nohup … &', () => {
+    const hit = analyzeCommand('nohup rm -rf CONTENT &', '/repo', ciFsx());
+    assert.strictEqual(hit?.level, 'critical');
+  });
+  it('peels wrapper prefixes: exec', () => {
+    const hit = analyzeCommand('exec rm -rf CONTENT', '/repo', ciFsx());
+    assert.strictEqual(hit?.level, 'critical');
+  });
+  it('! negation makes the gate uncertain, so the follow-up is still checked', () => {
+    const hit = analyzeCommand('! cd missing && rm -rf CONTENT', '/repo', ciFsx());
+    assert.strictEqual(hit?.level, 'critical');
+  });
+  it('a live command after a heredoc is still analyzed', () => {
+    const hit = analyzeCommand('cat <<EOF\nhello\nEOF\nrm -rf CONTENT', '/repo', ciFsx());
+    assert.strictEqual(hit?.level, 'critical');
+  });
+  it('numeric << is arithmetic, not a heredoc — following lines stay live', () => {
+    const hit = analyzeCommand('echo $((1<<2))\nrm -rf CONTENT', '/repo', ciFsx());
+    assert.strictEqual(hit?.level, 'critical');
+  });
+});
+
+describe('Unit: round-2 hardening — false positives removed', () => {
+  it('mv -t DIR treats operands as sources, not a destination', () => {
+    assert.strictEqual(analyzeCommand('mv -t src Notes.txt', '/repo', ciFsx()), null);
+  });
+  it('mv --target-directory=DIR is a move into a directory', () => {
+    assert.strictEqual(analyzeCommand('mv --target-directory=src Notes.txt', '/repo', ciFsx()), null);
+  });
+  it('heredoc bodies are document text, not commands', () => {
+    assert.strictEqual(analyzeCommand('cat <<EOF > out.txt\nrm -rf CONTENT\nEOF', '/repo', ciFsx()), null);
+  });
+  it('quoted heredoc delimiters work too', () => {
+    assert.strictEqual(analyzeCommand("cat <<'DOC'\nrm -rf CONTENT\nDOC", '/repo', ciFsx()), null);
+  });
+  it('a quoted ~ is a literal path, not the home directory', () => {
+    assert.strictEqual(analyzeCommand("rm -rf '~/CONTENT'", '/repo', ciFsx()), null);
+  });
+});
+
+describe('Unit: stripHeredocs()', () => {
+  it('removes the body but keeps commands after the terminator', () => {
+    const out = stripHeredocs('cat <<EOF\nrm -rf x\nEOF\necho done');
+    assert.ok(!out.includes('rm -rf x'));
+    assert.ok(out.includes('echo done'));
+  });
+  it('handles <<- with tab-indented terminators', () => {
+    const out = stripHeredocs('cat <<-END\nrm -rf x\n\tEND\necho after');
+    assert.ok(!out.includes('rm -rf x'));
+    assert.ok(out.includes('echo after'));
+  });
+  it('queues multiple heredocs on one line in order', () => {
+    const out = stripHeredocs('diff <(cat) - <<A <<B\nbody a\nA\nbody b\nB\necho tail');
+    assert.ok(!out.includes('body a') && !out.includes('body b'));
+    assert.ok(out.includes('echo tail'));
+  });
+  it('leaves <<< here-strings and quoted << alone', () => {
+    assert.ok(stripHeredocs('grep x <<< "input"').includes('<<<'));
+    assert.ok(stripHeredocs('echo "a << b"').includes('a << b'));
+  });
 });

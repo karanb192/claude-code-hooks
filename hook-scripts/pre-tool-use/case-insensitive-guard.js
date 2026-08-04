@@ -10,11 +10,16 @@
  * Idea credit: @yurukusa (https://github.com/karanb192/claude-code-hooks/pull/8)
  *
  * Covered commands: rm, rmdir, mv, mkdir, touch, and `find <path> … -delete`
- * (also `find … -exec rm/unlink`). Directory context is tracked across `cd`
- * and `pushd`, honoring whether each one actually succeeds (the target dir
- * must exist), the connector that follows (`&&` runs the next command only on
- * success, `||` only on failure, `;`/newline/`|` regardless), and subshell
- * `( … )` grouping.
+ * (also `find … -exec rm/unlink`). Directory context is modeled as a set of
+ * candidate cwds plus the last command's exit status: `cd`/`pushd` move it
+ * (honoring whether the target directory exists — including directories a
+ * `mkdir` earlier in the same command line would create), `popd` restores the
+ * matching `pushd`'s directory, a subshell `( … )` restores the outer cwd at
+ * `)`, and connectors gate execution (`&&` runs only after success, `||` only
+ * after failure, `;`/newline/`|`/`&` regardless — with `cd` in a background
+ * (`&`) or pipeline (`|`) position not moving the parent shell). Heredoc
+ * bodies are stripped before analysis, and wrapper prefixes (`nohup`, `exec`,
+ * `command`, `env`, `sudo`, …) are peeled off.
  *
  * SAFETY_LEVEL: 'critical' | 'high' | 'strict'
  *   critical - recursive `rm -r/-rf` (and `find -delete`) onto a case-variant
@@ -37,12 +42,16 @@
  * - Exact-case targets: `rm -rf Content` when `Content` exists as typed is an
  *   intentional delete, not a collision.
  * - A case-only rename (`mv readme.md README.md`) is the CANONICAL fix for a
- *   miscapitalized name — allowed, not blocked.
+ *   miscapitalized name — allowed, not blocked. `mv -t DIR`/`--target-directory`
+ *   moves INTO a directory (contents preserved) — allowed.
  * - Plain `rm` (no -r/-d) of a case-variant DIRECTORY: `rm` refuses to remove
  *   a directory, so nothing is destroyed → allowed.
- * - When the connector semantics leave the run-directory ambiguous, every
- *   candidate directory is checked (fail-closed): a rare over-block is
- *   preferred to a silent data-loss miss.
+ * - Heredoc bodies (`cat <<EOF … EOF`) are document text, not commands.
+ * - Quoted `~` is a literal path character to the shell, so it is not
+ *   tilde-expanded here either.
+ * - When the semantics leave the run-directory ambiguous, every candidate
+ *   directory is checked (fail-closed): a rare over-block is preferred to a
+ *   silent data-loss miss.
  * - No probe files: case-insensitivity is proven by the collision itself —
  *   the typed name is absent from readdir() yet the path still exists.
  *
@@ -87,9 +96,52 @@ function log(entry) {
 
 // ─── shell-aware parsing ─────────────────────────────────────────────────────
 
+// Remove heredoc bodies (`<<EOF … EOF`) so document text is never analyzed as
+// commands. Honors quoted delimiters, `<<-` tab stripping, and multiple
+// heredocs queued on one line. A purely numeric "delimiter" is treated as
+// arithmetic (`$((1<<2))`), not a heredoc.
+function stripHeredocs(command) {
+  let out = '', i = 0, quote = null;
+  const pending = []; // delimiters whose bodies start at the next newline
+  while (i < command.length) {
+    const c = command[i];
+    if (quote) {
+      out += c;
+      if (c === quote && command[i - 1] !== '\\') quote = null;
+      i++; continue;
+    }
+    if (c === "'" || c === '"') { quote = c; out += c; i++; continue; }
+    if (c === '<' && command[i + 1] === '<' && command[i + 2] !== '<' && command[i - 1] !== '<') {
+      let j = i + 2;
+      if (command[j] === '-') j++;
+      while (command[j] === ' ' || command[j] === '\t') j++;
+      let q = null;
+      if (command[j] === "'" || command[j] === '"') { q = command[j]; j++; }
+      let delim = '';
+      while (j < command.length && /[^\s'"();&|<>]/.test(command[j])) { delim += command[j]; j++; }
+      if (q && command[j] === q) j++;
+      if (delim && !/^\d+$/.test(delim)) { pending.push(delim); out += ' '; i = j; continue; }
+      out += c; i++; continue;
+    }
+    if (c === '\n' && pending.length) {
+      out += '\n'; i++;
+      while (pending.length && i < command.length) {
+        let eol = command.indexOf('\n', i);
+        if (eol === -1) eol = command.length;
+        if (command.slice(i, eol).replace(/^\t+/, '') === pending[0]) pending.shift();
+        i = eol + 1;
+      }
+      continue;
+    }
+    out += c; i++;
+  }
+  return out;
+}
+
 // Split a command line into { text, connector } segments, where connector is
 // the operator that PRECEDES the segment (null for the first). Operators inside
-// single/double quotes are ignored.
+// single/double quotes are ignored. A single `&` (background) is a separator
+// too — the command after it still runs; `&>`, `>&`, `<&` redirects are not.
 function splitSegments(command) {
   const segments = [];
   let cur = '', quote = null, connector = null;
@@ -108,6 +160,7 @@ function splitSegments(command) {
     }
     if (c === "'" || c === '"') { quote = c; cur += c; continue; }
     if (c === '&' && command[i + 1] === '&') { push('&&'); i++; continue; }
+    if (c === '&' && command[i + 1] !== '>' && command[i - 1] !== '>' && command[i - 1] !== '<') { push('&'); continue; }
     if (c === '|' && command[i + 1] === '|') { push('||'); i++; continue; }
     if (c === ';') { push(';'); continue; }
     if (c === '|') { push('|'); continue; }
@@ -119,7 +172,8 @@ function splitSegments(command) {
 }
 
 // Tokenize one segment on whitespace, respecting quotes. Each token records
-// whether any part was quoted (quoted globs are literal to the shell).
+// whether any part was quoted (quoted globs are literal to the shell). Unquoted
+// `(` / `)` are shell operators and become standalone tokens even unspaced.
 function tokenize(segment) {
   const tokens = [];
   let text = '', quoted = false, quote = null, started = false;
@@ -131,6 +185,7 @@ function tokenize(segment) {
       continue;
     }
     if (c === "'" || c === '"') { quote = c; quoted = true; started = true; continue; }
+    if (c === '(' || c === ')') { push(); tokens.push({ text: c, quoted: false }); continue; }
     if (/\s/.test(c)) { push(); continue; }
     if (c === '\\' && i + 1 < segment.length) { text += segment[i + 1]; started = true; i++; continue; }
     text += c; started = true;
@@ -140,6 +195,8 @@ function tokenize(segment) {
 }
 
 const SHELL_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'function', '{', '}']);
+// Wrappers that just run their argument as the real command.
+const PREFIX_CMDS = new Set(['command', 'builtin', 'exec', 'time', 'nohup', 'env', 'sudo']);
 
 // Strip subshell parens, leading env assignments (FOO=bar) and `sudo`.
 function commandTokens(tokens) {
@@ -156,11 +213,13 @@ function commandTokens(tokens) {
 function hasUnresolvable(text) { return /[$`]/.test(text); }
 function hasGlob(tok) { return !tok.quoted && /[*?[]/.test(tok.text); }
 
-function resolveTarget(text, cwd) {
+function resolveTarget(text, cwd, quoted = false) {
   if (hasUnresolvable(text)) return null;
   let t = text;
-  if (t === '~') t = os.homedir();
-  else if (t.startsWith('~/')) t = path.join(os.homedir(), t.slice(2));
+  if (!quoted) { // a quoted ~ is a literal character to the shell
+    if (t === '~') t = os.homedir();
+    else if (t.startsWith('~/')) t = path.join(os.homedir(), t.slice(2));
+  }
   if (!path.isAbsolute(t) && !cwd) return null;
   return path.resolve(cwd || '/', t);
 }
@@ -205,62 +264,122 @@ function splitArgs(tokens) {
   return { flags, operands };
 }
 
-// Candidate directories a command might run in, given a pending cd/pushd and
-// the connector that follows it. Arrays are concrete dirs; null means unknown
-// (relative targets can't be resolved); [] means the command cannot run.
-function nextCwds(prevCd, connector) {
-  const { before, after, exists } = prevCd;
-  const succeeded = exists === true, failed = exists === false;
+// Analyze one full command string. Returns the first destructive collision:
+// { level, cmd, typed, actual, parent } — or null when nothing provable.
+//
+// State model: `shell` is the set of candidate cwds the shell could be in
+// (null = unknown), `lastStatus` is the last command's exit status
+// ('ok' | 'fail' | 'unknown') and gates `&&` / `||` segments. `dirStack`
+// mirrors pushd/popd; `subStack` snapshots the cwd at `(` and restores it at
+// `)`; `createdDirs` remembers `mkdir` targets from earlier in the same line
+// so a following `cd` into a not-yet-existing directory is still tracked.
+function analyzeCommand(command, cwd, fsx = realFsx) {
+  if (typeof command !== 'string' || !command.trim()) return null;
+  let shell = cwd && path.isAbsolute(cwd) ? [cwd] : null;
+  let lastStatus = 'ok';
+  const dirStack = [], subStack = [], createdDirs = new Set();
+
+  // Merge candidate sets; null means "no further information", so the known
+  // side wins (its candidates still get checked — fail-closed).
   const union = (a, b) => {
-    if (a === null) return b === null ? null : b;
+    if (a === null) return b;
     if (b === null) return a;
     return [...new Set([...a, ...b])];
   };
-  if (connector === '&&') return failed ? [] : (after ? [after] : null);
-  if (connector === '||') return succeeded ? [] : before;
-  // ; | \n : next command runs regardless of the cd result
-  if (succeeded) return after ? [after] : null;
-  if (failed) return before;
-  return union(before, after);
-}
 
-// Analyze one full command string. Returns the first destructive collision:
-// { level, cmd, typed, actual, parent } — or null when nothing provable.
-function analyzeCommand(command, cwd, fsx = realFsx) {
-  if (typeof command !== 'string' || !command.trim()) return null;
-  let cwds = cwd && path.isAbsolute(cwd) ? [cwd] : null;
-  let prevCd = null;
+  const segs = splitSegments(stripHeredocs(command));
+  for (let si = 0; si < segs.length; si++) {
+    const { text, connector } = segs[si];
+    const nextConn = si + 1 < segs.length ? segs[si + 1].connector : null;
 
-  for (const { text, connector } of splitSegments(command)) {
-    if (prevCd) { cwds = nextCwds(prevCd, connector); prevCd = null; }
-    if (/\$\(|`/.test(text)) { continue; } // command substitution: not resolvable
+    const runs = connector === '&&' ? (lastStatus === 'ok' ? true : lastStatus === 'fail' ? false : 'maybe')
+               : connector === '||' ? (lastStatus === 'fail' ? true : lastStatus === 'ok' ? false : 'maybe')
+               : true;
+    if (runs === false) continue; // this segment cannot execute
 
-    const tokens = commandTokens(tokenize(text));
-    if (!tokens.length) continue;
+    if (/\$\(|`/.test(text)) { lastStatus = 'unknown'; continue; } // command substitution: not resolvable
+
+    const raw = tokenize(text);
+    let lo = 0, hi = raw.length;
+    while (lo < hi && raw[lo].text === '(') { subStack.push(shell); lo++; }
+    let closers = 0;
+    while (hi > lo && raw[hi - 1].text === ')') { closers++; hi--; }
+    const closeSubshells = () => {
+      while (closers-- > 0) {
+        if (subStack.length) shell = subStack.pop(); // `( … )` never moves the parent
+        lastStatus = 'unknown';
+      }
+    };
+
+    let tokens = commandTokens(raw.slice(lo, hi));
+    let negated = false;
+    for (let guard = 0; guard < raw.length && tokens.length; guard++) {
+      const t = tokens[0].text;
+      if (SHELL_KEYWORDS.has(t) || t === '!') {
+        if (t === '!') negated = true;
+        tokens = tokens.slice(1);
+      } else if (PREFIX_CMDS.has(t)) {
+        tokens = tokens.slice(1);
+        while (tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0].text)) tokens = tokens.slice(1);
+        while (tokens.length && tokens[0].text.startsWith('-')) tokens = tokens.slice(1);
+      } else break;
+    }
+    if (!tokens.length) { closeSubshells(); continue; }
     const cmd = path.basename(tokens[0].text);
-    if (SHELL_KEYWORDS.has(cmd)) continue;
 
-    // Directory tracking: cd / pushd move; popd / bare pushd → unknown.
+    // A `cd` followed by `&` (background) or `|` (pipeline) runs in a subshell
+    // and never moves the parent — keep the old cwd, add the new fail-closed.
+    const detached = nextConn === '&' || nextConn === '|';
+
     if (cmd === 'cd' || cmd === 'pushd') {
+      const before = shell;
       const target = tokens[1];
-      if (cmd === 'cd' && !target) { prevCd = { before: cwds, after: os.homedir(), exists: true }; continue; }
-      if (!target || hasUnresolvable(target.text) || target.text === '-') { prevCd = { before: cwds, after: null, exists: undefined }; continue; }
-      const dirs = cwds === null ? [null] : cwds;
-      const after = resolveTarget(target.text, dirs[0]);
-      const exists = after ? fsx.isDirectory(after) : undefined;
-      prevCd = { before: cwds, after, exists };
+      let afters = null, exists;
+      if (cmd === 'cd' && !target) { afters = [os.homedir()]; exists = true; }
+      else if (!target || hasUnresolvable(target.text) || target.text === '-') { afters = null; exists = undefined; }
+      else {
+        const dirs = shell === null ? [null] : shell;
+        afters = [...new Set(dirs.map(d => resolveTarget(target.text, d, target.quoted)).filter(Boolean))];
+        if (!afters.length) afters = null;
+        if (afters === null) exists = undefined;
+        else {
+          const ex = afters.map(a => fsx.isDirectory(a) ? true : createdDirs.has(a) ? undefined : false);
+          exists = ex.every(v => v === true) ? true : ex.every(v => v === false) ? false : undefined;
+        }
+      }
+      if (cmd === 'pushd') dirStack.push(before);
+      let newShell, newStatus;
+      if (afters === null) { newShell = null; newStatus = 'unknown'; }
+      else if (exists === true) { newShell = afters; newStatus = 'ok'; }
+      else if (exists === false) { newShell = before; newStatus = 'fail'; }
+      else { newShell = union(before, afters); newStatus = 'unknown'; }
+      if (detached) { shell = union(before, newShell); lastStatus = 'ok'; }
+      else if (runs === 'maybe') { shell = union(before, newShell); lastStatus = 'unknown'; }
+      else { shell = newShell; lastStatus = negated ? 'unknown' : newStatus; }
+      closeSubshells();
       continue;
     }
-    if (cmd === 'popd') { cwds = null; continue; }
+    if (cmd === 'popd') {
+      if (dirStack.length) {
+        const popped = dirStack.pop();
+        shell = (runs === true && !detached) ? popped : union(popped, shell);
+      } // popd on an empty stack fails: cwd unchanged
+      lastStatus = 'unknown';
+      closeSubshells();
+      continue;
+    }
 
-    if (!['rm', 'rmdir', 'mv', 'mkdir', 'touch', 'find'].includes(cmd)) continue;
-    if (Array.isArray(cwds) && cwds.length === 0) continue; // command cannot run
+    if (!['rm', 'rmdir', 'mv', 'mkdir', 'touch', 'find'].includes(cmd)) {
+      lastStatus = 'unknown';
+      closeSubshells();
+      continue;
+    }
 
-    const dirs = cwds === null ? [null] : cwds;
+    const dirs = shell === null ? [null] : shell;
     const check = (tok) => {
       if (hasGlob(tok) || hasUnresolvable(tok.text)) return null;
       for (const d of dirs) {
-        const resolved = resolveTarget(tok.text, d);
+        const resolved = resolveTarget(tok.text, d, tok.quoted);
         if (!resolved) continue;
         const hit = findCollision(resolved, fsx);
         if (hit) return hit;
@@ -286,25 +405,37 @@ function analyzeCommand(command, cwd, fsx = realFsx) {
         if (hit) return { level: 'high', cmd: 'rmdir', ...hit };
       }
     } else if (cmd === 'mv' && operands.length >= 2) {
-      const dest = operands[operands.length - 1];
-      // A case-only self-rename (source folds to dest) is the intended fix.
-      const selfRename = operands.slice(0, -1).some((src) => {
-        for (const d of dirs) {
-          const s = resolveTarget(src.text, d), t = resolveTarget(dest.text, d);
-          if (s && t && path.dirname(s) === path.dirname(t) && path.basename(s).toLowerCase() === path.basename(t).toLowerCase()) return true;
+      // `mv -t DIR` / `--target-directory=DIR` moves INTO a directory
+      // (contents preserved) and its last operand is a SOURCE — skip.
+      const intoDir = flags.some(f => /^-[A-Za-z]*t$/.test(f) || f.startsWith('--target-directory'));
+      if (!intoDir) {
+        const dest = operands[operands.length - 1];
+        // A case-only self-rename (source folds to dest) is the intended fix.
+        const selfRename = operands.slice(0, -1).some((src) => {
+          for (const d of dirs) {
+            const s = resolveTarget(src.text, d, src.quoted), t = resolveTarget(dest.text, d, dest.quoted);
+            if (s && t && path.dirname(s) === path.dirname(t) && path.basename(s).toLowerCase() === path.basename(t).toLowerCase()) return true;
+          }
+          return false;
+        });
+        if (!selfRename) {
+          const hit = check(dest);
+          // Overwriting a case-variant FILE clobbers data; moving INTO a
+          // case-variant directory preserves contents.
+          if (hit && !hit.actualIsDir) return { level: 'high', cmd: 'mv', ...hit };
         }
-        return false;
-      });
-      if (!selfRename) {
-        const hit = check(dest);
-        // Overwriting a case-variant FILE clobbers data; moving INTO a
-        // case-variant directory preserves contents.
-        if (hit && !hit.actualIsDir) return { level: 'high', cmd: 'mv', ...hit };
       }
     } else if (cmd === 'mkdir' || cmd === 'touch') {
       for (const tok of operands) {
         const hit = check(tok);
         if (hit) return { level: 'strict', cmd, ...hit };
+      }
+      if (cmd === 'mkdir') {
+        // Remember what this line creates so a later `cd` into it is tracked.
+        for (const tok of operands) for (const d of dirs) {
+          const r = resolveTarget(tok.text, d, tok.quoted);
+          if (r) createdDirs.add(r);
+        }
       }
     } else if (cmd === 'find') {
       // `find <paths…> <expression>`: paths are the operands before the first
@@ -324,6 +455,8 @@ function analyzeCommand(command, cwd, fsx = realFsx) {
         }
       }
     }
+    lastStatus = 'unknown';
+    closeSubshells();
   }
   return null;
 }
@@ -371,5 +504,5 @@ async function main() {
 if (require.main === module) {
   main();
 } else {
-  module.exports = { SAFETY_LEVEL, LEVELS, ASK, splitSegments, tokenize, commandTokens, resolveTarget, findCollision, analyzeCommand, checkCommand, realFsx };
+  module.exports = { SAFETY_LEVEL, LEVELS, ASK, stripHeredocs, splitSegments, tokenize, commandTokens, resolveTarget, findCollision, analyzeCommand, checkCommand, realFsx };
 }
