@@ -236,6 +236,12 @@ node --test hook-scripts/tests/pre-tool-use/block-dangerous-commands.test.js
 
 ---
 
+## ⚡ Performance
+
+A synchronous hook adds its full runtime to every matching tool call, so these hooks aim to stay well under 100 ms end to end. Measured with a fresh Node process per call and a realistic event on stdin, `block-dangerous-commands` runs at a 34.8 ms median on an Apple M3 Pro (Node v26). The harness and committed numbers live in [`bench/`](bench/); reproduce with `node bench/run.mjs`.
+
+---
+
 ## 📖 Configuration Reference
 
 See the [official Claude Code hooks documentation](https://docs.anthropic.com/en/docs/claude-code/hooks) for:
