@@ -254,6 +254,14 @@ Everything defaults to **deny** — ask mode is strictly opt-in. A common setup:
 
 ---
 
+## 🗺️ OWASP mapping
+
+[docs/owasp-llm-top-10-2026.md](docs/owasp-llm-top-10-2026.md) maps every hook in this repo against the [OWASP LLM Top 10 2026](https://genai.owasp.org/resource/owasp-genai-llm-top-10-2026/), risk by risk.
+The verdicts are honest: risks a runtime hook genuinely covers are marked covered, risks it cannot touch are marked N/A, and the gaps (rate limiting, output scanning, dependency validation) are listed as wanted contributions.
+It also points agent-specific risks at the OWASP Top 10 for Agentic Applications and names the four ASI risks these hooks land on.
+
+---
+
 ## 🧪 Testing
 
 Requires **Node ≥ 18** (no npm dependencies). The `format-code` tests exercise the real formatters, so have `prettier`, `ruff`, and `uv` on your PATH — CI installs them — or expect those few tests to fail. All hooks include comprehensive tests, run in CI on Node 18, 20, and 22:
@@ -282,7 +290,7 @@ A synchronous hook adds its full runtime to every matching tool call. Measured w
 
 ## 📖 Configuration Reference
 
-See the [official Claude Code hooks documentation](https://docs.anthropic.com/en/docs/claude-code/hooks) for:
+See the [official Claude Code hooks documentation](https://code.claude.com/docs/en/hooks) for:
 
 - All hook events and their lifecycles
 - Input/output JSON formats
