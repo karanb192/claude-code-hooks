@@ -55,6 +55,14 @@ Runs at session boundaries — inject context at **SessionStart** and capture ou
 
 > 🔌 **`nerf-receipts`** (personal model-quality flight recorder) and **`standup-autopilot`** (writes your daily standup from what your agents actually did; re-injects open blockers) now ship as installable **plugins** — see [Install as a plugin](#-install-as-a-plugin).
 
+### Instructions-Loaded
+
+Fires when a CLAUDE.md or `.claude/rules/*.md` file is loaded into context. The event has no decision control and its exit code is ignored, so hooks here respond with the universal JSON fields (`continue: false` halts the session) instead of a PreToolUse-style deny.
+
+| Hook | Matcher | Description |
+|------|---------|-------------|
+| [instructions-audit](hook-scripts/instructions-loaded/instructions-audit.js) | `session_start\|nested_traversal\|path_glob_match\|include\|compact` (or omit for all) | Halts the session when a loaded instruction file carries hidden directives: zero-width/bidi Unicode smuggling (the TrapDoor supply-chain signature), directives to read or exfiltrate secrets, curl\|sh, decode-and-execute, and hook/settings tampering. Names the rule and line number so you can inspect the file; `HOOK_AUDIT_WARN_ONLY=true` warns without halting. |
+
 ### User-Prompt-Submit
 
 Runs when the user submits a prompt, before Claude processes it. Can inject context or block the prompt.
