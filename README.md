@@ -5,7 +5,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml/badge.svg)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
-[![Tests](https://img.shields.io/badge/tests-1369%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-1378%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
 
 **🌐 [Live site & catalog](https://karanb192.github.io/claude-code-hooks/)**
 

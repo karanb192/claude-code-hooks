@@ -139,6 +139,32 @@ describe('Unit: checkFilePath()', () => {
     it('default (high) does NOT block .claude/rules/style.md', () => fileAllowed('.claude/rules/style.md'));
   });
 
+  describe('Symlinked parents are resolved', () => {
+    // A path that looks innocent but really lands in .claude must still block:
+    // `ln -s ~/.claude /tmp/x` then Write /tmp/x/settings.json.
+    const symHome = fs.mkdtempSync(path.join(os.tmpdir(), 'config-guard-symlink-'));
+    const claudeDir = path.join(symHome, '.claude');
+    fs.mkdirSync(path.join(claudeDir, 'hooks'), { recursive: true });
+    fs.writeFileSync(path.join(claudeDir, 'settings.json'), '{}');
+    const dirLink = path.join(symHome, 'innocent');
+    fs.symlinkSync(claudeDir, dirLink);
+
+    it('blocks a write through a symlinked .claude dir (existing file)', () =>
+      fileBlocked(path.join(dirLink, 'settings.json'), 'settings-file'));
+    it('blocks creating a NEW file through a symlinked hooks dir (parent resolution)', () => {
+      const hooksLink = path.join(symHome, 'h');
+      fs.symlinkSync(path.join(claudeDir, 'hooks'), hooksLink);
+      fileBlocked(path.join(hooksLink, 'evil.js'), 'hook-script');
+    });
+    it('still allows a benign file behind a symlink to an ordinary dir', () => {
+      const okDir = path.join(symHome, 'okdir');
+      fs.mkdirSync(okDir);
+      const okLink = path.join(symHome, 'oklink');
+      fs.symlinkSync(okDir, okLink);
+      fileAllowed(path.join(okLink, 'notes.txt'));
+    });
+  });
+
   describe('Unrelated files pass', () => {
     it('allows src/app.js', () => fileAllowed('src/app.js'));
     it('allows .gitignore', () => fileAllowed('.gitignore'));
@@ -230,6 +256,12 @@ describe('Unit: checkBashCommand()', () => {
     it('blocks claude config set', () => bashBlocked('claude config set apiKeyHelper /tmp/evil.sh', 'claude-cli-config'));
     it('allows claude mcp list (read-only)', () => bashAllowed('claude mcp list'));
     it('allows claude config get (read-only)', () => bashAllowed('claude config get theme'));
+    it('blocks claude plugin install (registers arbitrary hooks)', () => bashBlocked('claude plugin install evil-pack@some-marketplace', 'claude-cli-config'));
+    it('blocks claude plugin uninstall', () => bashBlocked('claude plugin uninstall protect-secrets@claude-code-hooks', 'claude-cli-config'));
+    it('blocks claude plugin disable (switches a guardrail off)', () => bashBlocked('claude plugin disable config-guard@claude-code-hooks', 'claude-cli-config'));
+    it('blocks claude plugin marketplace add', () => bashBlocked('claude plugin marketplace add attacker/repo', 'claude-cli-config'));
+    it('allows claude plugin list (read-only)', () => bashAllowed('claude plugin list'));
+    it('allows claude plugin marketplace list (read-only)', () => bashAllowed('claude plugin marketplace list'));
   });
 
   describe('STRICT tier in Bash', () => {

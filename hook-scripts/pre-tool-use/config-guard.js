@@ -21,7 +21,8 @@
  *              .claude/settings.local.json, managed-settings.json,
  *              anything under .claude/hooks/, hooks.json manifests
  *   high     - + config supply chain: .mcp.json, .claude-plugin/,
- *              `claude config set|add|remove` and `claude mcp add|remove`
+ *              `claude config set|add|remove`, `claude mcp add|remove`, and
+ *              `claude plugin install|uninstall|enable|disable|marketplace`
  *   strict   - + instruction files: CLAUDE.md, CLAUDE.local.md,
  *              .claude/rules/, .claude/agents/, .claude/commands/
  *
@@ -37,8 +38,12 @@
  * command block it even if the verb technically targets another argument;
  * interpreter one-liners (python -c "open(...).write(...)"), git
  * checkout/restore of a config path, chmod, and paths built from variables
- * ("$DIR/settings.json") are not caught. PreToolUse only sees the agent's
- * own tool calls; out-of-band writes are config-watch.js territory.
+ * ("$DIR/settings.json") are not caught. Edit/MultiEdit/Write paths are
+ * resolved through symlinks before checking (a write through
+ * `ln -s ~/.claude /tmp/x` is still caught), but shell command strings are
+ * matched as text, so a Bash redirect through a symlinked directory is not.
+ * PreToolUse only sees the agent's own tool calls; out-of-band writes are
+ * config-watch.js territory.
  *
  * Setup in .claude/settings.json:
  * {
@@ -106,7 +111,9 @@ const WRITE_VERB     = /\b(tee|truncate|dd)\b/;
 const INPLACE_EDIT   = /\b(sed|gsed)\s+[^|;&]*-i\b|\bperl\s+[^|;&]*-\w*i\b|\bgawk\s+[^|;&]*-i\s*inplace\b/;
 
 // CLI commands that rewrite agent config without naming a settings path.
-const CLAUDE_CLI_WRITE = /\bclaude\s+(config\s+(set|add|remove|rm)|mcp\s+(add|add-json|add-from-claude-desktop|remove|rm))\b/;
+// `claude plugin install` registers arbitrary hooks and skills, so it is a
+// config write in everything but name; list/get/read forms stay allowed.
+const CLAUDE_CLI_WRITE = /\bclaude\s+(config\s+(set|add|remove|rm)|mcp\s+(add|add-json|add-from-claude-desktop|remove|rm)|plugin\s+(install|uninstall|enable|disable|update|marketplace\s+(add|remove|rm|update)))\b/;
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
 const EMOJIS = { critical: '🔒', high: '🛡️', strict: '⚠️' };
@@ -127,13 +134,31 @@ function redirectsInto(cmd, tokenRegex) {
   return re.test(cmd);
 }
 
-// Pure check for Edit/MultiEdit/Write file paths - unit-testable.
+// The typed path plus its symlink-resolved form: a write through
+// `ln -s ~/.claude /tmp/x` must be judged by where it really lands. When the
+// file does not exist yet (the CVE vector), resolve the parent directory.
+function resolveCandidates(filePath) {
+  const candidates = [filePath];
+  try {
+    candidates.push(fs.realpathSync(filePath));
+  } catch {
+    try {
+      candidates.push(path.join(fs.realpathSync(path.dirname(filePath)), path.basename(filePath)));
+    } catch { /* parent missing too: nothing on disk to resolve */ }
+  }
+  return [...new Set(candidates)];
+}
+
+// Check for Edit/MultiEdit/Write file paths - unit-testable (touches the
+// filesystem only to resolve symlinks; unresolvable paths check as typed).
 function checkFilePath(filePath, safetyLevel = SAFETY_LEVEL) {
   if (!filePath) return { blocked: false };
   const threshold = LEVELS[safetyLevel] || 2;
-  for (const p of PROTECTED_PATHS) {
-    if (LEVELS[p.level] <= threshold && p.regex.test(filePath)) {
-      return { blocked: true, id: p.id, level: p.level, reason: p.reason };
+  for (const candidate of resolveCandidates(filePath)) {
+    for (const p of PROTECTED_PATHS) {
+      if (LEVELS[p.level] <= threshold && p.regex.test(candidate)) {
+        return { blocked: true, id: p.id, level: p.level, reason: p.reason };
+      }
     }
   }
   return { blocked: false };
