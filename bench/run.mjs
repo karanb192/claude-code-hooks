@@ -62,6 +62,24 @@ const HOOKS = [
       tool_input: { file_path: path.join(repoDir, 'src', 'app.js'), content: 'module.exports = () => 42;\n' } },
   },
   {
+    script: 'plugins/config-guard/config-guard.js',
+    payload: { ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash',
+      tool_input: { command: 'git status && ls -la src/' } },
+  },
+  {
+    // The PreToolUse enforcement arm: with no lockdown flag for the session,
+    // this is its cost on every tool call for anyone who installs it.
+    script: 'plugins/instructions-audit/instructions-audit.js',
+    payload: { ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash',
+      tool_input: { command: 'git status && ls -la src/' } },
+  },
+  {
+    // All six guards in one process; compare against the sum of the six rows above.
+    script: 'plugins/guard-pack/guard-pack.js',
+    payload: { ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash',
+      tool_input: { command: 'git status && ls -la src/' } },
+  },
+  {
     script: 'plugins/auto-stage/auto-stage.js',
     payload: { ...base, hook_event_name: 'PostToolUse', tool_name: 'Write',
       tool_input: { file_path: stagedFile, content: 'console.log("bench");\n' } },

@@ -1,11 +1,11 @@
 # claude-code-hooks
 
-🪝 Ready-to-use hooks for Claude Code, shipped as a 19-plugin installable marketplace: safety, automation, notifications, and more.
+🪝 Ready-to-use hooks for Claude Code, shipped as a 20-plugin installable marketplace: safety, automation, notifications, and more.
 
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml/badge.svg)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
-[![Tests](https://img.shields.io/badge/tests-1544%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-1570%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
 
 **🌐 [Live site & catalog](https://karanb192.github.io/claude-code-hooks/)**
 
@@ -22,7 +22,7 @@
   </tr>
 </table>
 
-A growing collection of tested, documented hooks. Every one installs as a one-command Claude Code plugin: run `/plugin marketplace add karanb192/claude-code-hooks`, then `/plugin install <name>@claude-code-hooks`; see [Install as a plugin](#-install-as-a-plugin) for the 19-plugin catalog. Prefer to own the file? Every plugin's script also works standalone: copy `plugins/<name>/<name>.js` and wire it into `settings.json` yourself ([Quick Start](#-quick-start)).
+A growing collection of tested, documented hooks. Every one installs as a one-command Claude Code plugin: run `/plugin marketplace add karanb192/claude-code-hooks`, then `/plugin install <name>@claude-code-hooks`; see [Install as a plugin](#-install-as-a-plugin) for the 20-plugin catalog. Prefer to own the file? Every plugin's script also works standalone: copy `plugins/<name>/<name>.js` and wire it into `settings.json` yourself ([Quick Start](#-quick-start)).
 
 ---
 
@@ -161,6 +161,7 @@ This repo is a **Claude Code plugin marketplace**, so you can install a single h
 | [standup-autopilot](plugins/standup-autopilot) | Writes your daily standup from what your agents actually did across repos: captures tasks, tests, PRs, and blockers from session transcripts and re-injects yesterday's open blockers next session | `/standup-autopilot:standup` renders today's card on demand |
 | [dead-end-registry](plugins/dead-end-registry) | Remembers approaches you tried and reverted (reason + estimated token cost) and warns before you retry them: a prompt-submit card plus an ask-before-edit guard | `/dead-end-registry:dead-ends` renders the registry on demand |
 | [bounty-board](plugins/bounty-board) | Prices your repo's TODO/FIXME/HACK/skip debt as aging XP bounties, injects the top 3 as opportunistic side quests, and verifies + pays out bounties you genuinely clear | `/bounty-board:board` renders the board on demand |
+| [guard-pack](plugins/guard-pack) | **All six guards below in one Node process**: one ~35 ms startup per tool call instead of six. First blocking verdict wins, in that guard's own format. Do not install alongside the individual guards. | `HOOK_SAFETY_LEVEL` applies to all six uniformly; `HOOK_ASK_*` and `CONFIG_GUARD_ALLOW` pass through |
 | [block-dangerous-commands](plugins/block-dangerous-commands) | Blocks dangerous shell commands (rm -rf ~, fork bombs, curl\|sh, force push to main) before they run | `HOOK_SAFETY_LEVEL` picks critical/high/strict (default high); `HOOK_ASK_*` prompts instead of denying |
 | [protect-secrets](plugins/protect-secrets) | Prevents reading, modifying, or exfiltrating sensitive files (.env, SSH keys, cloud creds, keystores) by denying or asking before the tool call runs | `HOOK_SAFETY_LEVEL` (critical/high/strict, default high), `HOOK_ASK_CRITICAL/HIGH/STRICT` ask mode; `/plugin install protect-secrets@claude-code-hooks` |
 | [git-safety](plugins/git-safety) | Branch-aware git guardrails + destructive gh CLI protection: blocks pushes to main/master, protected-branch deletion, direct changes on a protected branch, and gh pr merge/close, issue close, release/repo delete | `HOOK_SAFETY_LEVEL` = `critical`/`high`/`strict` (default `high`); `/plugin install git-safety@claude-code-hooks` |
