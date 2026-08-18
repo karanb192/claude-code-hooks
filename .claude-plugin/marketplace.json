@@ -271,6 +271,19 @@
         "hooks",
         "notification"
       ]
+    },
+    {
+      "name": "guard-pack",
+      "source": "./plugins/guard-pack",
+      "description": "All six guard hooks in one Node process: config-guard, block-dangerous-commands, protect-secrets, protect-tests, git-safety, and case-insensitive-guard, first blocking verdict wins. One ~35 ms Node startup per tool call instead of six. Do not install alongside the individual guard plugins.",
+      "category": "security",
+      "tags": [
+        "security",
+        "safety",
+        "guardrails",
+        "pretooluse",
+        "latency"
+      ]
     }
   ]
 }

@@ -1,0 +1,21 @@
+{
+  "name": "guard-pack",
+  "description": "All six guard hooks in one Node process: config-guard, block-dangerous-commands, protect-secrets, protect-tests, git-safety, and case-insensitive-guard, evaluated in that order with the first blocking verdict winning in that guard's own output format. Installing the guards individually costs six Node startups per matching tool call (about 35 ms each); the pack pays one. Env vars pass straight through (HOOK_SAFETY_LEVEL for all guards uniformly, HOOK_ASK_*, CONFIG_GUARD_ALLOW). Do not install alongside the individual guard plugins: duplicated guards run twice.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "security",
+    "safety",
+    "guardrails",
+    "pretooluse",
+    "latency"
+  ],
+  "hooks": "./hooks/hooks.json"
+}
