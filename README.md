@@ -178,6 +178,13 @@ This repo is a **Claude Code plugin marketplace**, so you can install a single h
 
 Prefer the classic route? Every plugin's script is self-contained: copy `plugins/<name>/<name>.js` and register it in `settings.json` yourself; see [Quick Start](#-quick-start).
 
+### Migrating from hook-scripts/
+
+Earlier versions shipped the standalone scripts under `hook-scripts/`; that directory is gone and every script now lives in its plugin dir as `plugins/<name>/<name>.js`. Two situations need action:
+
+- **Your `settings.json` points into a clone of this repo** (for example `node ~/repos/claude-code-hooks/hook-scripts/pre-tool-use/block-dangerous-commands.js`). After you pull, that path no longer exists, and Claude Code treats a failing hook command as a non-blocking error: the guard stops enforcing without any visible sign. Fix it now, not later: install the plugin, or repoint the command at `plugins/<name>/<name>.js`.
+- **You copied a script to a stable location** (like `~/.claude/hooks/`). Your copy keeps working untouched. If you install the plugin version, remove the manual `settings.json` registration first, or the hook runs twice on every matching event: double latency, double log entries, double denials.
+
 ---
 
 ## 🚀 Quick Start
