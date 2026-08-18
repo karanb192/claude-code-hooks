@@ -1,0 +1,20 @@
+{
+  "name": "block-dangerous-commands",
+  "description": "A PreToolUse guard for Bash that blocks dangerous shell commands before they execute: rm targeting home/root/system dirs, dd to disk devices, mkfs, fork bombs, curl|sh, force push to main, git reset --hard, chmod 777, docker volume rm, and more. Three safety levels (critical/high/strict, picked via HOOK_SAFETY_LEVEL) control how much is blocked, and per-level ask mode (HOOK_ASK_*) turns a hard deny into a prompt you approve or reject. Every block is logged with the pattern id and reason.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "security",
+    "safety",
+    "guardrails",
+    "bash",
+    "pretooluse"
+  ]
+}

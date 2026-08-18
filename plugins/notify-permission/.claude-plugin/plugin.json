@@ -1,0 +1,19 @@
+{
+  "name": "notify-permission",
+  "description": "Slack alerts when Claude Code needs you. A Notification hook on permission_prompt|idle_prompt|elicitation_dialog classifies each notification (from notification_type when present, else from keywords in the message) and posts a Slack Block Kit card to your CCH_SLA_WEBHOOK: a tool-specific title (Bash/Write/Edit/Read permission, waiting, or a choice to make), project name, short session id, the message truncated to 200 chars, the full cwd, and a timestamp. No webhook set means a logged no-op; the hook always exits 0 and never blocks your session.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "notifications",
+    "slack",
+    "alerts",
+    "notification"
+  ]
+}

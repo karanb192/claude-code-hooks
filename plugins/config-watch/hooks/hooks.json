@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "ConfigChange": [
+      {
+        "matcher": "user_settings|project_settings|local_settings|policy_settings|skills",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/config-watch.js\""
+          }
+        ]
+      }
+    ]
+  }
+}

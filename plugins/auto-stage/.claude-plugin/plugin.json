@@ -1,0 +1,19 @@
+{
+  "name": "auto-stage",
+  "description": "Automatic git staging for Claude Code. A PostToolUse hook on Edit|Write runs `git add` on every file Claude modifies, so `git status` always shows exactly what Claude touched and pre-commit review needs no manual staging. Files outside a git repo are skipped, .gitignore is respected (ignored files fail to stage and the failure is logged, never forced), and the git call is shell-free so hostile filenames cannot inject commands.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "git",
+    "staging",
+    "automation",
+    "posttooluse"
+  ]
+}

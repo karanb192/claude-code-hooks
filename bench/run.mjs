@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Hook latency benchmark. Times each PreToolUse/PostToolUse hook in
-// hook-scripts/ end-to-end: fresh Node process per invocation, realistic
+// Hook latency benchmark. Times each PreToolUse/PostToolUse hook plugin in
+// plugins/ end-to-end: fresh Node process per invocation, realistic
 // event JSON on stdin, verdict read from stdout. See bench/README.md.
 //
 // Usage: node bench/run.mjs [--n=20] [--write]
@@ -37,37 +37,37 @@ const base = { session_id: 'bench-session', cwd: repoDir, permission_mode: 'defa
 // Each must take the clean allow path (exit 0, no deny/ask in the verdict).
 const HOOKS = [
   {
-    script: 'hook-scripts/pre-tool-use/block-dangerous-commands.js',
+    script: 'plugins/block-dangerous-commands/block-dangerous-commands.js',
     payload: { ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash',
       tool_input: { command: 'git status && ls -la src/' } },
   },
   {
-    script: 'hook-scripts/pre-tool-use/case-insensitive-guard.js',
+    script: 'plugins/case-insensitive-guard/case-insensitive-guard.js',
     payload: { ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash',
       tool_input: { command: 'mkdir -p dist && mv notes.txt dist/archive.txt && rm -rf dist/cache' } },
   },
   {
-    script: 'hook-scripts/pre-tool-use/git-safety.js',
+    script: 'plugins/git-safety/git-safety.js',
     payload: { ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash',
       tool_input: { command: 'git status --short && git log --oneline -3' } },
   },
   {
-    script: 'hook-scripts/pre-tool-use/protect-secrets.js',
+    script: 'plugins/protect-secrets/protect-secrets.js',
     payload: { ...base, hook_event_name: 'PreToolUse', tool_name: 'Read',
       tool_input: { file_path: path.join(repoDir, 'src', 'index.js') } },
   },
   {
-    script: 'hook-scripts/pre-tool-use/protect-tests.js',
+    script: 'plugins/protect-tests/protect-tests.js',
     payload: { ...base, hook_event_name: 'PreToolUse', tool_name: 'Write',
       tool_input: { file_path: path.join(repoDir, 'src', 'app.js'), content: 'module.exports = () => 42;\n' } },
   },
   {
-    script: 'hook-scripts/post-tool-use/auto-stage.js',
+    script: 'plugins/auto-stage/auto-stage.js',
     payload: { ...base, hook_event_name: 'PostToolUse', tool_name: 'Write',
       tool_input: { file_path: stagedFile, content: 'console.log("bench");\n' } },
   },
   {
-    script: 'hook-scripts/post-tool-use/format-code.js',
+    script: 'plugins/format-code/format-code.js',
     payload: { ...base, hook_event_name: 'PostToolUse', tool_name: 'Write',
       tool_input: { file_path: pyFile, content: PY_UNFORMATTED } },
     prepare: () => fs.writeFileSync(pyFile, PY_UNFORMATTED),

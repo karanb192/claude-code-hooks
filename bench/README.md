@@ -21,12 +21,12 @@ No dependencies. HOME is pointed at a throwaway temp dir during the run, so hook
 
 ## Scope
 
-Covers all seven PreToolUse/PostToolUse hooks in `hook-scripts/`: block-dangerous-commands, case-insensitive-guard, git-safety, protect-secrets, protect-tests, auto-stage, format-code. The format-code payload writes a small unformatted Python file, so `uv` and `ruff` must be on PATH (CI installs them); without them the run aborts instead of reporting a no-op.
+Covers the seven PreToolUse/PostToolUse hook plugins in `plugins/`: block-dangerous-commands, case-insensitive-guard, git-safety, protect-secrets, protect-tests, auto-stage, format-code. The format-code payload writes a small unformatted Python file, so `uv` and `ruff` must be on PATH (CI installs them); without them the run aborts instead of reporting a no-op.
 
 Excluded:
 
-- `notification/notify-permission.js`: a Notification hook, not on the tool-call path, and its real cost is a Slack webhook network call that a hermetic benchmark cannot represent honestly.
-- `session/session-logger.js`: runs at session start and end, never per tool call.
-- `utils/event-logger.py` and the hooks under `plugins/`: out of scope for this harness.
+- `plugins/notify-permission`: a Notification hook, not on the tool-call path, and its real cost is a Slack webhook network call that a hermetic benchmark cannot represent honestly.
+- `plugins/session-logger`: runs at session start and end, never per tool call.
+- `utils/event-logger.py` and the remaining plugins: out of scope for this harness.
 
 Committed numbers: [RESULTS.md](RESULTS.md).

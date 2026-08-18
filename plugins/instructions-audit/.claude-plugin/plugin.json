@@ -1,0 +1,22 @@
+{
+  "name": "instructions-audit",
+  "description": "A prompt-injection tripwire for instruction files. An InstructionsLoaded hook audits CLAUDE.md / .claude/rules/*.md content as it enters context and flags hidden or hostile directives: invisible Unicode smuggling (zero width characters, tag characters, variation-selector runs; the TrapDoor supply-chain signature), bidi overrides, directives to read or exfiltrate secrets, curl|sh, decode-and-execute, and hook/settings tampering. Because current builds cannot block on that event, the same script also registers on UserPromptSubmit and PreToolUse as the enforcement arm: a finding locks the session and every prompt and tool call is denied until a human fixes the file or clears the named lock. Tune via HOOK_AUDIT_LEVEL (critical/high/strict) and HOOK_AUDIT_WARN_ONLY, no file edits needed.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "security",
+    "prompt-injection",
+    "claude-md",
+    "guardrails",
+    "instructionsloaded",
+    "userpromptsubmit",
+    "pretooluse"
+  ]
+}

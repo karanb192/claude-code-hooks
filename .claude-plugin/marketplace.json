@@ -106,6 +106,171 @@
         "sessionstart",
         "posttooluse"
       ]
+    },
+    {
+      "name": "block-dangerous-commands",
+      "source": "./plugins/block-dangerous-commands",
+      "description": "PreToolUse guard for Bash: blocks dangerous shell commands (rm -rf ~, fork bombs, curl|sh, force push to main) before they run, with three safety levels and opt-in per-level ask mode.",
+      "category": "safety",
+      "tags": [
+        "safety",
+        "security",
+        "guardrails",
+        "bash",
+        "hooks",
+        "pretooluse"
+      ]
+    },
+    {
+      "name": "protect-secrets",
+      "source": "./plugins/protect-secrets",
+      "description": "Secrets firewall for tool calls: denies (or asks, per level) any Read/Edit/Write/Bash that would read, modify, or exfiltrate .env files, SSH keys, cloud credentials, or keystores, with tiered safety levels tunable via HOOK_SAFETY_LEVEL.",
+      "category": "security",
+      "tags": [
+        "security",
+        "secrets",
+        "guardrails",
+        "hooks",
+        "pretooluse"
+      ]
+    },
+    {
+      "name": "git-safety",
+      "source": "./plugins/git-safety",
+      "description": "Branch-aware git guardrails plus destructive gh CLI protection: denies pushes to main/master, protected-branch deletion, direct commit/merge/rebase/reset/push on a protected branch, and gh pr merge/close, issue close, release and repo delete.",
+      "category": "safety",
+      "tags": [
+        "git",
+        "github",
+        "safety",
+        "guardrails",
+        "hooks",
+        "pretooluse"
+      ]
+    },
+    {
+      "name": "protect-tests",
+      "source": "./plugins/protect-tests",
+      "description": "Stops \"fake green\" test-gaming: blocks the agent from deleting, renaming-away, or skip/xfail-disabling tests so it fixes the code instead, across pytest, jest, Go, JUnit, RSpec, and more.",
+      "category": "safety",
+      "tags": [
+        "safety",
+        "tests",
+        "guardrails",
+        "hooks",
+        "pretooluse"
+      ]
+    },
+    {
+      "name": "case-insensitive-guard",
+      "source": "./plugins/case-insensitive-guard",
+      "description": "Stops `rm -rf content` destroying `Content` on case-insensitive filesystems (APFS/exFAT/NTFS): resolves the real target of destructive commands through cd chains, quotes, and subshells, and denies provable case collisions.",
+      "category": "safety",
+      "tags": [
+        "safety",
+        "filesystem",
+        "data-loss",
+        "hooks",
+        "pretooluse"
+      ]
+    },
+    {
+      "name": "config-guard",
+      "source": "./plugins/config-guard",
+      "description": "Who guards the guards: blocks the agent from tampering with its own guardrail config (settings.json, hook scripts, hooks.json, .mcp.json, plugin manifests, claude CLI config writes); reads always pass.",
+      "category": "safety",
+      "tags": [
+        "security",
+        "guardrails",
+        "config",
+        "supply-chain",
+        "hooks",
+        "pretooluse"
+      ]
+    },
+    {
+      "name": "config-watch",
+      "source": "./plugins/config-watch",
+      "description": "Tripwire for out-of-band config changes: warns on every mid-session settings/skills change (or blocks it with CONFIG_WATCH_BLOCK=true) to catch installer scripts and npm payloads rewriting settings behind Claude Code's back.",
+      "category": "safety",
+      "tags": [
+        "security",
+        "config",
+        "supply-chain",
+        "hooks",
+        "configchange"
+      ]
+    },
+    {
+      "name": "auto-stage",
+      "source": "./plugins/auto-stage",
+      "description": "Automatic git staging: runs `git add` on every file Claude edits or writes, so `git status` always shows exactly what Claude touched and pre-commit review needs no manual staging.",
+      "category": "git",
+      "tags": [
+        "git",
+        "automation",
+        "staging",
+        "hooks",
+        "posttooluse"
+      ]
+    },
+    {
+      "name": "format-code",
+      "source": "./plugins/format-code",
+      "description": "Auto-formats files the moment Claude writes them: ruff for Python, prettier for JS/TS/JSON/MD/YAML/HTML, with shell-injection-safe argv execution and silent skips for everything else.",
+      "category": "automation",
+      "tags": [
+        "formatting",
+        "prettier",
+        "ruff",
+        "automation",
+        "hooks",
+        "posttooluse"
+      ]
+    },
+    {
+      "name": "session-logger",
+      "source": "./plugins/session-logger",
+      "description": "Durable markdown log of every session (cwd, git repo, files touched, secret-redacted bash commands), appended async so logging never blocks Claude.",
+      "category": "observability",
+      "tags": [
+        "logging",
+        "sessions",
+        "observability",
+        "obsidian",
+        "hooks",
+        "sessionstart",
+        "posttooluse",
+        "sessionend"
+      ]
+    },
+    {
+      "name": "instructions-audit",
+      "source": "./plugins/instructions-audit",
+      "description": "Prompt-injection tripwire for CLAUDE.md and .claude/rules files: flags invisible-Unicode smuggling, secret read/exfil directives, curl|sh, decode-and-execute, and hook/settings tampering as instructions load, then locks the session (every prompt and tool call denied) until a human clears it.",
+      "category": "security",
+      "tags": [
+        "security",
+        "prompt-injection",
+        "claude-md",
+        "hooks",
+        "instructionsloaded",
+        "userpromptsubmit",
+        "pretooluse"
+      ]
+    },
+    {
+      "name": "notify-permission",
+      "source": "./plugins/notify-permission",
+      "description": "Slack alerts when Claude Code needs you: posts a rich card (project, session, and what needs approval) to your webhook on permission, idle, and choice prompts.",
+      "category": "notifications",
+      "tags": [
+        "notifications",
+        "slack",
+        "alerts",
+        "hooks",
+        "notification"
+      ]
     }
   ]
 }

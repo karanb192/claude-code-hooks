@@ -1,0 +1,20 @@
+{
+  "name": "format-code",
+  "description": "Auto-formats files the moment Claude writes them. A PostToolUse hook on Write|Edit runs ruff (check --fix + format, via uv) on Python and prettier (via npx) on JS/TS/JSON/MD/YAML/HTML, resolving relative paths against the session cwd and passing file paths as argv so shell metacharacters in filenames can never inject commands. Unsupported types and missing files are skipped silently, formatter failures never block the session, and every outcome logs to ~/.claude/hooks-logs/.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "formatting",
+    "prettier",
+    "ruff",
+    "automation",
+    "posttooluse"
+  ]
+}
