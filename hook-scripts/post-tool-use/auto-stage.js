@@ -24,7 +24,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
 
 const LOG_DIR = path.join(process.env.HOME, '.claude', 'hooks-logs');
 
@@ -49,7 +49,10 @@ function isInGitRepo(filePath) {
 function stageFile(filePath) {
   try {
     const dir = path.dirname(filePath);
-    execSync(`git add "${filePath}"`, { cwd: dir, stdio: 'pipe' });
+    // No shell: the path is passed as an argv element, so quotes, $(), and
+    // backticks in a filename cannot break out. `--` stops a leading dash
+    // from being read as a git option.
+    execFileSync('git', ['add', '--', filePath], { cwd: dir, stdio: 'pipe' });
     return { success: true };
   } catch (e) {
     return { success: false, error: e.message };
