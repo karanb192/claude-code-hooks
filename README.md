@@ -5,7 +5,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml/badge.svg)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
-[![Tests](https://img.shields.io/badge/tests-1238%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-1382%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
 
 **🌐 [Live site & catalog](https://karanb192.github.io/claude-code-hooks/)**
 
@@ -72,6 +72,7 @@ Runs **before** Claude executes a tool. Can block or modify the operation.
 | [git-safety](hook-scripts/pre-tool-use/git-safety.js)                             | `Bash`                    | Branch-aware git guardrails + destructive gh CLI protection      |
 | [protect-tests](hook-scripts/pre-tool-use/protect-tests.js)                       | `Bash\|Edit\|MultiEdit\|Write` | Stops "fake green": blocks deleting, renaming-away, or skip/xfail-disabling tests |
 | [case-insensitive-guard](hook-scripts/pre-tool-use/case-insensitive-guard.js)     | `Bash`                    | Stops `rm -rf content` destroying `Content` on case-insensitive filesystems (APFS/exFAT/NTFS) — resolves real targets through `cd` chains and quotes |
+| [config-guard](hook-scripts/pre-tool-use/config-guard.js)                         | `Bash\|Edit\|MultiEdit\|Write` | Who guards the guards: blocks the agent from tampering with its own guardrail config (settings.json, `.claude/hooks/`, hooks.json, `.mcp.json`, plugin manifests). Reads always pass. See [Config-Change](#config-change) for why and for its out-of-band sibling. |
 
 ### Post-Tool-Use
 
@@ -93,6 +94,35 @@ Fires when Claude needs user attention.
 | Hook                                                                | Matcher                          | Description                                |
 | ------------------------------------------------------------------- | -------------------------------- | ------------------------------------------ |
 | [notify-permission](hook-scripts/notification/notify-permission.js) | `permission_prompt\|idle_prompt\|elicitation_dialog` | Sends Slack alerts when Claude needs input |
+
+### Config-Change
+
+Fires when a configuration file changes during a session. Can block the change (exit 2), except for `policy_settings`.
+
+| Hook                                                            | Matcher                                                                    | Description                                |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------ |
+| [config-watch](hook-scripts/config-change/config-watch.js)      | `user_settings\|project_settings\|local_settings\|policy_settings\|skills` | Makes every mid-session config change loudly visible (default), or blocks it outright with `CONFIG_WATCH_BLOCK=true`. Note: the docs guarantee ConfigChange can block via exit 2 but do not document its payload schema, so the hook parses defensively and logs the raw payload. |
+
+**Why config-guard + config-watch exist:** the Aug 2026 [CHAINDROP npm worm](https://www.elastic.co/security-labs/shai-hulud-chaindrop-npm-supply-chain) hid its payload in `.claude/settings.json`, turning the agent's own config into its persistence mechanism. And [CVE-2026-25725](https://advisories.gitlab.com/pkg/npm/@anthropic-ai/claude-code/CVE-2026-25725) let sandboxed code escape by injecting hooks into a `settings.json` that did not exist yet, which is why `config-guard` treats creating a protected file as mutation. `config-guard` (PreToolUse) blocks the agent itself from rewriting its guardrails before damage happens; `config-watch` (ConfigChange) covers changes made by anything else while a session runs. For intentional config edits, set `CONFIG_GUARD_ALLOW=true` for that call, or use [ask mode](#-ask-mode-prompt-instead-of-block) to get a prompt instead of a hard wall.
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|MultiEdit|Write",
+        "hooks": [{ "type": "command", "command": "node ~/.claude/hooks/config-guard.js" }]
+      }
+    ],
+    "ConfigChange": [
+      {
+        "matcher": "user_settings|project_settings|local_settings|policy_settings|skills",
+        "hooks": [{ "type": "command", "command": "node ~/.claude/hooks/config-watch.js" }]
+      }
+    ]
+  }
+}
+```
 
 ### Utils
 
@@ -193,7 +223,7 @@ const SAFETY_LEVEL = "strict"; // or 'critical', 'high'
 
 ### 🙋 Ask mode (prompt instead of block)
 
-`block-dangerous-commands`, `protect-secrets`, and `case-insensitive-guard` can **ask** instead of denying outright. When ask mode is on for a level, matching operations return `permissionDecision: "ask"` — Claude Code shows the reason and lets you approve or reject, instead of hard-blocking.
+`block-dangerous-commands`, `protect-secrets`, `case-insensitive-guard`, and `config-guard` can **ask** instead of denying outright. When ask mode is on for a level, matching operations return `permissionDecision: "ask"` — Claude Code shows the reason and lets you approve or reject, instead of hard-blocking.
 
 Enable per level via environment variables (the literal string `true`; anything else means deny):
 
