@@ -56,7 +56,7 @@ function bashAllowed(cmd, level = undefined) {
   assert.strictEqual(result.blocked, false, `Expected ALLOWED but BLOCKED by '${result.pattern?.id}': ${cmd}`);
 }
 
-// Hermetic by default: HOOK_ASK_* is never inherited from the runner's shell —
+// Hermetic by default: HOOK_ASK_* is never inherited from the runner's shell -
 // tests opt in explicitly via envOverrides.
 function runHook(toolName, toolInput, envOverrides = {}) {
   return new Promise((resolve, reject) => {

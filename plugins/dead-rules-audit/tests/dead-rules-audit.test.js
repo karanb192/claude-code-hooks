@@ -44,7 +44,7 @@ Some intro prose that should never be parsed as a rule even though it mentions n
 This is just an explanatory paragraph with no imperative directive whatsoever here.
 
 \`\`\`js
-// never use this — it is inside a fenced code block
+// never use this: it is inside a fenced code block
 console.log("fenced");
 \`\`\`
 `;
@@ -197,7 +197,7 @@ describe('Unit: isRelevant() + judge()', () => {
   });
   it('word-only prohibitions are relevant but UN-judgeable (no manufactured violations)', () => {
     // Relevance via two ordinary keywords, but the rule names no concrete code
-    // token — its violation tokens would be the very words that made it
+    // token: its violation tokens would be the very words that made it
     // relevant, so "relevant" would collapse into "violated". Such rules are
     // advisory: seen, never judged, never violated.
     const [rule] = parseRules('- Never leave debugging statements in committed code');
@@ -418,7 +418,7 @@ describe('Unit: renderScorecard()', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Unit: findClaudeMd (hermetic — temp dirs only)
+// Unit: findClaudeMd (hermetic: temp dirs only)
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Unit: findClaudeMd()', () => {
@@ -692,7 +692,7 @@ describe('Integration: CLAUDE.md edited mid-session is re-parsed (staleness)', (
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Integration: --render CLI / renderCli() — powers /dead-rules-audit:scorecard
+// Integration: --render CLI / renderCli(): powers /dead-rules-audit:scorecard
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Integration: --render CLI (renderCli)', () => {
@@ -735,7 +735,7 @@ describe('Integration: --render CLI (renderCli)', () => {
     }
   });
 
-  it('never throws on --render — output is plain text, not a hook JSON envelope', async () => {
+  it('never throws on --render: output is plain text, not a hook JSON envelope', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dra-render-json-'));
     try {
       const { code, raw } = await runHook(undefined, home, { args: ['--render'], expectJson: false });

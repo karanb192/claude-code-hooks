@@ -13,11 +13,11 @@
  *     (verify-then-reward). Anti-gaming: rewording a marker transfers the
  *     bounty instead of paying; bounties in a deleted file pay only if the
  *     marker text is gone from ALL tracked files (a rename never pays).
- *   - SessionEnd: renders the payout card — XP earned this session, bounties
+ *   - SessionEnd: renders the payout card: XP earned this session, bounties
  *     cleared, and the remaining board burn-down.
  *
  * Detector inventory (line-based, case-sensitive):
- *   - Comment markers (comment-context only — TODO in a string/URL/prose is
+ *   - Comment markers (comment-context only: TODO in a string/URL/prose is
  *     ignored): TODO, FIXME, HACK, XXX, BUG.
  *   - Skipped tests: it/describe/test.skip, xit, xdescribe, @pytest.mark.skip,
  *     t.Skip( (Go), #[ignore] (Rust).
@@ -26,7 +26,7 @@
  *
  * Fast + cost-bounded: caps files scanned (400), bytes per file (256KB),
  * bounties per file/board, per-blame subprocess time, and a ~1.8s hard total
- * budget for scan + blame — cheap even on large monorepos. If you want
+ * budget for scan + blame: cheap even on large monorepos. If you want
  * SessionStart fully off the critical path, add "async": true to the hook
  * entry (note: async SessionStart hooks cannot inject additionalContext, so
  * the side quests only work in the default synchronous mode).
@@ -76,7 +76,7 @@ const MAX_DELETED_FILE_GREPS = 8; // repo-wide verifications per PostToolUse eve
 const TOP_QUESTS = 3; // side quests injected via additionalContext
 const BOARD_RENDER_LIMIT = 12; // rows shown in the rendered board card
 
-// Vendored / generated paths are debt we don't own — skip even if git-tracked.
+// Vendored / generated paths are debt we don't own: skip even if git-tracked.
 const SKIP_PATH_RE =
   /(^|\/)(node_modules|vendor|vendors|third_party|dist|build|out|coverage|target|\.next|\.nuxt)(\/|$)|\.min\.(js|css)$/;
 
@@ -127,7 +127,7 @@ function bountyId(relPath, ruleId, text) {
  * Best-effort index of the first comment token on a line, or -1 if none.
  * Recognizes: //  /*  #  <!--  and leading  *  --  ;  continuation/comment
  * markers. `//` preceded by `:` is skipped so `https://…/TODO` never counts.
- * `#!` (shebang) is skipped. Heuristic, not a parser — but it keeps TODO in
+ * `#!` (shebang) is skipped. Heuristic, not a parser: but it keeps TODO in
  * string literals, URLs, and prose off the board.
  */
 function commentStart(line) {
@@ -185,7 +185,7 @@ function priceBounty(severity, ageDays) {
   return Math.round((base * multiplier) / 10) * 10;
 }
 
-/** Extract bounties from file content. Pure — no fs/git. Capped per file. */
+/** Extract bounties from file content. Pure: no fs/git. Capped per file. */
 function extractBounties(relPath, content) {
   const out = [];
   const lines = content.split('\n');
@@ -209,7 +209,7 @@ function extractBounties(relPath, content) {
 
 /**
  * Sanitize repo-controlled text before it's rendered into hook output.
- * Comment text and file paths come straight from the repo — strip control
+ * Comment text and file paths come straight from the repo: strip control
  * characters so nothing can smuggle escape sequences or line breaks into the
  * card / additionalContext. (Length caps are applied at extraction/render.)
  */
@@ -234,7 +234,7 @@ function ageLabel(ageDays) {
 // ── Card layout ──────────────────────────────────────────────────────────────
 // Fixed inner width (columns between the two ║ borders). Every content row is
 // padded/truncated to EXACTLY this many JS string units so the right border
-// always lands in the same column — no ragged edge on wide paths / big XP.
+// always lands in the same column: no ragged edge on wide paths / big XP.
 const CARD_INNER = 62;
 const CARD_TOP = '╔' + '═'.repeat(CARD_INNER) + '╗';
 const CARD_MID = '╠' + '═'.repeat(CARD_INNER) + '╣';
@@ -244,7 +244,7 @@ const CARD_BOT = '╚' + '═'.repeat(CARD_INNER) + '╝';
  * Build one bordered row. `content` is placed with a 2-space left gutter and
  * hard-fit to the inner width, so the closing ║ is always column-aligned.
  * (Emoji are treated as their JS length; exact terminal cell-width alignment of
- * emoji is out of scope — this guarantees a straight ASCII right edge.)
+ * emoji is out of scope: this guarantees a straight ASCII right edge.)
  */
 function cardRow(content) {
   const gutter = '  ';
@@ -261,17 +261,17 @@ function renderBoard(bounties, cwdName) {
   const totalXp = sorted.reduce((s, b) => s + b.xp, 0);
   const lines = [];
   lines.push(CARD_TOP);
-  lines.push(cardRow(`🤠 BOUNTY BOARD — ${sanitizeForDisplay(cwdName).slice(0, 34)}`));
+  lines.push(cardRow(`🤠 BOUNTY BOARD: ${sanitizeForDisplay(cwdName).slice(0, 34)}`));
   lines.push(cardRow(`${bounties.length} open bounties · ${fmtXp(totalXp)} XP on the table`));
   lines.push(CARD_MID);
   if (shown.length === 0) {
-    lines.push(cardRow('No debt found — this repo is squeaky clean. 🏆'));
+    lines.push(cardRow('No debt found: this repo is squeaky clean. 🏆'));
   }
   for (const b of shown) {
     const tag = `WANTED: ${b.rule}`;
     const loc = sanitizeForDisplay(`${b.file}:${b.line}`);
     const meta = `${ageLabel(b.ageDays)} · ${fmtXp(b.xp)} XP`;
-    // tag(16) + loc(28) + gap + meta(right) — pre-fit each column so the
+    // tag(16) + loc(28) + gap + meta(right): pre-fit each column so the
     // combined body never overflows the inner width.
     const left = `${tag.padEnd(16)} ${String(loc).slice(0, 28).padEnd(28)}`;
     const room = (CARD_INNER - 2) - left.length - 1;
@@ -288,18 +288,18 @@ function renderBoard(bounties, cwdName) {
  * Render the side-quest offer injected into Claude's context.
  * The quoted marker text is repo-controlled (a hostile repo could plant a
  * prompt-injection TODO), so it is sanitized, length-capped, and explicitly
- * framed as untrusted data — never as instructions.
+ * framed as untrusted data: never as instructions.
  */
 function renderSideQuests(bounties) {
   const sorted = [...bounties].sort((a, b) => b.xp - a.xp).slice(0, TOP_QUESTS);
   if (sorted.length === 0) return '';
   const lines = [
-    '🤠 Bounty Board — opportunistic side quests (clear only if you are already editing that file; never go out of your way):',
+    '🤠 Bounty Board: opportunistic side quests (clear only if you are already editing that file; never go out of your way):',
   ];
   for (const b of sorted) {
     const text = sanitizeForDisplay(b.text).slice(0, 120);
     lines.push(
-      `  • [${fmtXp(b.xp)} XP] ${b.rule} at ${sanitizeForDisplay(b.file)}:${b.line} (${ageLabel(b.ageDays)}) — "${text}"`
+      `  • [${fmtXp(b.xp)} XP] ${b.rule} at ${sanitizeForDisplay(b.file)}:${b.line} (${ageLabel(b.ageDays)}): "${text}"`
     );
   }
   lines.push(
@@ -340,7 +340,7 @@ function gitTrackedFiles(cwd) {
       maxBuffer: 8 * 1024 * 1024,
     });
     // git ls-files -z emits NUL-delimited paths; split on the NUL byte (\0),
-    // NOT a space — do not 'fix' this into a literal space or multi-file scans break.
+    // NOT a space: do not 'fix' this into a literal space or multi-file scans break.
     return out.split('\0').filter(Boolean);
   } catch {
     return [];
@@ -349,7 +349,7 @@ function gitTrackedFiles(cwd) {
 
 /**
  * Age in days of a specific line via git blame; NaN on any failure
- * (shallow clone, untracked file, blame timeout, …) — callers degrade to
+ * (shallow clone, untracked file, blame timeout, …): callers degrade to
  * base pricing. Never called past `deadline`, and each subprocess has its
  * own short timeout, so the worst case is deadline + one in-flight call.
  */
@@ -454,11 +454,11 @@ function saveSession(sessionId, state) {
 
 /**
  * Given the previous board and current file content, decide which bounties in
- * that file are now cleared. Pure — takes content in. Returns { cleared, survived }.
+ * that file are now cleared. Pure: takes content in. Returns { cleared, survived }.
  *
  * Anti-gaming: a bounty only pays out on a NET reduction of same-rule findings
  * in the file. Rewording a marker (`// TODO x` → `// todo, x`) removes its
- * exact text but leaves a same-rule finding behind — the bounty transfers to
+ * exact text but leaves a same-rule finding behind: the bounty transfers to
  * the new marker (text/line/id updated, aged XP kept) instead of paying out.
  */
 function reconcileFile(openBounties, relPath, content) {
@@ -550,7 +550,7 @@ function touchedPaths(data) {
   if (t.file_path) paths.push(t.file_path);
   if (t.notebook_path) paths.push(t.notebook_path);
   if (Array.isArray(t.edits)) for (const e of t.edits) if (e && e.file_path) paths.push(e.file_path);
-  // Bash: best-effort — we cannot know which files changed, so re-check all
+  // Bash: best-effort: we cannot know which files changed, so re-check all
   // open bounties' files by returning a sentinel.
   if (data.tool_name === 'Bash') return { paths, rescanAll: true };
   return { paths, rescanAll: false };
@@ -558,7 +558,7 @@ function touchedPaths(data) {
 
 /**
  * Does the exact marker text still exist anywhere in the repo's tracked files?
- * Used before paying out bounties from a DELETED (or renamed) file — a rename
+ * Used before paying out bounties from a DELETED (or renamed) file: a rename
  * moves the same debt elsewhere and must not pay. Returns true/false, or null
  * when git grep itself failed (caller should then withhold payment).
  */
@@ -618,7 +618,7 @@ function handlePostToolUse(data) {
 
     if (missing) {
       // File deleted (or renamed). Deleting dead debt is a legit clear, but a
-      // rename just moves it — verify each marker is gone from the whole repo
+      // rename just moves it: verify each marker is gone from the whole repo
       // before paying. Unverifiable bounties are dropped WITHOUT payout.
       const inFile = open.filter((b) => b.file === rel);
       open = open.filter((b) => b.file !== rel);
@@ -719,7 +719,7 @@ async function main() {
   }
 }
 
-// On-demand bounty board for the CURRENT repo — invoked by the
+// On-demand bounty board for the CURRENT repo: invoked by the
 // /bounty-board:board skill (`node bounty-board.js --render`). Runs the same
 // time-boxed, capped scan the SessionStart hook uses (all latency caps intact)
 // and prints the current board straight to stdout, so you never have to wait
@@ -730,7 +730,7 @@ function renderCli() {
     const { bounties } = scanRepo(cwd);
     if (!bounties.length) {
       process.stdout.write(
-        'No open bounties — this repo is squeaky clean, or it is not a git repo. 🏆\n' +
+        'No open bounties: this repo is squeaky clean, or it is not a git repo. 🏆\n' +
         'The bounty board prices tracked TODO/FIXME/HACK/XXX/BUG/skip/lint-suppress markers; ' +
         'add some (and run inside a git repo) then try /bounty-board:board again.\n'
       );

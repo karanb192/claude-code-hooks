@@ -1,7 +1,7 @@
 {
   "name": "claude-code-hooks",
   "version": "1.0.0",
-  "description": "Production-ready hooks for Claude Code — plus an installable plugin marketplace: safety, automation, notifications, cost/observability, git, productivity, and memory",
+  "description": "Production-ready hooks for Claude Code, plus an installable plugin marketplace: safety, automation, notifications, cost/observability, git, productivity, and memory",
   "scripts": {
     "test": "node --test hook-scripts/tests/**/*.test.js plugins/**/tests/*.test.js"
   },

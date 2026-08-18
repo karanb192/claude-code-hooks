@@ -263,7 +263,7 @@ describe('Integration: SessionEnd', () => {
     assert.deepStrictEqual(output, {});
   });
 
-  it('is idempotent — duplicate SessionEnd does not double-append', async () => {
+  it('is idempotent: duplicate SessionEnd does not double-append', async () => {
     await runHook({ hook_event_name: 'SessionStart', session_id: 'sess-gggg7777', cwd: '/tmp' });
     await runHook({ hook_event_name: 'SessionEnd', session_id: 'sess-gggg7777', cwd: '/tmp' });
     await runHook({ hook_event_name: 'SessionEnd', session_id: 'sess-gggg7777', cwd: '/tmp' });

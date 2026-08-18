@@ -5,7 +5,7 @@
  * Run: node --test hook-scripts/tests/meta/test-discovery.test.js
  * Or:  npm test
  *
- * The `npm test` glob — "hook-scripts/tests/**\/*.test.js plugins/**\/tests/*.test.js" —
+ * The `npm test` glob: "hook-scripts/tests/**\/*.test.js plugins/**\/tests/*.test.js" -
  * only matches ONE directory level deep under a POSIX shell (no globstar). A test
  * file added at an unexpected depth would be silently skipped while the suite still
  * reports green. This guard fails if any *.test.js sits somewhere the glob can't reach,
@@ -41,7 +41,7 @@ const HOOK_SHAPE = /^hook-scripts\/tests\/[^/]+\/[^/]+\.test\.js$/;
 const PLUGIN_SHAPE = /^plugins\/[^/]+\/tests\/[^/]+\.test\.js$/;
 
 test('every *.test.js is reachable by the npm test glob', () => {
-  // Walk the whole repo, not just the expected roots — a test file dropped
+  // Walk the whole repo, not just the expected roots: a test file dropped
   // anywhere else (hook-scripts/pre-tool-use/, site/, repo root, …) must
   // fail this guard too, since the npm glob can't see it there either.
   const all = walk(ROOT);

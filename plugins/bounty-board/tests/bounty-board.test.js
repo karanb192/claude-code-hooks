@@ -328,7 +328,7 @@ describe('Unit: reconcileFile() anti-gaming', () => {
 
   it('an exact survivor is never stolen by a reworded sibling', () => {
     // Bounty '1' text vanished, bounty '2' text still present. The single
-    // remaining finding exactly matches '2' — so '1' pays, '2' survives as-is.
+    // remaining finding exactly matches '2': so '1' pays, '2' survives as-is.
     const { cleared, survived } = reconcileFile(mk(), 'a.js', '// TODO y\n');
     assert.strictEqual(cleared.length, 1);
     assert.strictEqual(cleared[0].id, '1');
@@ -686,7 +686,7 @@ describe('Integration: payout gaming', () => {
     assert.strictEqual(ledger().earnedXp, 0);
   });
 
-  it('rewording a marker does NOT pay out — the bounty transfers instead', async () => {
+  it('rewording a marker does NOT pay out: the bounty transfers instead', async () => {
     fs.writeFileSync(path.join(repo, 'reworded.js'), '// HACK: temporary workaround!!\nconst c = 3;\n');
     const { output } = await runHook(
       {
@@ -905,7 +905,7 @@ describe('Integration: --render CLI', () => {
     }
   });
 
-  it('never throws on --render — output is a human card, not a JSON envelope', async () => {
+  it('never throws on --render: output is a human card, not a JSON envelope', async () => {
     const repo = fs.realpathSync(mkTmp('cch-bounty-render-json-'));
     try {
       initGitRepo(repo);

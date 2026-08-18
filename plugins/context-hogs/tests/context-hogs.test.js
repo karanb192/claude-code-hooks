@@ -32,7 +32,7 @@ const {
 const SCRIPT_PATH = path.join(__dirname, '../context-hogs.js');
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Spawn helper — always runs with a fresh temp HOME so the real home dir is
+// Spawn helper: always runs with a fresh temp HOME so the real home dir is
 // never polluted and no ambient state leaks in.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -137,7 +137,7 @@ describe('Unit: normalizePath()', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Unit: responseBytes — handles the many tool_response shapes
+// Unit: responseBytes: handles the many tool_response shapes
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Unit: responseBytes()', () => {
@@ -178,7 +178,7 @@ describe('Unit: responseBytes()', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Unit: attributePaths — per-tool resolution
+// Unit: attributePaths: per-tool resolution
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Unit: attributePaths()', () => {
@@ -225,7 +225,7 @@ describe('Unit: attributePaths()', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Unit: offenderLabel — repeat-offender heuristics
+// Unit: offenderLabel: repeat-offender heuristics
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Unit: offenderLabel()', () => {
@@ -254,7 +254,7 @@ describe('Unit: offenderLabel()', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Unit: aggregate — the leaderboard core
+// Unit: aggregate: the leaderboard core
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Unit: aggregate()', () => {
@@ -487,7 +487,7 @@ describe('Integration: hook flow', () => {
     assert.ok(output.systemMessage, 'expected a systemMessage card');
     assert.ok(output.systemMessage.includes('Context Hogs'));
     assert.ok(output.systemMessage.includes('package-lock.json'));
-    // SessionEnd has no decision control — systemMessage must be the only field
+    // SessionEnd has no decision control: systemMessage must be the only field
     assert.strictEqual(output.hookSpecificOutput, undefined);
     // suggested CLAUDE.md block should be written for the repo
     const key = repoKey(repoCwd);
@@ -527,7 +527,7 @@ describe('Integration: hook flow', () => {
     try { fs.rmSync(rCwd, { recursive: true, force: true }); } catch {}
   });
 
-  it('ledgers are scoped per repo — repo B paths never leak into repo A card', async () => {
+  it('ledgers are scoped per repo: repo B paths never leak into repo A card', async () => {
     const repoA = fs.mkdtempSync(path.join(os.tmpdir(), 'cch-repoA-'));
     const repoB = fs.mkdtempSync(path.join(os.tmpdir(), 'cch-repoB-'));
     await runHook({
@@ -684,7 +684,7 @@ describe('Integration: --render CLI', () => {
     assert.doesNotMatch(stdout, /No context-cost data/i);
   });
 
-  it('never throws on --render — output is plain text, not a hook JSON envelope', async () => {
+  it('never throws on --render: output is plain text, not a hook JSON envelope', async () => {
     // realpathSync: on macOS mktemp lives under /var → /private/var symlink, and
     // the spawned --render sees the resolved process.cwd(); canonicalize so the
     // seeded ledger key (stdin cwd) and the render key (process.cwd()) match.

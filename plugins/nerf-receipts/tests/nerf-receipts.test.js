@@ -50,7 +50,7 @@ after(() => {
 });
 
 /**
- * Spawn the hook with a fresh temp HOME (fully hermetic — no ambient env, no
+ * Spawn the hook with a fresh temp HOME (fully hermetic: no ambient env, no
  * pollution of the real home dir). Returns { code, output, home }.
  */
 function runHook(payload, home = makeTempHome()) {
@@ -201,7 +201,7 @@ describe('Unit: foldState()', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Unit: parseTranscript (transcript JSONL — issue #11008 caveat)
+// Unit: parseTranscript (transcript JSONL: issue #11008 caveat)
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Unit: parseTranscript()', () => {
@@ -504,7 +504,7 @@ describe('Unit: detectShifts()', () => {
     const shifts = detectShifts(recs);
     const fail = shifts.find((s) => s.metric === 'failure_rate');
     assert.ok(fail, 'expected a failure_rate shift');
-    // The current era is A's return, compared against B's era — not a stale
+    // The current era is A's return, compared against B's era: not a stale
     // global "A group" polluted with A's old sessions.
     assert.strictEqual(fail.toModel, 'A');
     assert.strictEqual(fail.fromModel, 'B');
@@ -854,7 +854,7 @@ describe('Integration: SessionEnd systemMessage', () => {
 
 // Spawn the script with --render and a temp HOME. The ledger is keyed by HOME
 // (~/.claude/nerf-receipts/sessions.jsonl), not by cwd, so no cwd/realpath
-// juggling is needed. Returns raw stdout — a plain-text card, never a JSON
+// juggling is needed. Returns raw stdout: a plain-text card, never a JSON
 // envelope.
 function runRender(home) {
   return new Promise((resolve) => {

@@ -25,16 +25,16 @@
  *
  * Scope + hygiene:
  *   - Registries are keyed per-project (hash of cwd) and live under
- *     ~/.claude/dead-end-registry/ — OUTSIDE the repo, so nothing here can be
+ *     ~/.claude/dead-end-registry/: OUTSIDE the repo, so nothing here can be
  *     accidentally committed. A dead end mined in repo A never warns in repo B.
  *   - Entries expire after MAX_AGE_DAYS and the file is compacted at mine time,
  *     so the registry stays bounded and stale nags die off on their own.
  *   - Mined code snapshots are truncated (MAX_CODE_LINES/MAX_CODE_CHARS): they
- *     are verbatim transcript code and could contain secrets — keep them small,
+ *     are verbatim transcript code and could contain secrets: keep them small,
  *     and never execute or shell out with any transcript content.
  *
  * Install as a plugin (recommended): /plugin install dead-end-registry@claude-code-hooks
- * — auto-wires all four events and adds the /dead-end-registry:dead-ends viewer.
+ *: auto-wires all four events and adds the /dead-end-registry:dead-ends viewer.
  *
  * Or wire it up the classic way in .claude/settings.json:
  * {
@@ -106,7 +106,7 @@ const REVERT_PATTERNS = [
   { id: 'race-cond', regex: /\b(?:caused|causing|introduced|introducing|created|hit|ran\s+into|led\s+to|resulted?\s+in|triggered)\b[^.!?\n]{0,120}?\b(?:race\s+condition|deadlock|infinite\s+loop|memory\s+leak|regression)\b/i, reason: 'caused a defect', weak: true },
 ];
 
-// Nouns that usually name the *thing that was tried* — used to summarise the
+// Nouns that usually name the *thing that was tried*: used to summarise the
 // approach and to build the keyword fingerprint for later matching.
 const STOPWORDS = new Set([
   'the', 'a', 'an', 'to', 'of', 'in', 'on', 'for', 'and', 'or', 'but', 'we',
@@ -125,7 +125,7 @@ const STOPWORDS = new Set([
 
 // Keywords that appear in nearly every coding prompt. A prompt/entry overlap
 // consisting ONLY of these ("fix the tests", "error in the build") must never
-// fire a warning — that is the nag-until-uninstall failure mode. At least one
+// fire a warning: that is the nag-until-uninstall failure mode. At least one
 // overlapping keyword must be outside this set (a project-specific term like
 // "websocket" or "worker_threads") before a card is injected.
 const GENERIC_KEYWORDS = new Set([
@@ -242,7 +242,7 @@ function substantiveLines(code) {
 
 /**
  * Line-level Jaccard similarity between two code blobs: 0..1.
- * Computed over SUBSTANTIVE lines only — shared braces, imports, and comments
+ * Computed over SUBSTANTIVE lines only: shared braces, imports, and comments
  * are exactly the accidental overlap that produces false-positive 'ask's.
  */
 function hunkSimilarity(a, b) {
@@ -430,7 +430,7 @@ function extractDeadEnds(messages) {
     const role = messageRole(messages[i]);
 
     for (const pat of REVERT_PATTERNS) {
-      // Weak (symptom-only) signals are only trusted on assistant messages —
+      // Weak (symptom-only) signals are only trusted on assistant messages -
       // a user reporting "X is broken" is a bug report, not an abandoned approach.
       if (pat.weak && !/assistant/i.test(role)) continue;
       const match = pat.regex.exec(text);
@@ -455,7 +455,7 @@ function extractDeadEnds(messages) {
       const code = truncateCode(findRevertedCode(messages, i, kws));
 
       // Token estimate for the DETOUR only (the lookback window around the
-      // revert), not the whole session — attributing an entire session's spend
+      // revert), not the whole session: attributing an entire session's spend
       // to one dead end would overstate the cost and erode the card's credibility.
       const detourTokens = estimateTokens(messages.slice(Math.max(0, i - CODE_LOOKBACK), i + 1));
 
@@ -490,7 +490,7 @@ function summarise(context, _idx, signalText) {
 // Registry I/O
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Entry age gate — undated (legacy/hand-written) entries are kept. */
+/** Entry age gate: undated (legacy/hand-written) entries are kept. */
 function isFresh(entry, now = Date.now()) {
   const stamp = entry && (entry.ts || entry.date);
   if (!stamp) return true;
@@ -510,7 +510,7 @@ function readRegistry(file) {
         out.push(JSON.parse(line));
       } catch {}
     }
-    // Staleness gate: never warn from entries older than MAX_AGE_DAYS —
+    // Staleness gate: never warn from entries older than MAX_AGE_DAYS -
     // the code they describe has usually been rewritten since.
     return out.filter((e) => isFresh(e)).slice(-MAX_REGISTRY_ENTRIES);
   } catch {
@@ -580,7 +580,7 @@ function persistDeadEnds(file, candidates, meta) {
       // Code snapshot of the reverted change (when one was captured at mine
       // time). Enables the PreToolUse hunk-similarity enforcement leg.
       code: c.code || undefined,
-      // Always an ESTIMATE (hooks receive no billing data — see header note).
+      // Always an ESTIMATE (hooks receive no billing data: see header note).
       tokens: entryTokens,
       usd: usdFor(entryTokens),
       session_id: meta.session_id || null,
@@ -639,9 +639,9 @@ function matchPrompt(promptText, registry, threshold = PROMPT_MATCH_THRESHOLD) {
 
 const HUNK_MATCH_THRESHOLD = 0.6;
 // Minimum SUBSTANTIVE code lines (see substantiveLines: no braces / imports /
-// comments) on BOTH sides — and shared between them — before a hunk match can
+// comments) on BOTH sides: and shared between them: before a hunk match can
 // fire. A 1-2 line reverted snippet is too generic and would produce
-// false-positive "ask" prompts — the exact failure mode the spec flags
+// false-positive "ask" prompts: the exact failure mode the spec flags
 // ("false positives would kill it"). Require a substantive hunk before we
 // interrupt the user.
 const MIN_HUNK_LINES = 3;
@@ -661,7 +661,7 @@ function editCode(toolName, toolInput) {
 function matchEdit(code, registry, threshold = HUNK_MATCH_THRESHOLD) {
   if (!code) return null;
   const editLines = substantiveLines(code);
-  // Tiny edits are too generic to match confidently — skip to avoid false positives.
+  // Tiny edits are too generic to match confidently: skip to avoid false positives.
   if (editLines.length < MIN_HUNK_LINES) return null;
   const editSet = new Set(editLines);
   let best = null;
@@ -694,7 +694,7 @@ function money(entry) {
 /** A single "DEAD END" warning line for a matched entry. */
 function deadEndLine(entry, score) {
   const cost = money(entry);
-  // entry.reason is the mined outcome label ('reverted', 'abandoned', …) —
+  // entry.reason is the mined outcome label ('reverted', 'abandoned', …) -
   // don't hard-code "reverted" for approaches that were merely abandoned.
   const bits = [`tried on ${entry.date}`, `outcome: ${entry.reason}`];
   if (cost) bits.push(`paid ${cost} in tokens (est.)`);
@@ -708,16 +708,16 @@ function renderPromptCard(matches) {
   const totalUsd = top.reduce((s, m) => s + (m.entry.usd || 0), 0);
   const lines = [
     '╔══════════════════════════════════════════════════════════════╗',
-    '║  🪦  DEAD-END REGISTRY — you have been here before             ║',
+    '║  🪦  DEAD-END REGISTRY: you have been here before             ║',
     '╚══════════════════════════════════════════════════════════════╝',
   ];
   for (const m of top) lines.push(deadEndLine(m.entry, m.score));
   if (totalUsd > 0) {
     lines.push('');
-    lines.push(`💸  These dead ends already cost an estimated ~$${totalUsd.toFixed(2)} in tokens the first time. Do NOT silently retry the same approach — confirm with the user, or explain why it will be different this time.`);
+    lines.push(`💸  These dead ends already cost an estimated ~$${totalUsd.toFixed(2)} in tokens the first time. Do NOT silently retry the same approach: confirm with the user, or explain why it will be different this time.`);
   } else {
     lines.push('');
-    lines.push('Do NOT silently retry the same approach — confirm with the user, or explain why it will be different this time.');
+    lines.push('Do NOT silently retry the same approach: confirm with the user, or explain why it will be different this time.');
   }
   return lines.join('\n');
 }
@@ -731,7 +731,7 @@ function renderEditReason(entry, score) {
   const cost = money(entry);
   const paid = cost ? ` You have now paid for this dead end twice (an estimated ${cost} in tokens the first time).` : '';
   const what = entry.summary ? ` What was tried: "${entry.summary}".` : '';
-  return `🪦 DEAD END — this change closely matches (${Math.round(score * 100)}%) code you already tried on ${entry.date} and walked back (${entry.reason}).${what}${paid} Reintroduce it only if you know why it will be different this time.`;
+  return `🪦 DEAD END: this change closely matches (${Math.round(score * 100)}%) code you already tried on ${entry.date} and walked back (${entry.reason}).${what}${paid} Reintroduce it only if you know why it will be different this time.`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -845,8 +845,8 @@ function renderRegistry(entries) {
   if (!Array.isArray(entries) || entries.length === 0) {
     return (
       'No dead ends recorded yet for this repo.\n' +
-      'Keep using Claude Code here — the Stop/PreCompact hooks mine tried-and-reverted ' +
-      'approaches as you go — then run /dead-end-registry:dead-ends again.'
+      'Keep using Claude Code here: the Stop/PreCompact hooks mine tried-and-reverted ' +
+      'approaches as you go: then run /dead-end-registry:dead-ends again.'
     );
   }
   // Newest first. Undated/legacy entries sort last (timestamp 0).
@@ -857,7 +857,7 @@ function renderRegistry(entries) {
   });
   const lines = [
     '╔══════════════════════════════════════════════════════════════╗',
-    '║  🪦  DEAD-END REGISTRY — approaches already tried & walked back ║',
+    '║  🪦  DEAD-END REGISTRY: approaches already tried & walked back ║',
     '╚══════════════════════════════════════════════════════════════╝',
     `${sorted.length} recorded dead end${sorted.length === 1 ? '' : 's'} for this repo (newest first):`,
     '',

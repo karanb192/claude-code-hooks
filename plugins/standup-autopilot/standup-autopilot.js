@@ -11,7 +11,7 @@
  *                   PRs, blockers) to ~/.claude/standup/<date>.jsonl. Both
  *                   events run the SAME idempotent upsert keyed by session_id,
  *                   so Stop keeps the digest fresh mid-session and SessionEnd
- *                   captures the final state — whichever fires last wins.
+ *                   captures the final state: whichever fires last wins.
  *   SessionStart -> (matcher: startup) re-injects the PREVIOUS ledger day's
  *                   unresolved blockers/open threads back into the agent via
  *                   additionalContext, and on the first session of the day
@@ -23,7 +23,7 @@
  * Logs:     ~/.claude/hooks-logs/<YYYY-MM-DD>.jsonl
  *
  * Dates are LOCAL calendar days (your standup is in your timezone, not UTC).
- * A session spanning midnight leaves a snapshot in both days' ledgers — the
+ * A session spanning midnight leaves a snapshot in both days' ledgers: the
  * later day has the final state. "Yesterday" means the most recent prior day
  * that has a ledger (looking back up to 7 days), so Monday pulls Friday and
  * days off are skipped naturally.
@@ -31,7 +31,7 @@
  * Secret hygiene: task summaries, test commands, and blocker snippets are
  * derived from transcript text; common credential shapes (ghp_/sk-/xox
  * tokens, AWS keys, JWTs, key=value secrets) are redacted before anything
- * touches disk. Everything is local — no network calls, ever.
+ * touches disk. Everything is local: no network calls, ever.
  *
  * Render a standup card any time:   node standup-autopilot.js --card [YYYY-MM-DD]
  *
@@ -70,7 +70,7 @@ const MAX_TRANSCRIPT_LINES = 4000;
 const MAX_LEDGER_BYTES = 5 * 1024 * 1024; // 5 MB
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-// LOCAL calendar date — a standup day is the user's day, not UTC's.
+// LOCAL calendar date: a standup day is the user's day, not UTC's.
 function today(d = new Date()) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -94,7 +94,7 @@ function log(data) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Transcript parsing (pure) — extract standup-worthy signal from a session.
+// Transcript parsing (pure): extract standup-worthy signal from a session.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -200,7 +200,7 @@ function extractToolEvents(messages) {
 const TEST_CMD_RE = /\b(npm (run )?test|npx (jest|vitest|mocha)|pytest|jest|vitest|go test|cargo test|mocha|node --test|rspec|phpunit)\b/i;
 const PR_URL_RE = /https?:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/(\d+)/g;
 const PR_HASH_RE = /\bPR\s*#(\d+)\b/gi;
-// Broad error-word match — used only to decide whether a LATER result looks
+// Broad error-word match: used only to decide whether a LATER result looks
 // clean enough to consider an earlier error resolved (conservative on purpose).
 const ERROR_RE = /\b(error|failed|failure|exception|traceback|cannot|not found|ENOENT|refused|timed out|flaky)\b/i;
 // Strict error match for FLAGGING blockers: an incidental "failed"/"cannot"
@@ -226,7 +226,7 @@ function parseTestCounts(text) {
     return { passed: passed || 0, failed: failed || 0 };
   }
   // go test / generic: no numeric counts, but a clear verdict line.
-  // "--- FAIL", "FAIL\tpkg", "ok  \tpkg" — record pass/fail as a boolean-ish
+  // "--- FAIL", "FAIL\tpkg", "ok  \tpkg": record pass/fail as a boolean-ish
   // signal (0/0 counts is uninformative, so encode the verdict instead).
   if (/^\s*(?:---\s*)?FAIL\b/im.test(text) || /\bFAIL\b/.test(text)) {
     return { passed: 0, failed: 1, verdict: 'fail' };
@@ -263,7 +263,7 @@ function buildDigest(messages, ctx = {}) {
   }
   taskSummary = redactSecrets(taskSummary).slice(0, 240);
 
-  // Tests: find bash tool_use running tests, pair with the matching result —
+  // Tests: find bash tool_use running tests, pair with the matching result -
   // by tool_use_id when present (parallel tool calls interleave results),
   // falling back to the next result in sequence.
   const tests = [];
@@ -314,7 +314,7 @@ function buildDigest(messages, ctx = {}) {
   while ((m = PR_HASH_RE.exec(allText))) prSet.add('#' + m[1]);
   const prs = [...prSet];
 
-  // Blockers: unresolved errors — tool_results flagged is_error, or result
+  // Blockers: unresolved errors: tool_results flagged is_error, or result
   // text with a STRONG error signature (error:/traceback/ENOENT/…) that was
   // NOT followed by a clean success later. Loose words like "failed" alone
   // don't qualify: they show up in ordinary file contents and prose.
@@ -362,7 +362,7 @@ function buildDigest(messages, ctx = {}) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Git context — branch + diffstat for the digest. execFileSync only (no shell
+// Git context: branch + diffstat for the digest. execFileSync only (no shell
 // interpolation), timeboxed, and silently tolerant of non-git / missing cwds.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -373,7 +373,7 @@ function gitContext(cwd) {
   try {
     out.branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], opts).trim();
   } catch {
-    return out; // not a git repo, git missing, or cwd gone — all fine
+    return out; // not a git repo, git missing, or cwd gone: all fine
   }
   try {
     // Staged + unstaged vs HEAD, e.g. "3 files changed, 42 insertions(+)".
@@ -386,7 +386,7 @@ function gitContext(cwd) {
 // Ledger (JSONL, upsert-per-session-per-day)
 //
 // Writes are APPEND-ONLY: a read-filter-rewrite upsert is a read-modify-write
-// race — two sessions hitting Stop/SessionEnd at the same moment would clobber
+// race: two sessions hitting Stop/SessionEnd at the same moment would clobber
 // each other's digests. appendFileSync of a single line is atomic enough
 // (O_APPEND), and readLedger dedupes by session_id with last-write-wins, which
 // gives identical upsert semantics without the lost-update window.
@@ -444,7 +444,7 @@ function upsertLedger(digest, date = today()) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Rendering — the screenshot-able standup card + the blocker re-injection text.
+// Rendering: the screenshot-able standup card + the blocker re-injection text.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function testSummary(tests) {
@@ -490,7 +490,7 @@ function renderCard(rows, date = today()) {
   lines.push(`│  📋 STANDUP · ${date}${' '.repeat(Math.max(0, 42 - date.length))}│`);
   lines.push('└─────────────────────────────────────────────────────────┘');
   if (!rows.length) {
-    lines.push('  (no sessions recorded) — run /standup-autopilot:standup again after your next session.');
+    lines.push('  (no sessions recorded): run /standup-autopilot:standup again after your next session.');
     return lines.join('\n');
   }
   const summary = summarizeDay(rows);
@@ -501,7 +501,7 @@ function renderCard(rows, date = today()) {
     if (s.prs.length) bits.push(`PR ${s.prs.join(', ')}`);
     if (s.tests) bits.push(s.tests);
     if (s.diffstat) bits.push(s.diffstat);
-    lines.push(`  • [${s.repo}] ${bits.join(' — ')}`);
+    lines.push(`  • [${s.repo}] ${bits.join(': ')}`);
   }
   const allBlockers = summary.flatMap((s) => s.blockers.map((b) => ({ repo: s.repo, b })));
   if (allBlockers.length) {
@@ -518,7 +518,7 @@ function renderCard(rows, date = today()) {
 // Slack-friendly plain text (for the optional CLI post / clipboard).
 function renderSlack(rows, date = today()) {
   const summary = summarizeDay(rows);
-  const parts = [`*Standup — ${date}*`];
+  const parts = [`*Standup: ${date}*`];
   const done = summary
     .filter((s) => s.task)
     .map((s) => {
@@ -548,7 +548,7 @@ function renderResumeContext(rows) {
 }
 
 // Most recent prior LOCAL day that has a ledger, searching back up to
-// `lookback` days — so a Monday standup naturally pulls Friday's ledger.
+// `lookback` days: so a Monday standup naturally pulls Friday's ledger.
 function findPreviousLedgerDate(fromDate = today(), lookback = 7) {
   for (let i = 1; i <= lookback; i++) {
     const ds = shiftDate(fromDate, -i);
@@ -626,7 +626,7 @@ function runCli(argv) {
   if (idx === -1) idx = argv.indexOf('--render');
   const slack = argv.includes('--slack');
   let date = argv[idx + 1];
-  // Strict YYYY-MM-DD only — the date lands in a filesystem path.
+  // Strict YYYY-MM-DD only: the date lands in a filesystem path.
   if (!date || !DATE_RE.test(date)) date = findPreviousLedgerDate(today(), 30) || today();
   const rows = readLedger(date);
   process.stdout.write((slack ? renderSlack(rows, date) : renderCard(rows, date)) + '\n');
