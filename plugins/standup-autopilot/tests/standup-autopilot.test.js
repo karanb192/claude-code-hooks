@@ -139,7 +139,7 @@ describe('Unit: parseTestCounts', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Unit: redactSecrets — transcript text must not leak credentials into ledgers
+// Unit: redactSecrets: transcript text must not leak credentials into ledgers
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Unit: redactSecrets', () => {
@@ -174,7 +174,7 @@ describe('Unit: redactSecrets', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Unit: buildDigest — the core
+// Unit: buildDigest: the core
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Unit: buildDigest', () => {
@@ -331,7 +331,7 @@ describe('Unit: buildDigest', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Unit: dates — local calendar days, timezone-safe arithmetic
+// Unit: dates: local calendar days, timezone-safe arithmetic
 // ─────────────────────────────────────────────────────────────────────────────
 
 function nodeEval(expr, env = {}) {
@@ -344,7 +344,7 @@ function nodeEval(expr, env = {}) {
   });
 }
 
-describe('Unit: today() / shiftDate — local time, not UTC', () => {
+describe('Unit: today() / shiftDate: local time, not UTC', () => {
   const expr = (iso) =>
     `const m=require(${JSON.stringify(SCRIPT_PATH)});process.stdout.write(m.today(new Date('${iso}')))`;
 

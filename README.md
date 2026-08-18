@@ -1,6 +1,6 @@
 # claude-code-hooks
 
-🪝 Ready-to-use hooks for Claude Code — plus a 7-plugin installable marketplace: safety, automation, notifications, and more.
+🪝 Ready-to-use hooks for Claude Code, plus a 7-plugin installable marketplace: safety, automation, notifications, and more.
 
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -24,7 +24,7 @@
 
 A growing collection of tested, documented hooks you can copy, paste, and customize.
 
-> 🔌 **New:** these hooks also install as one-command Claude Code plugins. Run `/plugin marketplace add karanb192/claude-code-hooks`, then `/plugin install <name>@claude-code-hooks` — see [Install as a plugin](#-install-as-a-plugin) for the 7-plugin catalog.
+> 🔌 **New:** these hooks also install as one-command Claude Code plugins. Run `/plugin marketplace add karanb192/claude-code-hooks`, then `/plugin install <name>@claude-code-hooks`; see [Install as a plugin](#-install-as-a-plugin) for the 7-plugin catalog.
 
 ---
 
@@ -45,15 +45,15 @@ A growing collection of tested, documented hooks you can copy, paste, and custom
 
 ### Session Lifecycle
 
-Runs at session boundaries — inject context at **SessionStart** and capture outcomes at **Stop / SessionEnd**.
+Runs at session boundaries: inject context at **SessionStart** and capture outcomes at **Stop / SessionEnd**.
 
 | Hook | Matcher | Description |
 |------|---------|-------------|
 | [session-logger](hook-scripts/session/session-logger.js) | `SessionStart` + `PostToolUse` + `SessionEnd` | Writes a durable markdown log of every session (cwd, git repo, files touched, bash commands). `PostToolUse` registers with `"async": true` so logging never blocks Claude; concurrent writes are serialized with a file lock. Bash commands get best-effort secret redaction. Drop-in for Obsidian vaults via `CC_SESSION_LOG_DIR`. |
 
-> 🔌 **`bounty-board`** (repo TODO/FIXME/HACK debt priced as aging XP bounties) now ships as an installable **plugin** — see [Install as a plugin](#-install-as-a-plugin).
+> 🔌 **`bounty-board`** (repo TODO/FIXME/HACK debt priced as aging XP bounties) now ships as an installable **plugin**; see [Install as a plugin](#-install-as-a-plugin).
 
-> 🔌 **`nerf-receipts`** (personal model-quality flight recorder) and **`standup-autopilot`** (writes your daily standup from what your agents actually did; re-injects open blockers) now ship as installable **plugins** — see [Install as a plugin](#-install-as-a-plugin).
+> 🔌 **`nerf-receipts`** (personal model-quality flight recorder) and **`standup-autopilot`** (writes your daily standup from what your agents actually did; re-injects open blockers) now ship as installable **plugins**; see [Install as a plugin](#-install-as-a-plugin).
 
 ### Instructions-Loaded
 
@@ -67,7 +67,7 @@ Fires when a CLAUDE.md or `.claude/rules/*.md` file is loaded into context. The 
 
 Runs when the user submits a prompt, before Claude processes it. Can inject context or block the prompt.
 
-> 🔌 **`dead-end-registry`** (remembers approaches you tried and reverted, then warns before you retry them) now ships as an installable **plugin** — see [Install as a plugin](#-install-as-a-plugin).
+> 🔌 **`dead-end-registry`** (remembers approaches you tried and reverted, then warns before you retry them) now ships as an installable **plugin**; see [Install as a plugin](#-install-as-a-plugin).
 
 ### Pre-Tool-Use
 
@@ -79,7 +79,7 @@ Runs **before** Claude executes a tool. Can block or modify the operation.
 | [protect-secrets](hook-scripts/pre-tool-use/protect-secrets.js)                   | `Read\|Edit\|Write\|Bash` | Prevents reading/modifying/exfiltrating sensitive files          |
 | [git-safety](hook-scripts/pre-tool-use/git-safety.js)                             | `Bash`                    | Branch-aware git guardrails + destructive gh CLI protection      |
 | [protect-tests](hook-scripts/pre-tool-use/protect-tests.js)                       | `Bash\|Edit\|MultiEdit\|Write` | Stops "fake green": blocks deleting, renaming-away, or skip/xfail-disabling tests |
-| [case-insensitive-guard](hook-scripts/pre-tool-use/case-insensitive-guard.js)     | `Bash`                    | Stops `rm -rf content` destroying `Content` on case-insensitive filesystems (APFS/exFAT/NTFS) — resolves real targets through `cd` chains and quotes |
+| [case-insensitive-guard](hook-scripts/pre-tool-use/case-insensitive-guard.js)     | `Bash`                    | Stops `rm -rf content` destroying `Content` on case-insensitive filesystems (APFS/exFAT/NTFS): resolves real targets through `cd` chains and quotes |
 | [config-guard](hook-scripts/pre-tool-use/config-guard.js)                         | `Bash\|Edit\|MultiEdit\|Write` | Who guards the guards: blocks the agent from tampering with its own guardrail config (settings.json, `.claude/hooks/`, hooks.json, `.mcp.json`, plugin manifests). Reads always pass. See [Config-Change](#config-change) for why and for its out-of-band sibling. |
 
 ### Post-Tool-Use
@@ -91,9 +91,9 @@ Runs **after** Claude executes a tool. Can react to results.
 | [auto-stage](hook-scripts/post-tool-use/auto-stage.js)   | `Edit\|Write` | Automatically git stages files after Claude modifies them                     |
 | [format-code](hook-scripts/post-tool-use/format-code.js) | `Write\|Edit` | Auto-formats Python (ruff) and JS/TS/HTML/JSON/MD/YAML (prettier) after edits |
 
-> 🔌 **`context-hogs`** (per-file context-cost leaderboard) and **`pr-provenance-stamp`** (PR-body provenance receipt) now ship as installable **plugins** — see [Install as a plugin](#-install-as-a-plugin).
+> 🔌 **`context-hogs`** (per-file context-cost leaderboard) and **`pr-provenance-stamp`** (PR-body provenance receipt) now ship as installable **plugins**; see [Install as a plugin](#-install-as-a-plugin).
 
-> 🔌 **`dead-rules-audit`** (CLAUDE.md compliance scorecard) now ships as an installable **plugin** — see [Install as a plugin](#-install-as-a-plugin).
+> 🔌 **`dead-rules-audit`** (CLAUDE.md compliance scorecard) now ships as an installable **plugin**; see [Install as a plugin](#-install-as-a-plugin).
 
 ### Notification
 
@@ -146,7 +146,7 @@ Tools to help you build and debug hooks.
 
 ## 🔌 Install as a plugin
 
-This repo is also a **Claude Code plugin marketplace**, so you can install a single hook — no copying scripts, no editing `settings.json` by hand.
+This repo is also a **Claude Code plugin marketplace**, so you can install a single hook: no copying scripts, no editing `settings.json` by hand.
 
 **1. Add the marketplace (once):**
 
@@ -160,19 +160,19 @@ This repo is also a **Claude Code plugin marketplace**, so you can install a sin
 /plugin install context-hogs@claude-code-hooks
 ```
 
-**3. Restart Claude Code** — the hook is active.
+**3. Restart Claude Code**: the hook is active.
 
 | Plugin                               | What it does                                                                                                                              | Command                                     |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| [context-hogs](plugins/context-hogs) | Per-file context-cost leaderboard — attributes each tool result's tokens to the files it loaded, so you see which files cost you the most | `/context-hogs:leaderboard` renders the board on demand |
-| [nerf-receipts](plugins/nerf-receipts) | Personal flight recorder — records your own failure rate, edit churn & tokens/task by model version, and flags real shifts when a model changes | `/nerf-receipts:receipts` renders the trend card on demand |
-| [dead-rules-audit](plugins/dead-rules-audit) | CLAUDE.md compliance scorecard — tallies which rules Claude follows vs ignores as you edit (SessionStart + PostToolUse + SessionEnd), and flags chronically-ignored rules to promote into a deterministic hook | `/dead-rules-audit:scorecard` renders the scorecard on demand |
+| [context-hogs](plugins/context-hogs) | Per-file context-cost leaderboard: attributes each tool result's tokens to the files it loaded, so you see which files cost you the most | `/context-hogs:leaderboard` renders the board on demand |
+| [nerf-receipts](plugins/nerf-receipts) | Personal flight recorder: records your own failure rate, edit churn & tokens/task by model version, and flags real shifts when a model changes | `/nerf-receipts:receipts` renders the trend card on demand |
+| [dead-rules-audit](plugins/dead-rules-audit) | CLAUDE.md compliance scorecard: tallies which rules Claude follows vs ignores as you edit (SessionStart + PostToolUse + SessionEnd), and flags chronically-ignored rules to promote into a deterministic hook | `/dead-rules-audit:scorecard` renders the scorecard on demand |
 | [pr-provenance-stamp](plugins/pr-provenance-stamp) | Stamps a provenance receipt (prompts, est. spend, tests run, agent-authored lines) into your PR body when Claude runs `gh pr create` | `/pr-provenance-stamp:provenance` renders the receipt on demand |
-| [standup-autopilot](plugins/standup-autopilot) | Writes your daily standup from what your agents actually did across repos — captures tasks, tests, PRs, and blockers from session transcripts and re-injects yesterday's open blockers next session | `/standup-autopilot:standup` renders today's card on demand |
-| [dead-end-registry](plugins/dead-end-registry) | Remembers approaches you tried and reverted (reason + estimated token cost) and warns before you retry them — a prompt-submit card plus an ask-before-edit guard | `/dead-end-registry:dead-ends` renders the registry on demand |
+| [standup-autopilot](plugins/standup-autopilot) | Writes your daily standup from what your agents actually did across repos: captures tasks, tests, PRs, and blockers from session transcripts and re-injects yesterday's open blockers next session | `/standup-autopilot:standup` renders today's card on demand |
+| [dead-end-registry](plugins/dead-end-registry) | Remembers approaches you tried and reverted (reason + estimated token cost) and warns before you retry them: a prompt-submit card plus an ask-before-edit guard | `/dead-end-registry:dead-ends` renders the registry on demand |
 | [bounty-board](plugins/bounty-board) | Prices your repo's TODO/FIXME/HACK/skip debt as aging XP bounties, injects the top 3 as opportunistic side quests, and verifies + pays out bounties you genuinely clear | `/bounty-board:board` renders the board on demand |
 
-> ⚡ The PostToolUse recorders in these plugins run **async** — they record in the background and add **~zero latency** to a tool call. Each plugin renders on demand via its own command (e.g. `/context-hogs:leaderboard`) and at SessionEnd.
+> ⚡ The PostToolUse recorders in these plugins run **async**: they record in the background and add **~zero latency** to a tool call. Each plugin renders on demand via its own command (e.g. `/context-hogs:leaderboard`) and at SessionEnd.
 
 The hooks listed above under [🪝 Hooks](#-hooks) install the classic way (copy the script + add to `settings.json`); more are being packaged as plugins.
 
@@ -207,7 +207,7 @@ cp hook-scripts/pre-tool-use/block-dangerous-commands.js ~/.claude/hooks/
 }
 ```
 
-**3. Restart Claude Code** — the hook is now active.
+**3. Restart Claude Code**: the hook is now active.
 
 > 💡 **Tip:** Use multiple hooks together. Combine `block-dangerous-commands` + `protect-secrets` for comprehensive safety.
 
@@ -231,7 +231,7 @@ const SAFETY_LEVEL = "strict"; // or 'critical', 'high'
 
 ### 🙋 Ask mode (prompt instead of block)
 
-`block-dangerous-commands`, `protect-secrets`, `case-insensitive-guard`, and `config-guard` can **ask** instead of denying outright. When ask mode is on for a level, matching operations return `permissionDecision: "ask"` — Claude Code shows the reason and lets you approve or reject, instead of hard-blocking.
+`block-dangerous-commands`, `protect-secrets`, `case-insensitive-guard`, and `config-guard` can **ask** instead of denying outright. When ask mode is on for a level, matching operations return `permissionDecision: "ask"`; Claude Code shows the reason and lets you approve or reject, instead of hard-blocking.
 
 Enable per level via environment variables (the literal string `true`; anything else means deny):
 
@@ -250,7 +250,7 @@ Set them inline in your hook command in `settings.json`:
 }
 ```
 
-Everything defaults to **deny** — ask mode is strictly opt-in. A common setup: keep `critical` on deny, set `HOOK_ASK_STRICT=true` so cautionary patterns prompt instead of blocking.
+Everything defaults to **deny**: ask mode is strictly opt-in. A common setup: keep `critical` on deny, set `HOOK_ASK_STRICT=true` so cautionary patterns prompt instead of blocking.
 
 ---
 
@@ -264,7 +264,7 @@ It also points agent-specific risks at the OWASP Top 10 for Agentic Applications
 
 ## 🧪 Testing
 
-Requires **Node ≥ 18** (no npm dependencies). The `format-code` tests exercise the real formatters, so have `prettier`, `ruff`, and `uv` on your PATH — CI installs them — or expect those few tests to fail. All hooks include comprehensive tests, run in CI on Node 18, 20, and 22:
+Requires **Node ≥ 18** (no npm dependencies). The `format-code` tests exercise the real formatters, so have `prettier`, `ruff`, and `uv` on your PATH (CI installs them) or expect those few tests to fail. All hooks include comprehensive tests, run in CI on Node 18, 20, and 22:
 
 ```bash
 # Run all tests

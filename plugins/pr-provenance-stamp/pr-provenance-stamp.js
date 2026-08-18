@@ -4,7 +4,7 @@
  *
  * Embeds a reviewer-facing provenance receipt into the PR body when Claude runs
  * `gh pr create` (or `glab mr create`). PostToolUse hooks maintain a per-session
- * ledger under ~/.claude/pr-provenance-stamp/<session_id>.json — a tool-call
+ * ledger under ~/.claude/pr-provenance-stamp/<session_id>.json: a tool-call
  * counter, agent-authored line count, and every test/typecheck command with its
  * real exit code. When `gh pr create` fires, the PreToolUse branch reads the
  * transcript for the real prompt count / token+dollar spend / models, asks git
@@ -12,12 +12,12 @@
  * then rewrites the `--body` argument via hookSpecificOutput.updatedInput,
  * appending a stamp like:
  *
- *   Built with Claude Code — 23 prompts · $3.84 · tests 4/4 green · 92% agent-authored
+ *   Built with Claude Code: 23 prompts · $3.84 · tests 4/4 green · 92% agent-authored
  *
  * SAFE-OUTPUT GUARANTEE: if the command uses a heredoc, `$(...)` command
  * substitution, backticks, or process substitution to build the body (the
- * dominant forms the ship skill and Claude Code emit), the hook DEFERS — it
- * returns {} and never rewrites — because re-quoting those would literalize and
+ * dominant forms the ship skill and Claude Code emit), the hook DEFERS: it
+ * returns {} and never rewrites: because re-quoting those would literalize and
  * corrupt the real description. A missed stamp is acceptable; a mangled PR body
  * is not.
  *
@@ -28,19 +28,19 @@
  *
  * Logs to: ~/.claude/hooks-logs/   State: ~/.claude/pr-provenance-stamp/
  *
- * PLUGIN INSTALL (recommended): this hook also ships as an installable plugin —
- * `/plugin install pr-provenance-stamp@claude-code-hooks` — which wires both
+ * PLUGIN INSTALL (recommended): this hook also ships as an installable plugin -
+ * `/plugin install pr-provenance-stamp@claude-code-hooks`: which wires both
  * events automatically and adds a `/pr-provenance-stamp:provenance` command to
  * preview the receipt on demand. The classic settings.json snippet below still
  * works for copy-paste users.
  *
  * COST/TOKEN CAVEAT (GitHub issue #11008): hooks do NOT receive token/cost in
  * their input, so spend is parsed from the transcript JSONL at transcript_path
- * and priced from a static table — figures are ESTIMATES and rendered as such
+ * and priced from a static table: figures are ESTIMATES and rendered as such
  * (`~$` / "Spend (est.)"). When the transcript is absent/unparseable, token &
  * dollar figures degrade to omitted (never faked).
  *
- * updatedInput SCHEMA (docs: https://code.claude.com/docs/en/hooks — "PreToolUse:
+ * updatedInput SCHEMA (docs: https://code.claude.com/docs/en/hooks: "PreToolUse:
  * `updatedInput` directly under `hookSpecificOutput` replaces a tool's arguments
  * before it runs"): this hook emits the documented shape,
  *
@@ -57,8 +57,8 @@
  *     in the transcript). The hook only ever fires on `gh pr create` /
  *     `glab mr create`, and only appends to the --body argument.
  *   - GitHub issue #15897 (updatedInput silently dropped) was a MULTI-hook
- *     aggregation bug — a later PreToolUse hook's empty result clobbered an
- *     earlier hook's updatedInput — reported fixed as of Claude Code v2.1.168.
+ *     aggregation bug: a later PreToolUse hook's empty result clobbered an
+ *     earlier hook's updatedInput: reported fixed as of Claude Code v2.1.168.
  *     On affected older versions with multiple Bash PreToolUse hooks the
  *     failure mode is a MISSED STAMP (the original command runs unmodified),
  *     never a corrupted command.
@@ -193,7 +193,7 @@ function redactSecrets(s) {
     .replace(/(--?(?:token|password|passwd|pwd|api-?key|secret|auth)[A-Za-z-]*)([ =])\S+/gi, '$1$2[redacted]')
     // Authorization: Bearer xyz.
     .replace(/\b(bearer)\s+\S+/gi, '$1 [redacted]')
-    // Bare credential tokens that carry no secret-ish key name — parity with
+    // Bare credential tokens that carry no secret-ish key name: parity with
     // standup-autopilot's REDACTION_RES. This receipt lands in a PUBLIC PR body,
     // so prefer over-redaction.
     .replace(/\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{16,}/g, '[redacted]')
@@ -216,7 +216,7 @@ function extractTestResult(command, toolResponse) {
   }
   // If no explicit exit code is available, treat a present stdout with no error
   // marker as a pass (exit 0), otherwise unknown. Zero-count summaries like
-  // "0 failed", "0 failing", or node --test's "fail 0" are NOT failures — strip
+  // "0 failed", "0 failing", or node --test's "fail 0" are NOT failures: strip
   // them before matching so a green run isn't misrecorded as red.
   if (exit === null) {
     const stdout = toolResponse && typeof toolResponse.stdout === 'string' ? toolResponse.stdout : '';
@@ -231,7 +231,7 @@ function extractTestResult(command, toolResponse) {
     else if (blob.trim() !== '') exit = 0;
   }
   // Collapse whitespace (multi-line commands would break the markdown list the
-  // cmd is rendered into) and redact secret-looking material — this string ends
+  // cmd is rendered into) and redact secret-looking material: this string ends
   // up in a PUBLIC PR body.
   const cmd = redactSecrets(command.trim().replace(/\s+/g, ' ')).slice(0, 200);
   return { cmd, exit, ok: exit === 0 };
@@ -254,7 +254,7 @@ function applyPostToolUse(ledger, toolName, toolInput, toolResponse) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Transcript parsing — prompt count, models, token/dollar spend (issue #11008)
+// Transcript parsing: prompt count, models, token/dollar spend (issue #11008)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function normalizeModel(model) {
@@ -411,7 +411,7 @@ function totalBranchAddedLines(cwd, runGit = defaultRunGit) {
 // Stamp rendering
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Dollar figures are list-price ESTIMATES — always rendered with a `~`. */
+/** Dollar figures are list-price ESTIMATES: always rendered with a `~`. */
 function fmtDollars(d) {
   if (!(d > 0)) return null;
   if (d < 0.01) return '<$0.01';
@@ -431,7 +431,7 @@ function fmtTokens(n) {
  * `totalAddedLines` (optional): total lines added on the branch per git. When
  * provided (and >= agent lines) it becomes the denominator for a TRUTHFUL
  * agent-authored percentage: human_lines = totalAddedLines - agent_lines.
- * When absent/unusable, we do NOT fabricate a 100% figure — agentPct stays null
+ * When absent/unusable, we do NOT fabricate a 100% figure: agentPct stays null
  * and callers surface the absolute agent line count instead.
  */
 function buildProvenance(ledger, transcript, totalAddedLines = null) {
@@ -491,7 +491,7 @@ function renderSummaryLine(p) {
   }
   if (p.agentPct != null) parts.push(`${p.agentPct}% agent-authored`);
   else if (p.agentLines > 0) parts.push(`${p.agentLines} agent-authored lines`);
-  return `Built with Claude Code — ${parts.length ? parts.join(' · ') : 'session receipt'}`;
+  return `Built with Claude Code: ${parts.length ? parts.join(' · ') : 'session receipt'}`;
 }
 
 /** Full markdown card wrapped in idempotency sentinels. */
@@ -608,7 +608,7 @@ function shellQuote(s) {
  * where everything is literal) makes rewriting unsafe: heredocs, `$(...)`,
  * backticks, process substitution. Single-quoted occurrences are LITERAL text
  * (e.g. backticks inside an already-stamped, single-quoted --body) and are not
- * flagged — that is what keeps re-stamping idempotent. Returns a reason string
+ * flagged: that is what keeps re-stamping idempotent. Returns a reason string
  * or null.
  */
 function findUnsafeConstruct(command) {
@@ -631,7 +631,7 @@ function findUnsafeConstruct(command) {
 
 /**
  * Detect shell constructs that make body rewriting unsafe (heredocs, `$(...)`,
- * backticks, process substitution — the DOMINANT forms Claude Code and the
+ * backticks, process substitution: the DOMINANT forms Claude Code and the
  * ship skill use to author PR bodies). When present, the hook MUST defer
  * (no-op) rather than emit safe-but-wrong output. We intentionally over-defer:
  * a false "unsafe" is a missed stamp, a false "safe" is a corrupted PR body.
@@ -692,8 +692,8 @@ function isBodyLikeToken(t) {
 /**
  * Find `gh pr create` / `glab mr create` in COMMAND POSITION (start of string,
  * after a separator, after a newline, or after leading VAR=val assignments) as
- * three consecutive unquoted tokens. Quoted occurrences — `echo "gh pr create"`
- * — never match. Returns the index of the `create` token, or -1.
+ * three consecutive unquoted tokens. Quoted occurrences: `echo "gh pr create"`
+ *: never match. Returns the index of the `create` token, or -1.
  */
 function findCreateCommand(tokens, command) {
   const SEQS = [['gh', 'pr', 'create'], ['glab', 'mr', 'create']];
@@ -731,7 +731,7 @@ function isCommandPosition(tokens, i, command) {
 
 /**
  * Rewrite the --body / -b argument (or add one) in a `gh pr create` command by
- * SPLICING only the body value's source range — every other byte of the command
+ * SPLICING only the body value's source range: every other byte of the command
  * (other args, `&&` chains, newlines, `$VAR` references elsewhere) is preserved
  * verbatim. Returns { command, changed, deferred?, reason? }.
  *
@@ -805,7 +805,7 @@ function rewriteBodyArg(command, stampBlock) {
   }
 
   if (bodyIdx === -1) {
-    // Append a stamp-only --body — but ONLY if no body-like token exists
+    // Append a stamp-only --body: but ONLY if no body-like token exists
     // anywhere else in the command (a second --body would win gh's
     // last-flag-wins and silently clobber the real one).
     if (tokens.some((t, k) => !winSet.has(k) && k !== createIdx && isBodyLikeToken(t))) {
@@ -893,7 +893,7 @@ function handlePreToolUse(data, dir = STATE_DIR, runGit = defaultRunGit) {
   });
 
   // Documented shape: updatedInput directly under hookSpecificOutput, with
-  // permissionDecision "allow" — the only combination the docs illustrate and
+  // permissionDecision "allow": the only combination the docs illustrate and
   // the only one field reports confirm is applied. NOTE: "allow" bypasses the
   // permission prompt for this command; the rewritten command executes without
   // a re-prompt. See the updatedInput SCHEMA caveat in the header.
@@ -940,11 +940,11 @@ async function main() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// --render CLI — preview the receipt for the most recent session ledger.
+// --render CLI: preview the receipt for the most recent session ledger.
 //
 // Powers `/pr-provenance-stamp:provenance`. Prints the EXACT stamp block the
 // PreToolUse branch would splice into a PR body, built from the newest ledger
-// under STATE_DIR (via the same buildProvenance/renderStamp helpers — no logic
+// under STATE_DIR (via the same buildProvenance/renderStamp helpers: no logic
 // is duplicated). There is no transcript at render time, so prompt/spend/model
 // figures degrade to omitted rather than faked; the git denominator is taken
 // from the current repo so the agent-authored % is still real when available.
@@ -975,7 +975,7 @@ function renderCli(dir = STATE_DIR, cwd = process.cwd(), runGit = defaultRunGit)
       process.stdout.write(
         'No provenance ledger recorded yet.\n' +
         'Keep working in Claude Code (the PostToolUse hook records edits and test\n' +
-        'runs as you go), then run /pr-provenance-stamp:provenance again — or just\n' +
+        'runs as you go), then run /pr-provenance-stamp:provenance again: or just\n' +
         '`gh pr create` and the receipt is stamped into the PR body automatically.\n'
       );
       return;

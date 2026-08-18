@@ -2,7 +2,7 @@
 /**
  * Case-Insensitive Filesystem Guard - PreToolUse Hook for Bash
  * On case-insensitive filesystems (APFS default, exFAT, NTFS), `Content` and
- * `content` are the same path — so `rm -rf content` silently destroys
+ * `content` are the same path: so `rm -rf content` silently destroys
  * `Content` (see anthropics/claude-code#37875). This hook resolves the real
  * target directory of destructive commands and denies the ones that would hit
  * a case-variant of what was typed. Logs to: ~/.claude/hooks-logs/
@@ -12,11 +12,11 @@
  * Covered commands: rm, rmdir, mv, mkdir, touch, and `find <path> … -delete`
  * (also `find … -exec rm/unlink`). Directory context is modeled as a set of
  * candidate cwds plus the last command's exit status: `cd`/`pushd` move it
- * (honoring whether the target directory exists — including directories a
+ * (honoring whether the target directory exists: including directories a
  * `mkdir` earlier in the same command line would create), `popd` restores the
  * matching `pushd`'s directory, a subshell `( … )` restores the outer cwd at
  * `)`, and connectors gate execution (`&&` runs only after success, `||` only
- * after failure, `;`/newline/`|`/`&` regardless — with `cd` in a background
+ * after failure, `;`/newline/`|`/`&` regardless: with `cd` in a background
  * (`&`) or pipeline (`|`) position not moving the parent shell). Heredoc
  * bodies are stripped before analysis, and wrapper prefixes (`nohup`, `exec`,
  * `command`, `env`, `sudo`, …) are peeled off.
@@ -42,8 +42,8 @@
  * - Exact-case targets: `rm -rf Content` when `Content` exists as typed is an
  *   intentional delete, not a collision.
  * - A case-only rename (`mv readme.md README.md`) is the CANONICAL fix for a
- *   miscapitalized name — allowed, not blocked. `mv -t DIR`/`--target-directory`
- *   moves INTO a directory (contents preserved) — allowed.
+ *   miscapitalized name: allowed, not blocked. `mv -t DIR`/`--target-directory`
+ *   moves INTO a directory (contents preserved): allowed.
  * - Plain `rm` (no -r/-d) of a case-variant DIRECTORY: `rm` refuses to remove
  *   a directory, so nothing is destroyed → allowed.
  * - Heredoc bodies (`cat <<EOF … EOF`) are document text, not commands.
@@ -52,7 +52,7 @@
  * - When the semantics leave the run-directory ambiguous, every candidate
  *   directory is checked (fail-closed): a rare over-block is preferred to a
  *   silent data-loss miss.
- * - No probe files: case-insensitivity is proven by the collision itself —
+ * - No probe files: case-insensitivity is proven by the collision itself -
  *   the typed name is absent from readdir() yet the path still exists.
  *
  * Setup in .claude/settings.json:
@@ -141,7 +141,7 @@ function stripHeredocs(command) {
 // Split a command line into { text, connector } segments, where connector is
 // the operator that PRECEDES the segment (null for the first). Operators inside
 // single/double quotes are ignored. A single `&` (background) is a separator
-// too — the command after it still runs; `&>`, `>&`, `<&` redirects are not.
+// too: the command after it still runs; `&>`, `>&`, `<&` redirects are not.
 function splitSegments(command) {
   const segments = [];
   let cur = '', quote = null, connector = null;
@@ -234,7 +234,7 @@ const realFsx = {
 };
 
 // A collision exists when the typed basename is NOT an on-disk entry of the
-// parent, yet a differently-cased entry is — and the typed path still exists
+// parent, yet a differently-cased entry is: and the typed path still exists
 // (proving the volume folds case, no probe file needed).
 function findCollision(resolved, fsx) {
   const parent = path.dirname(resolved);
@@ -265,7 +265,7 @@ function splitArgs(tokens) {
 }
 
 // Analyze one full command string. Returns the first destructive collision:
-// { level, cmd, typed, actual, parent } — or null when nothing provable.
+// { level, cmd, typed, actual, parent }: or null when nothing provable.
 //
 // State model: `shell` is the set of candidate cwds the shell could be in
 // (null = unknown), `lastStatus` is the last command's exit status
@@ -280,7 +280,7 @@ function analyzeCommand(command, cwd, fsx = realFsx) {
   const dirStack = [], subStack = [], createdDirs = new Set();
 
   // Merge candidate sets; null means "no further information", so the known
-  // side wins (its candidates still get checked — fail-closed).
+  // side wins (its candidates still get checked: fail-closed).
   const union = (a, b) => {
     if (a === null) return b;
     if (b === null) return a;
@@ -328,7 +328,7 @@ function analyzeCommand(command, cwd, fsx = realFsx) {
     const cmd = path.basename(tokens[0].text);
 
     // A `cd` followed by `&` (background) or `|` (pipeline) runs in a subshell
-    // and never moves the parent — keep the old cwd, add the new fail-closed.
+    // and never moves the parent: keep the old cwd, add the new fail-closed.
     const detached = nextConn === '&' || nextConn === '|';
 
     if (cmd === 'cd' || cmd === 'pushd') {
@@ -406,7 +406,7 @@ function analyzeCommand(command, cwd, fsx = realFsx) {
       }
     } else if (cmd === 'mv' && operands.length >= 2) {
       // `mv -t DIR` / `--target-directory=DIR` moves INTO a directory
-      // (contents preserved) and its last operand is a SOURCE — skip.
+      // (contents preserved) and its last operand is a SOURCE: skip.
       const intoDir = flags.some(f => /^-[A-Za-z]*t$/.test(f) || f.startsWith('--target-directory'));
       if (!intoDir) {
         const dest = operands[operands.length - 1];
@@ -496,7 +496,7 @@ async function main() {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: decision,
-      permissionDecisionReason: `${EMOJIS[hit.level]} [case-collision] ${hit.cmd} targets '${hit.typed}' but this case-insensitive directory contains '${hit.actual}' — same path on disk, so the differently-cased entry would be hit`,
+      permissionDecisionReason: `${EMOJIS[hit.level]} [case-collision] ${hit.cmd} targets '${hit.typed}' but this case-insensitive directory contains '${hit.actual}': same path on disk, so the differently-cased entry would be hit`,
     },
   }));
 }

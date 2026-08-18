@@ -12,7 +12,7 @@
  *   strict   - + writing a whole test file that is already skipped (Write)
  *
  * It does NOT block writing new, real tests, refactor-renaming a test to another
- * test name, or editing test bodies — only removal and disabling.
+ * test name, or editing test bodies: only removal and disabling.
  *
  * Setup in .claude/settings.json:
  * {
@@ -86,7 +86,7 @@ function addedMarker(oldStr, newStr) {
   return false;
 }
 
-// Returns { blocked, id, level, reason } — pure, so it is unit-testable.
+// Returns { blocked, id, level, reason }: pure, so it is unit-testable.
 function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL) {
   const threshold = LEVELS[safetyLevel] || 2;
   const allow = () => ({ blocked: false });
@@ -142,7 +142,7 @@ async function main() {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
           permissionDecision: 'deny',
-          permissionDecisionReason: `${EMOJIS[result.level]} [${result.id}] ${result.reason}. Fix the code, don't disable the test — or run this manually if the removal is intentional.`
+          permissionDecisionReason: `${EMOJIS[result.level]} [${result.id}] ${result.reason}. Fix the code, don't disable the test: or run this manually if the removal is intentional.`
         }
       }));
     }

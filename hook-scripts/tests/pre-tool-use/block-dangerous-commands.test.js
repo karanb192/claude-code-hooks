@@ -34,7 +34,7 @@ function shouldAllow(cmd, safetyLevel = undefined) {
 }
 
 // Spawns the actual script and returns parsed output.
-// Hermetic by default: HOOK_ASK_* is never inherited from the runner's shell —
+// Hermetic by default: HOOK_ASK_* is never inherited from the runner's shell -
 // tests opt in explicitly via envOverrides.
 function runHook(command, envOverrides = {}) {
   return new Promise((resolve, reject) => {

@@ -17,7 +17,7 @@ const { getFormatter, formatFile, log, FORMATTERS } = require('../../post-tool-u
 
 const SCRIPT_PATH = path.join(__dirname, '../../post-tool-use/format-code.js');
 
-// Hermetic HOME: the hook logs to ~/.claude/hooks-logs — keep test noise
+// Hermetic HOME: the hook logs to ~/.claude/hooks-logs: keep test noise
 // out of the real home directory. realpathSync: /var vs /private/var on macOS.
 const TEST_HOME = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hook-test-home-')));
 

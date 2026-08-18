@@ -12,7 +12,7 @@
  *
  * One script, three registrations in .claude/settings.json.
  *
- * PostToolUse uses "async": true so logging never blocks Claude — the hook
+ * PostToolUse uses "async": true so logging never blocks Claude: the hook
  * fires after every Edit/Write/Read/Bash, so keep it non-blocking. Because
  * async invocations can run concurrently (parallel tool calls), every write to
  * a note goes through a cross-process file lock (withLock) so concurrent
@@ -21,11 +21,11 @@
  * finalization completes before the session terminates.
  *
  * Secrets: bash commands are single-line-truncated AND run through a best-effort
- * redactor (redactSecrets) that masks common inline-secret shapes — sensitive
+ * redactor (redactSecrets) that masks common inline-secret shapes: sensitive
  * env assignments, --password/--token flags, Bearer tokens, and well-known key
  * prefixes (ghp_, xox…, sk-, AKIA…). This is best-effort, NOT a guarantee; an
  * unusual secret form can still slip through. Treat notes as sensitive and keep
- * synced folders (Obsidian/iCloud) private. File CONTENTS are never logged —
+ * synced folders (Obsidian/iCloud) private. File CONTENTS are never logged -
  * only paths for Edit/Write/Read.
  *
  * {
@@ -46,7 +46,7 @@
  * Note: register against SessionEnd, NOT Stop. Stop fires at the end of every
  * Claude turn (many times per session); SessionEnd fires once when the session
  * actually ends. If the terminal is closed abruptly (SIGKILL), SessionEnd may
- * not fire — the note remains as-is with all activity up to the last tool call
+ * not fire: the note remains as-is with all activity up to the last tool call
  * preserved, just without a final ended: timestamp.
  *
  * Tip: point CC_SESSION_LOG_DIR at an Obsidian vault for cross-device sync.
@@ -119,7 +119,7 @@ function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-// Synchronous sleep — hooks are short-lived one-shot processes, so a blocking
+// Synchronous sleep: hooks are short-lived one-shot processes, so a blocking
 // wait while spinning for the lock is fine (and simpler than going async).
 function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -129,7 +129,7 @@ function sleepSync(ms) {
 // tool calls can invoke this script concurrently; the note write is a
 // read-modify-write and would otherwise lose entries (last writer wins). We
 // serialize per-note via an exclusive lockfile. Best-effort: if we can't get
-// the lock within the budget, we proceed unlocked rather than drop the write —
+// the lock within the budget, we proceed unlocked rather than drop the write -
 // a rare interleave beats silent data loss.
 function withLock(filePath, fn, { retries = 60, delayMs = 15, staleMs = 10000 } = {}) {
   const lockPath = `${filePath}.lock`;
@@ -158,7 +158,7 @@ function withLock(filePath, fn, { retries = 60, delayMs = 15, staleMs = 10000 } 
 }
 
 // Best-effort masking of the most common inline-secret shapes on a single
-// command line. NOT a guarantee — see the header note. Conservative by design:
+// command line. NOT a guarantee: see the header note. Conservative by design:
 // we'd rather miss an exotic secret than mangle legitimate commands in the log.
 function redactSecrets(cmd) {
   return cmd
@@ -179,7 +179,7 @@ function handleSessionStart(data) {
 
   const existing = findExistingFile(session_id);
   if (existing) {
-    // Session resumed — append a resume marker, don't overwrite.
+    // Session resumed: append a resume marker, don't overwrite.
     fs.appendFileSync(existing, `\n## Resumed at ${started}\n`);
     log({ level: 'RESUME', session_id, file: existing });
     return;
@@ -199,7 +199,7 @@ function handleSessionStart(data) {
     'ended:',
     '---',
     '',
-    `# Claude Code Session — ${cwdBase}`,
+    `# Claude Code Session: ${cwdBase}`,
     '',
     `**Started:** ${started}`,
     `**Working dir:** \`${cwd || process.cwd()}\``,
@@ -254,7 +254,7 @@ function appendUnderSection(filePath, section, entry) {
     const lines = body.split('\n');
     const sectionIdx = lines.findIndex(l => l.trim() === section);
     if (sectionIdx === -1) {
-      // Section missing — append at end
+      // Section missing: append at end
       fs.appendFileSync(filePath, `\n${section}\n\n${entry}\n`);
       return;
     }
@@ -283,7 +283,7 @@ function handleSessionEnd(data) {
 
   const ended = new Date().toISOString();
 
-  // Capture final git status (short) outside the lock — no need to hold it
+  // Capture final git status (short) outside the lock: no need to hold it
   // during a subprocess call.
   let gitStatus = '';
   try {
@@ -291,7 +291,7 @@ function handleSessionEnd(data) {
   } catch {}
 
   withLock(filePath, () => {
-    // Idempotent: skip if already finalized (defensive — protects against the
+    // Idempotent: skip if already finalized (defensive: protects against the
     // user accidentally registering against Stop, which fires every turn).
     // The frontmatter is seeded with a literal "ended:" line; once we fill it,
     // this regex no longer matches and we skip. The check + write are inside the

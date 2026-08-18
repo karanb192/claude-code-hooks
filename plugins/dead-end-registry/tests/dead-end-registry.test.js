@@ -379,7 +379,7 @@ describe('Unit: matchPrompt false-positive guards', () => {
   });
 
   it('does not match on generic-only overlap even when jaccard is high', () => {
-    // Overlap = fix, tests, error (3 shared) — all generic dev words.
+    // Overlap = fix, tests, error (3 shared): all generic dev words.
     const registry = [{ fingerprint: 'y', keywords: ['fix', 'tests', 'error', 'websocket'] }];
     assert.deepStrictEqual(matchPrompt('fix the tests error', registry), []);
   });
@@ -637,7 +637,7 @@ describe('Unit: editCode / matchEdit', () => {
 
   it('does NOT fire on a tiny (< MIN_HUNK_LINES) edit even if identical', () => {
     assert.ok(MIN_HUNK_LINES >= 2);
-    const tiny = 'return null;'; // 1 line — too generic to interrupt on
+    const tiny = 'return null;'; // 1 line: too generic to interrupt on
     const registry = [{ code: 'return null;', fingerprint: 'a', date: '2026-01-01', reason: 'reverted' }];
     assert.strictEqual(matchEdit(tiny, registry), null);
   });
@@ -692,7 +692,7 @@ describe('Unit: rendering cards', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Unit: registry persistence (hermetic — temp dir, no real HOME writes here)
+// Unit: registry persistence (hermetic: temp dir, no real HOME writes here)
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Unit: persistDeadEnds / readRegistry', () => {
@@ -868,7 +868,7 @@ describe('Integration: stdin/stdout hook flow', () => {
   });
 
   it('end-to-end: Stop mines a code snapshot, then PreToolUse asks when it is reintroduced', async () => {
-    // This proves the enforcement leg works from REAL mined data — no hand-seeded
+    // This proves the enforcement leg works from REAL mined data: no hand-seeded
     // `code` fixture. The registry entry's code must originate from the Stop mine.
     const cwd = path.join(home, 'proj-e2e');
     const { file } = withTranscript(makeTranscript());
@@ -909,7 +909,7 @@ describe('Integration: stdin/stdout hook flow', () => {
     assert.strictEqual(output.hookSpecificOutput?.hookEventName, 'PreToolUse');
     assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'ask');
     assert.ok(output.hookSpecificOutput?.permissionDecisionReason.includes('DEAD END'));
-    // The date is the mine date (today), not a fixture value — assert format only.
+    // The date is the mine date (today), not a fixture value: assert format only.
     assert.ok(/\d{4}-\d{2}-\d{2}/.test(output.hookSpecificOutput?.permissionDecisionReason));
   });
 
@@ -999,7 +999,7 @@ describe('Unit: renderRegistry', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Spawn the script with --render and a real process.cwd() (the registry is keyed
-// by the current working directory, not a stdin cwd). Returns raw stdout — a
+// by the current working directory, not a stdin cwd). Returns raw stdout: a
 // plain-text card, never a hook JSON envelope.
 function runRender(homeDir, cwd) {
   return new Promise((resolve) => {
@@ -1047,7 +1047,7 @@ describe('Integration: --render CLI', () => {
     assert.doesNotMatch(stdout, /No dead ends recorded yet/i);
   });
 
-  it('never throws on --render — output is plain text, not a hook JSON envelope', async () => {
+  it('never throws on --render: output is plain text, not a hook JSON envelope', async () => {
     const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cch-de-rrepo-')));
     const { code, stdout } = await runRender(home, repo);
     assert.strictEqual(code, 0);

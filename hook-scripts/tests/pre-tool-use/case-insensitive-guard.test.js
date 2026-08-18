@@ -102,7 +102,7 @@ describe('Unit: tokenize()', () => {
 // Unit: collision analysis on the fake case-insensitive volume
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('Unit: analyzeCommand() — catches (true positives)', () => {
+describe('Unit: analyzeCommand(): catches (true positives)', () => {
   const fsx = ciFsx();
   const at = (cmd, cwd = '/repo') => analyzeCommand(cmd, cwd, fsx);
 
@@ -172,7 +172,7 @@ describe('Unit: analyzeCommand() — catches (true positives)', () => {
   });
 });
 
-describe('Unit: analyzeCommand() — allows (true negatives)', () => {
+describe('Unit: analyzeCommand(): allows (true negatives)', () => {
   const fsx = ciFsx();
   const at = (cmd, cwd = '/repo') => analyzeCommand(cmd, cwd, fsx);
 
@@ -225,7 +225,7 @@ describe('Unit: analyzeCommand() — allows (true negatives)', () => {
 });
 
 describe('Unit: analyzeCommand() on a case-SENSITIVE volume', () => {
-  it('never blocks — the miscased command fails harmlessly on its own', () => {
+  it('never blocks: the miscased command fails harmlessly on its own', () => {
     const fsx = makeFsx({ '/repo': ['content', 'notes.txt'], '/repo/content': [] }, ['/repo', '/repo/content'], { caseInsensitive: false });
     assert.strictEqual(analyzeCommand('rm -rf Content', '/repo', fsx), null);
     assert.strictEqual(analyzeCommand('mkdir -p Content', '/repo', fsx), null);
@@ -363,11 +363,11 @@ describe('Integration: real collisions', { skip: !TMP_IS_CASE_INSENSITIVE && 'tm
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Unit: round-2 hardening — shell-state model (background &, subshells,
+// Unit: round-2 hardening: shell-state model (background &, subshells,
 // pushd/popd stack, exit-status gating, heredocs, mv -t, quoted ~)
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('Unit: round-2 hardening — bypasses closed', () => {
+describe('Unit: round-2 hardening: bypasses closed', () => {
   it('analyzes commands after a background & separator', () => {
     const hit = analyzeCommand('sleep 1 & rm -rf CONTENT', '/repo', ciFsx());
     assert.strictEqual(hit?.level, 'critical');
@@ -416,13 +416,13 @@ describe('Unit: round-2 hardening — bypasses closed', () => {
     const hit = analyzeCommand('cat <<EOF\nhello\nEOF\nrm -rf CONTENT', '/repo', ciFsx());
     assert.strictEqual(hit?.level, 'critical');
   });
-  it('numeric << is arithmetic, not a heredoc — following lines stay live', () => {
+  it('numeric << is arithmetic, not a heredoc: following lines stay live', () => {
     const hit = analyzeCommand('echo $((1<<2))\nrm -rf CONTENT', '/repo', ciFsx());
     assert.strictEqual(hit?.level, 'critical');
   });
 });
 
-describe('Unit: round-2 hardening — false positives removed', () => {
+describe('Unit: round-2 hardening: false positives removed', () => {
   it('mv -t DIR treats operands as sources, not a destination', () => {
     assert.strictEqual(analyzeCommand('mv -t src Notes.txt', '/repo', ciFsx()), null);
   });

@@ -1,8 +1,8 @@
 # context-hogs
 
-> Per-file context-cost leaderboard — attributes every tool result's tokens to the files it loaded, so you know which files cost you the most.
+> Per-file context-cost leaderboard: attributes every tool result's tokens to the files it loaded, so you know which files cost you the most.
 
-A `PostToolUse` hook fires after every `Read`, `Grep`, `Glob`, and `Bash` call, measures the tool result's bytes, resolves the file path(s) that result belongs to, and appends a ledger row. Tokens are estimated from bytes (~4 bytes/token) and dollars from a configurable input-token rate — hooks don't receive real token counts, so nothing is fabricated. At `SessionEnd`, or on demand via the skill, it aggregates the ledger into your repo's most token-expensive files (read count, cumulative tokens, estimated cost, plus repeat-offender flags for lockfiles, generated code, and giant utils) and renders that leaderboard.
+A `PostToolUse` hook fires after every `Read`, `Grep`, `Glob`, and `Bash` call, measures the tool result's bytes, resolves the file path(s) that result belongs to, and appends a ledger row. Tokens are estimated from bytes (~4 bytes/token) and dollars from a configurable input-token rate (hooks don't receive real token counts, so nothing is fabricated). At `SessionEnd`, or on demand via the skill, it aggregates the ledger into your repo's most token-expensive files (read count, cumulative tokens, estimated cost, plus repeat-offender flags for lockfiles, generated code, and giant utils) and renders that leaderboard.
 
 ## Install
 
@@ -11,7 +11,7 @@ A `PostToolUse` hook fires after every `Read`, `Grep`, `Glob`, and `Bash` call, 
 /plugin install context-hogs@claude-code-hooks
 ```
 
-Restart Claude Code — done. (Or from a shell: `claude plugin install context-hogs@claude-code-hooks`.)
+Restart Claude Code, done. (Or from a shell: `claude plugin install context-hogs@claude-code-hooks`.)
 
 ## What it does
 
@@ -20,7 +20,7 @@ Restart Claude Code — done. (Or from a shell: `claude plugin install context-h
 | PostToolUse (`Read\|Grep\|Glob\|Bash`) | async (zero added latency) | Measures the tool result's bytes, resolves the file path(s) it belongs to, appends a ledger row. |
 | SessionEnd | sync | Aggregates the whole ledger, renders the leaderboard card via `systemMessage`, and writes a suggested CLAUDE.md ignore block for the top offenders. |
 
-`/context-hogs:leaderboard` — renders this repo's context-cost leaderboard on demand.
+`/context-hogs:leaderboard` renders this repo's context-cost leaderboard on demand.
 
 ## Configuration
 
@@ -37,7 +37,7 @@ State is stored under `~/.claude/context-hogs/<repo-key>/ledger.jsonl`.
 
 ## Data & privacy
 
-Records file paths, read counts, and byte/token estimates per repo. It makes no network calls — the script only uses `fs`, `path`, and `os` — so everything stays on your local machine.
+Records file paths, read counts, and byte/token estimates per repo. It makes no network calls (the script only uses `fs`, `path`, and `os`), so everything stays on your local machine.
 
 ## Uninstall
 

@@ -20,7 +20,7 @@
  * COST DATA CAVEAT (verified, GitHub issue #11008): hooks do NOT receive
  * token/cost numbers in their input. We estimate tokens from response bytes
  * (~4 bytes/token) and dollars from a configurable input-token rate. No fake
- * numbers are ever fabricated — everything is derived from measured bytes.
+ * numbers are ever fabricated: everything is derived from measured bytes.
  *
  * Setup in .claude/settings.json:
  * {
@@ -37,7 +37,7 @@
  *
  * The PostToolUse entry only appends a ledger row (its stdout is ignored), so
  * "async": true is safe and gives zero added latency per tool call. Keep the
- * SessionEnd entry synchronous — its systemMessage is what renders the card.
+ * SessionEnd entry synchronous: its systemMessage is what renders the card.
  *
  * Install as a plugin: /plugin install context-hogs@claude-code-hooks
  * The plugin also adds /context-hogs:leaderboard to render the board on demand.
@@ -52,7 +52,7 @@ const STATE_ROOT = path.join(HOME, '.claude', 'context-hogs');
 
 // Estimation constants. All are overridable via env for accuracy tuning.
 const BYTES_PER_TOKEN = Number(process.env.CONTEXT_HOGS_BYTES_PER_TOKEN) || 4; // rough English/code average
-const DOLLARS_PER_MTOK = Number(process.env.CONTEXT_HOGS_USD_PER_MTOK) || 3.0; // input $/1M tok — an ESTIMATE; update to your model's current input rate
+const DOLLARS_PER_MTOK = Number(process.env.CONTEXT_HOGS_USD_PER_MTOK) || 3.0; // input $/1M tok: an ESTIMATE; update to your model's current input rate
 const TOP_N = Number(process.env.CONTEXT_HOGS_TOP_N) || 10;
 // Hard cap on ledger rows kept/read. At SessionEnd the ledger file is compacted
 // down to the most recent LEDGER_CAP rows, so disk usage stays bounded too.
@@ -159,7 +159,7 @@ function responseBytes(toolResponse) {
  * Returns an array of normalized paths (usually length 1; [] if not attributable).
  *
  * ATTRIBUTION IS HEURISTIC / BEST-EFFORT for Grep and Bash:
- *   - Read: exact — the file_path is authoritative.
+ *   - Read: exact: the file_path is authoritative.
  *   - Grep: attributes to the search target (path/glob); a Grep with no path
  *     attribute (repo-wide search) attributes nothing.
  *   - Glob: attributes to the scanned directory (defaults to '.').
@@ -170,7 +170,7 @@ function responseBytes(toolResponse) {
  *     than none, and Read (the dominant context source) is always exact.
  *
  * When one event attributes to multiple paths (e.g. `cat a.txt b.txt`), the
- * caller SPLITS the response bytes evenly across them — bytes are never
+ * caller SPLITS the response bytes evenly across them: bytes are never
  * double-counted by attributing the full total to every path.
  */
 function attributePaths(toolName, toolInput, cwd) {
@@ -292,7 +292,7 @@ function truncatePath(p, max = 42) {
 /** Render the shareable leaderboard card as plain text. */
 function renderCard(agg, meta = {}) {
   const lines = [];
-  lines.push('🐷 Context Hogs — most expensive files' + (meta.repo ? ` · ${meta.repo}` : ''));
+  lines.push('🐷 Context Hogs: most expensive files' + (meta.repo ? ` · ${meta.repo}` : ''));
   const t = agg.totals;
   lines.push(`   ${fmtInt(t.files)} files · ${fmtInt(t.reads)} reads · ~${fmtTokens(t.tokens)} tokens · ~${fmtDollars(t.dollars)} est`);
   lines.push('');
@@ -319,7 +319,7 @@ function suggestClaudeMdBlock(agg) {
   const lines = [];
   lines.push('<!-- context-hogs: paste into CLAUDE.md to stop burning tokens on these -->');
   lines.push('## Context budget');
-  lines.push('Do NOT read these files in full unless explicitly required — they are large and rarely relevant:');
+  lines.push('Do NOT read these files in full unless explicitly required: they are large and rarely relevant:');
   const listed = [];
   for (const r of picks) {
     if (seen.has(r.path)) continue;
@@ -436,7 +436,7 @@ function handleSessionEnd(data) {
 
   // NOTE: at SessionEnd, additionalContext is NOT honored by Claude Code
   // (it only surfaces for SessionStart/UserPromptSubmit), and SessionEnd has
-  // no decision control at all — so `systemMessage` is the only output field
+  // no decision control at all: so `systemMessage` is the only output field
   // that does anything here. Emit just that; no no-op hookSpecificOutput.
   return { systemMessage: card };
 }
@@ -475,7 +475,7 @@ async function main() {
   }
 }
 
-// On-demand leaderboard for the CURRENT repo — invoked by the /context-hogs
+// On-demand leaderboard for the CURRENT repo: invoked by the /context-hogs
 // command (`node context-hogs.js --render`). Prints the same card the SessionEnd
 // hook renders, straight to stdout, so you never have to wait for session end.
 function renderCli() {

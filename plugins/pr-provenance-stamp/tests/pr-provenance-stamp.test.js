@@ -1136,7 +1136,7 @@ describe('Integration: --render CLI', () => {
     }
   });
 
-  it('never throws — render output is plain text, not a hook JSON envelope', async () => {
+  it('never throws: render output is plain text, not a hook JSON envelope', async () => {
     const cwd = fs.realpathSync(freshDir());
     try {
       const { code, stdout } = await runRender(home, cwd);

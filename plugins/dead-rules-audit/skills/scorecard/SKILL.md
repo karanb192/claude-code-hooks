@@ -1,6 +1,6 @@
 ---
 name: scorecard
-description: Show the CLAUDE.md compliance scorecard — which rules Claude actually follows vs ignores
+description: Show the CLAUDE.md compliance scorecard: which rules Claude actually follows vs ignores
 disable-model-invocation: true
 ---
 
@@ -14,7 +14,7 @@ violated, its heuristic compliance %, and a `⚠ promote→hook` flag for rules 
 chronically ignores. It is produced by the `dead-rules-audit` hook, which records
 as you work.
 
-Briefly call out the 1–3 worst offenders and, for any rule flagged
-`promote→hook`, suggest making it deterministic — a PreToolUse/PostToolUse hook or
-a lint rule — instead of relying on Claude to remember it. Keep it short; do not
+Briefly call out the 1-3 worst offenders and, for any rule flagged
+`promote→hook`, suggest making it deterministic (a PreToolUse/PostToolUse hook or
+a lint rule) instead of relying on Claude to remember it. Keep it short; do not
 re-run any commands.

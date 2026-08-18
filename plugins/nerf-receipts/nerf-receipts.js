@@ -7,12 +7,12 @@
  * data instead of vibes. Zero interaction required. Signals tracked per session:
  *   - tool-failure rate         (failed tool calls / total tool calls)
  *   - same-file edit churn      (edit -> fail -> re-edit loops on one file)
- *   - stop-event count          (Stop/SubagentStop fires — turn-end frequency)
+ *   - stop-event count          (Stop/SubagentStop fires: turn-end frequency)
  *   - tokens-per-completed-task (transcript token usage / prompts answered)
  * On SessionStart it renders a recent-sessions sparkline trend card and flags
- * meaningful shifts (>=25% relative change in the mean, heuristic — not a
+ * meaningful shifts (>=25% relative change in the mean, heuristic: not a
  * significance test) that coincide with a model change
- * ("retry rate +82% since claude-x-2 rollout, n=140 sessions" — n is the real
+ * ("retry rate +82% since claude-x-2 rollout, n=140 sessions": n is the real
  * count of sessions in the two compared runs).
  *
  * Registers on 6 events (branch on hook_event_name):
@@ -23,7 +23,7 @@
  *
  * MODEL/VERSION SOURCING (verified against the hooks docs): hook input carries
  * a `model` field ONLY on SessionStart, and even there it is optional. So the
- * model is primarily recovered from the transcript JSONL — assistant lines
+ * model is primarily recovered from the transcript JSONL: assistant lines
  * carry message.model (the dominant one across the session wins) and every
  * line carries a top-level `version` (the Claude Code version). Sessions with
  * no recoverable model bucket as "unknown"; the trend card says so and shift
@@ -39,7 +39,7 @@
  *
  * Persists a JSONL ledger under ~/.claude/nerf-receipts/ (zero deps, no SQLite).
  * In-flight per-session state is an append-only JSONL event log (safe under
- * concurrent PostToolUse hooks — no read-modify-write races). Only counts and
+ * concurrent PostToolUse hooks: no read-modify-write races). Only counts and
  * edited file paths are persisted; tool inputs/commands/transcript text never
  * are, so secrets in commands cannot land in the ledger.
  * Logs meaningful events to ~/.claude/hooks-logs/<YYYY-MM-DD>.jsonl
@@ -336,7 +336,7 @@ function buildSessionRecord(state, transcriptStats, meta) {
 /**
  * Extract model + Claude Code version from a hook payload (best-effort).
  * Per the hooks docs only SessionStart (optionally) carries `model`; there is
- * no model env var, so no env fallback — the transcript is the real source.
+ * no model env var, so no env fallback: the transcript is the real source.
  */
 function extractMeta(data) {
   const model = typeof data.model === 'string' && data.model ? data.model : 'unknown';
@@ -378,7 +378,7 @@ function sparkline(series) {
  * Compare the most-recent model run against the run just before it and report
  * shifts on failure_rate and tokens_per_task (>= threshold relative change in
  * the mean, both runs >= minPerGroup sessions). Runs are CONTIGUOUS stretches
- * of the same model in chronological order — this keeps eras honest when a
+ * of the same model in chronological order: this keeps eras honest when a
  * user bounces between models (A, B, A never blames B for A's numbers), and n
  * is the real session count of the two compared runs. Sessions with an
  * unknown model are never used to claim a shift.
@@ -473,7 +473,7 @@ function renderTrendCard(records) {
       }
       lines.push(row(`⚠ ${detail} since ${s.toModel}, n=${s.n}`));
     }
-    lines.push(row(`  it's not in your head — you have the receipts.`));
+    lines.push(row(`  it's not in your head: you have the receipts.`));
   } else {
     lines.push(row('no meaningful model/version shift detected.'));
   }
@@ -559,7 +559,7 @@ function readLedger() {
 function handlePostToolUse(data, forceFailed = false) {
   const failed = forceFailed || isToolFailure(data.tool_response);
   const target = editTargetPath(data.tool_name, data.tool_input);
-  // Only the failure bit + edit target path are persisted — never tool
+  // Only the failure bit + edit target path are persisted: never tool
   // inputs/commands (which can contain secrets).
   appendStateEvent(data.session_id, { t: 'tool', failed, target });
   return '{}';
@@ -611,7 +611,7 @@ function handleSessionEnd(data) {
 
 function handleSessionStart(data) {
   // SessionStart is the only event documented to (optionally) carry the model
-  // id — stash it so SessionEnd can attribute the session even when the
+  // id: stash it so SessionEnd can attribute the session even when the
   // transcript is missing or unreadable.
   if (typeof data.model === 'string' && data.model) {
     appendStateEvent(data.session_id, { t: 'meta', model: data.model });
@@ -637,7 +637,7 @@ function handleSessionStart(data) {
  * you never have to wait for a session to end. Reads the personal ledger
  * (~/.claude/nerf-receipts/sessions.jsonl). Degrades to a friendly message when
  * the ledger is empty or hasn't yet reached MIN_SESSIONS_FOR_TREND. Never throws
- * and never prints a hook JSON envelope — this is human-facing plain text.
+ * and never prints a hook JSON envelope: this is human-facing plain text.
  */
 function renderCli() {
   try {
@@ -650,13 +650,13 @@ function renderCli() {
     if (!records.length) {
       process.stdout.write(
         'No nerf-receipts data recorded yet.\n' +
-        'Keep using Claude Code — the hooks quietly record your per-session quality\n' +
+        'Keep using Claude Code: the hooks quietly record your per-session quality\n' +
         'signals (failure rate, edit churn, tokens/task) as you work. Then run\n' +
         '/nerf-receipts:receipts again to see your model-quality trend card.\n'
       );
     } else {
       process.stdout.write(
-        `Only ${records.length} session${records.length === 1 ? '' : 's'} recorded so far — ` +
+        `Only ${records.length} session${records.length === 1 ? '' : 's'} recorded so far: ` +
         `need at least ${MIN_SESSIONS_FOR_TREND} to draw an honest trend card.\n` +
         'Keep using Claude Code and check back after a few more sessions.\n'
       );

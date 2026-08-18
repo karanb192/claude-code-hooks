@@ -3,7 +3,7 @@
  * Dead Rules Audit - CLAUDE.md compliance flight-recorder (observability)
  *
  * Parses CLAUDE.md into numbered atomic rules at SessionStart, then on every
- * Edit/Write passively tallies — per rule — how often it was RELEVANT to the
+ * Edit/Write passively tallies: per rule: how often it was RELEVANT to the
  * change and whether it was FOLLOWED or VIOLATED. Tallies persist in a local
  * JSONL ledger under ~/.claude/dead-rules-audit/. At SessionEnd (and on manual
  * invocation) it renders a worst-first compliance scorecard: rule text, times
@@ -21,12 +21,12 @@
  * the --render flag (`node dead-rules-audit.js --render`, e.g. as a weekly
  * maintenance/cron command) or by piping an explicit
  * `{"hook_event_name":"Manual"}` payload. On malformed, empty, or unrecognized
- * stdin the hook prints `{}` and exits 0 — a hook must never turn garbage input
+ * stdin the hook prints `{}` and exits 0: a hook must never turn garbage input
  * into output.
  *
  * COST CAVEAT (verified, issue #11008): hooks do NOT receive token/cost data.
  * The "relevant vs violated" judgement here is a deterministic keyword/pattern
- * heuristic — no model call, no network. An optional Haiku prompt-hook can be
+ * heuristic: no model call, no network. An optional Haiku prompt-hook can be
  * layered on top for fuzzier judgement (documented below) but is NOT required
  * and tests never touch the network.
  *
@@ -84,13 +84,13 @@ function log(data) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Rule parsing — turn a CLAUDE.md into numbered, atomic, scorable rules.
+// Rule parsing: turn a CLAUDE.md into numbered, atomic, scorable rules.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Directive-y lines that read as an actual instruction, not prose/headings.
 const DIRECTIVE_RE = /\b(always|never|do not|don'?t|must|should|prefer|avoid|use|don'?t use|ensure|require[sd]?|no |only |use only|make sure|keep|write|run)\b/i;
 
-// Strip markdown scaffolding but KEEP inline `code` backticks — they carry the
+// Strip markdown scaffolding but KEEP inline `code` backticks: they carry the
 // highest-signal tokens for relevance matching (see ruleKeywords).
 function stripMarkdown(line) {
   return line
@@ -118,7 +118,7 @@ function ruleKeywords(text) {
   ]);
   const words = new Set();
   const codey = new Set();
-  // Preserve `code`/`file.ext` tokens — they are the strongest relevance signal.
+  // Preserve `code`/`file.ext` tokens: they are the strongest relevance signal.
   for (const m of text.matchAll(/`([^`]+)`/g)) {
     const inner = m[1].toLowerCase().trim();
     // A backticked token that looks like a file extension (.ts, .min.js) is kept
@@ -139,7 +139,7 @@ function ruleKeywords(text) {
   return { words: [...words], codey: [...codey] };
 }
 
-// Detect whether a rule is a hard prohibition (never/do not/avoid) — those are
+// Detect whether a rule is a hard prohibition (never/do not/avoid): those are
 // the ones we can meaningfully flag as VIOLATED from a diff heuristic.
 function isProhibition(text) {
   return /\b(never|do not|don'?t|avoid|no longer|must not|cannot)\b/i.test(text);
@@ -164,7 +164,7 @@ function parseRules(mdText) {
     if (display.length < 6) continue;
     if (!DIRECTIVE_RE.test(display)) continue;
     // Non-list lines qualify only if the imperative leads the sentence AND the
-    // line is short/checklist-y — otherwise it is almost certainly prose.
+    // line is short/checklist-y: otherwise it is almost certainly prose.
     const startsImperative = /^(always|never|do not|don'?t|must|should|prefer|avoid|use|ensure|require|no |only |keep|make sure|write|run)\b/i.test(display);
     if (!isListItem && !startsImperative) continue;
     // Skip long prose sentences even if they lead with a directive-ish word.
@@ -205,7 +205,7 @@ function findClaudeMd(cwd) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Scoring — deterministic heuristic judgement of a single Edit/Write diff.
+// Scoring: deterministic heuristic judgement of a single Edit/Write diff.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Pull the text that Claude is trying to introduce from a tool_input payload.
@@ -280,14 +280,14 @@ function containsToken(hay, token) {
 // Only prohibitions that name a concrete code token (backticked `identifier` or
 // `.ext`) are judgeable. Everything else is UN-JUDGEABLE and counted as
 // relevant-only (judged=false, never violated):
-//   - non-prohibitions ("Always run tests", "Prefer X over Y") — a diff can't
+//   - non-prohibitions ("Always run tests", "Prefer X over Y"): a diff can't
 //     prove they were followed or broken;
-//   - word-only prohibitions ("Never leave debugging statements") — their
+//   - word-only prohibitions ("Never leave debugging statements"): their
 //     violation tokens would be the same generic words that made them relevant,
 //     so "relevant" would collapse into "violated" and manufacture false
 //     violations. They still surface as "seen" (advisory) on the scorecard.
 //
-// NOTE: this remains a HEURISTIC upper bound on violations — it counts a
+// NOTE: this remains a HEURISTIC upper bound on violations: it counts a
 // prohibited token appearing in newly-added live code, which usually but not
 // always means the rule was broken. The scorecard labels the figure accordingly.
 function judge(rule, filePath, addedText) {
@@ -309,7 +309,7 @@ function judge(rule, filePath, addedText) {
 
 // Ledger entries are keyed by a stable hash of the rule TEXT, not the rule's
 // positional id: ids renumber whenever CLAUDE.md is edited, and the ledger is
-// shared across projects — keying by id would merge unrelated rules' tallies.
+// shared across projects: keying by id would merge unrelated rules' tallies.
 function ruleKey(rule) {
   return crypto.createHash('sha1').update(String(rule.text)).digest('hex').slice(0, 12);
 }
@@ -336,7 +336,7 @@ function scoreDiff(ledger, rules, filePath, addedText) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Ledger persistence — one JSONL row per event, plus a rolled-up state file.
+// Ledger persistence: one JSONL row per event, plus a rolled-up state file.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ledgerPath() {
@@ -371,12 +371,12 @@ function saveLedger(ledger) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Scorecard rendering — the screenshot-able artifact.
+// Scorecard rendering: the screenshot-able artifact.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function compliancePct(entry) {
   // Compliance is measured over JUDGED (prohibition) observations. When nothing
-  // could be judged, compliance is unknown (null) — reported as "n/a".
+  // could be judged, compliance is unknown (null): reported as "n/a".
   if (!entry.judged) return null;
   return Math.round(((entry.judged - entry.violated) / entry.judged) * 100);
 }
@@ -415,7 +415,7 @@ function renderScorecard(ledger) {
   lines.push(`│ overall compliance on judgeable rules: ${overall === null ? 'n/a' : overall + '%'} (heuristic est.)`);
   lines.push('├' + '─'.repeat(68));
   if (rows.length === 0) {
-    lines.push('│ No rules have been exercised yet — edit some files, then run /dead-rules-audit:scorecard again.');
+    lines.push('│ No rules have been exercised yet: edit some files, then run /dead-rules-audit:scorecard again.');
     lines.push('└' + '─'.repeat(68));
     return lines.join('\n');
   }
@@ -429,9 +429,9 @@ function renderScorecard(ledger) {
   const promote = rows.filter(shouldPromote);
   if (promote.length) {
     lines.push('├' + '─'.repeat(68));
-    lines.push('│ Suggested promotions (Claude ignores these — make them deterministic):');
+    lines.push('│ Suggested promotions (Claude ignores these: make them deterministic):');
     for (const r of promote) {
-      lines.push(`│   #${r.id} "${r.text}" — violated ${r.violated}/${r.judged}`);
+      lines.push(`│   #${r.id} "${r.text}": violated ${r.violated}/${r.judged}`);
     }
   }
   lines.push('└' + '─'.repeat(68));
@@ -439,7 +439,7 @@ function renderScorecard(ledger) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Session state — remember which rules loaded for THIS session so we can re-use
+// Session state: remember which rules loaded for THIS session so we can re-use
 // the parse across many PostToolUse calls without re-reading CLAUDE.md.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -503,7 +503,7 @@ function ensureSessionRules(sessionId, cwd) {
       const st = fs.statSync(state.source);
       if (st.mtimeMs === state.mtimeMs && st.size === state.size) return state.rules;
     } catch {
-      // Source vanished — fall through and re-resolve from scratch.
+      // Source vanished: fall through and re-resolve from scratch.
     }
   }
   const mdPath = findClaudeMd(cwd);
@@ -580,7 +580,7 @@ async function readStdin() {
   return input;
 }
 
-// On-demand scorecard for manual invocation — `node dead-rules-audit.js --render`
+// On-demand scorecard for manual invocation: `node dead-rules-audit.js --render`
 // prints the same worst-first card the SessionEnd hook renders, straight to
 // stdout (plain text, never a hook JSON envelope), without reading stdin. This is
 // the ONLY no-stdin render path and it powers the /dead-rules-audit:scorecard
@@ -608,7 +608,7 @@ async function main() {
   try {
     data = JSON.parse(input);
   } catch {
-    // Empty or malformed stdin is NOT a render request — a hook must never turn
+    // Empty or malformed stdin is NOT a render request: a hook must never turn
     // garbage input into a scorecard. Emit a no-op and exit cleanly.
     process.stdout.write('{}');
     return;
@@ -621,7 +621,7 @@ async function main() {
     else if (event === 'PostToolUse') out = handlePostToolUse(data);
     else if (event === 'SessionEnd') out = handleSessionEnd(data);
     else if (event === 'Manual') {
-      // Explicit, well-formed manual payload — the documented scripted way to
+      // Explicit, well-formed manual payload: the documented scripted way to
       // fetch the card as hook-shaped JSON.
       out = { systemMessage: '\n' + renderScorecard(loadLedger()) + '\n' };
     }
