@@ -238,7 +238,7 @@ node --test hook-scripts/tests/pre-tool-use/block-dangerous-commands.test.js
 
 ## ⚡ Performance
 
-A synchronous hook adds its full runtime to every matching tool call, so these hooks aim to stay well under 100 ms end to end. Measured with a fresh Node process per call and a realistic event on stdin, `block-dangerous-commands` runs at a 34.8 ms median on an Apple M3 Pro (Node v26). The harness and committed numbers live in [`bench/`](bench/); reproduce with `node bench/run.mjs`.
+A synchronous hook adds its full runtime to every matching tool call. Measured with a fresh Node process per call and a realistic event on stdin, every guard hook here holds a 34-38 ms median on an Apple M3 Pro (Node v26). The two PostToolUse hooks that spawn real subprocesses cost more: auto-stage 68 ms with two git calls, format-code 114 ms with two ruff runs. The harness and committed numbers for all seven hooks live in [`bench/`](bench/); reproduce with `node bench/run.mjs`.
 
 ---
 
