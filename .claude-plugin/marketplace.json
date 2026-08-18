@@ -10,7 +10,7 @@
     {
       "name": "context-hogs",
       "source": "./plugins/context-hogs",
-      "description": "Per-file context-cost leaderboard — attributes every tool result's tokens to the files it loaded, so you know which files cost you the most.",
+      "description": "Per-file context-cost leaderboard: attributes every tool result's tokens to the files it loaded, so you know which files cost you the most.",
       "category": "cost",
       "tags": [
         "cost",
@@ -23,7 +23,7 @@
     {
       "name": "nerf-receipts",
       "source": "./plugins/nerf-receipts",
-      "description": "A personal flight recorder for Claude Code quality — records your own per-session failure rate, edit churn, and tokens/task by model version, and flags real shifts when a model changes.",
+      "description": "A personal flight recorder for Claude Code quality: records your own per-session failure rate, edit churn, and tokens/task by model version, and flags real shifts when a model changes.",
       "category": "observability",
       "tags": [
         "quality",
@@ -36,7 +36,7 @@
     {
       "name": "dead-rules-audit",
       "source": "./plugins/dead-rules-audit",
-      "description": "CLAUDE.md compliance scorecard — tallies which rules Claude actually follows vs ignores as you edit, and flags chronically-ignored rules to promote into a deterministic hook.",
+      "description": "CLAUDE.md compliance scorecard: tallies which rules Claude actually follows vs ignores as you edit, and flags chronically-ignored rules to promote into a deterministic hook.",
       "category": "observability",
       "tags": [
         "compliance",
@@ -51,7 +51,7 @@
     {
       "name": "pr-provenance-stamp",
       "source": "./plugins/pr-provenance-stamp",
-      "description": "Stamps a provenance receipt — prompts, estimated spend, tests run with exit codes, and a truthful agent-authored line split — into your PR body on `gh pr create`.",
+      "description": "Stamps a provenance receipt (prompts, estimated spend, tests run with exit codes, and a truthful agent-authored line split) into your PR body on `gh pr create`.",
       "category": "git",
       "tags": [
         "pr",
@@ -65,7 +65,7 @@
     {
       "name": "standup-autopilot",
       "source": "./plugins/standup-autopilot",
-      "description": "Writes your daily standup from what your agents actually did across repos — captures tasks, tests, PRs, and blockers from session transcripts and re-injects yesterday's open blockers next session.",
+      "description": "Writes your daily standup from what your agents actually did across repos: captures tasks, tests, PRs, and blockers from session transcripts and re-injects yesterday's open blockers next session.",
       "category": "productivity",
       "tags": [
         "standup",
@@ -79,7 +79,7 @@
     {
       "name": "dead-end-registry",
       "source": "./plugins/dead-end-registry",
-      "description": "Remembers approaches you tried and reverted (with reason and estimated token cost) and warns before you retry them — via a prompt-submit card and an ask-before-edit guard.",
+      "description": "Remembers approaches you tried and reverted (with reason and estimated token cost) and warns before you retry them, via a prompt-submit card and an ask-before-edit guard.",
       "category": "memory",
       "tags": [
         "memory",
