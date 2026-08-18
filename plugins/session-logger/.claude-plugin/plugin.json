@@ -1,0 +1,22 @@
+{
+  "name": "session-logger",
+  "description": "A durable, greppable markdown log of every Claude Code session. SessionStart seeds a note (timestamps, cwd, git repo/branch), an async PostToolUse hook appends every Edit/Write/Read/Bash with zero added latency (bash commands truncated and secret-redacted, concurrent writes serialized via a file lock), and SessionEnd finalizes it with an ended timestamp and final git status. Point CC_SESSION_LOG_DIR at an Obsidian vault for cross-device sync.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "logging",
+    "sessions",
+    "observability",
+    "obsidian",
+    "sessionstart",
+    "posttooluse",
+    "sessionend"
+  ]
+}

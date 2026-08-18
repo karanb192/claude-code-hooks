@@ -1,0 +1,20 @@
+{
+  "name": "config-guard",
+  "description": "Who guards the guards: a PreToolUse hook that blocks the agent from tampering with its own guardrail configuration. Deny-by-default protection for settings.json, hook scripts and hooks.json manifests, .mcp.json, plugin manifests, and (at strict level) CLAUDE.md and rules/agents/commands, across Bash, Edit, MultiEdit, and Write, including `claude config/mcp/plugin` CLI writes. Reads always pass; symlinked paths are resolved; creating a protected file counts as mutation (the CVE-2026-25725 vector). Escape hatch via CONFIG_GUARD_ALLOW=true, per-level ask mode via HOOK_ASK_*.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "security",
+    "guardrails",
+    "config",
+    "supply-chain",
+    "pretooluse"
+  ]
+}

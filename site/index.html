@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>claude-code-hooks: guardrails for the Claude Code agent loop</title>
-<meta name="description" content="Tested hooks that intercept the Claude Code agent loop: read stdin, exit 0 to pass or exit 2 to block. Nine copy-paste hooks plus a seven-plugin marketplace you install with /plugin install <name>@claude-code-hooks.">
+<meta name="description" content="Tested hooks that intercept the Claude Code agent loop: read stdin, exit 0 to pass or exit 2 to block. Nineteen installable plugins: /plugin marketplace add karanb192/claude-code-hooks, then /plugin install <name>@claude-code-hooks.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;450;500;600&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
@@ -339,12 +339,12 @@
       <p class="hero-deck">
         Small programs that watch what <b>Claude Code</b> is about to do — and step in.
         Block a destructive command. Refuse to read a secret. Stage and format an edit.
-        Ping you on Slack. Nine <b>exhaustively tested</b> copy-paste hooks, plus a seven-plugin marketplace you install with one command.
+        Ping you on Slack. Nineteen <b>exhaustively tested</b> plugins, each one command to install.
       </p>
       <div class="cta-row">
-        <a class="btn btn-primary" href="#install">
+        <a class="btn btn-primary" href="#marketplace">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-          Install a hook
+          Install a plugin
         </a>
         <a class="btn btn-ghost" href="https://github.com/karanb192/claude-code-hooks">
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.5 2 2 6.6 2 12.2c0 4.5 2.9 8.3 6.8 9.7.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.4-3.4-1.4-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.6 2.4 1.1 3 .9.1-.7.4-1.1.6-1.4-2.2-.3-4.6-1.1-4.6-5 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.7 0 0 .8-.3 2.7 1a9.3 9.3 0 0 1 5 0c1.9-1.3 2.7-1 2.7-1 .5 1.4.2 2.4.1 2.7.6.7 1 1.6 1 2.7 0 3.9-2.4 4.7-4.6 5 .4.3.7.9.7 1.9v2.8c0 .3.2.6.7.5 3.9-1.4 6.8-5.2 6.8-9.7C22 6.6 17.5 2 12 2Z"/></svg>
@@ -352,8 +352,8 @@
         </a>
       </div>
       <div class="hero-stats">
-        <div class="s"><b>16</b><span>Hooks + plugins</span></div>
-        <div class="s"><b class="accent">1238</b><span>Tests pass</span></div>
+        <div class="s"><b>19</b><span>Plugins</span></div>
+        <div class="s"><b class="accent">1544</b><span>Tests pass</span></div>
         <div class="s"><b>~80<small style="font-size:.7rem">ms</small></b><span>Per call</span></div>
         <div class="s"><b>0 · 2</b><span>Exit codes</span></div>
       </div>
@@ -430,7 +430,7 @@
     </div>
     <div class="rail-key">
       <span><b>●</b> covered by this repo — SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Notification, Stop, SessionEnd</span>
-      <span>○ the middle stop is tool execution — SubagentStop and PreCompact are also covered by the plugins</span>
+      <span>○ the middle stop is tool execution; SubagentStop, PreCompact, ConfigChange, and InstructionsLoaded are covered too</span>
     </div>
   </section>
 
@@ -439,8 +439,8 @@
     <div class="sec-head">
       <div>
         <div class="kicker">The catalog</div>
-        <h2>The copy-paste nine.</h2>
-        <p style="font-family:var(--mono);font-size:.76rem;color:var(--faint);margin-top:.7rem">Want one-command installs instead? <a href="#marketplace" style="color:var(--pass);border-bottom:1px solid var(--pass-dim)">Seven plugins ↓</a></p>
+        <h2>The guardrail twelve.</h2>
+        <p style="font-family:var(--mono);font-size:.76rem;color:var(--faint);margin-top:.7rem">Each installs with one command: <a href="#marketplace" style="color:var(--pass);border-bottom:1px solid var(--pass-dim)">/plugin install ↓</a></p>
       </div>
       <div class="aside">node + python<br>MIT licensed</div>
     </div>
@@ -607,6 +607,60 @@
       </div>
     </article>
 
+    <!-- 10 -->
+    <article class="entry rev obs">
+      <div>
+        <div class="entry-meta"><span class="tag evt">PreToolUse</span><span class="tag">Bash·Edit·Write</span><span class="tag rt">Node · ~80ms</span></div>
+        <h3><span class="no">10</span>config-guard</h3>
+        <p>Who guards the guards? Blocks the agent from rewriting its own guardrail config: <em>settings.json</em>, <em>.claude/hooks/</em>, <em>.mcp.json</em>, plugin manifests. Creating a protected file that doesn't exist yet counts as mutation (that exact gap was CVE-2026-25725). Reads always pass.</p>
+      </div>
+      <div class="term">
+        <div class="term-bar"><div class="term-dots"><i></i><i></i><i></i></div><div class="term-title">config-guard</div></div>
+        <div class="term-body">
+          <span class="l"><span class="key">tool</span> <span class="val">Edit</span></span>
+          <span class="l"><span class="key">file</span> <span class="val">.claude/settings.json</span></span>
+          <span class="l verdict block"><span class="badge">⊘ blocked</span><span class="code">exit 2</span></span>
+          <span class="l verdict-note">"guardrail config is protected"</span>
+        </div>
+      </div>
+    </article>
+
+    <!-- 11 -->
+    <article class="entry obs">
+      <div>
+        <div class="entry-meta"><span class="tag evt">ConfigChange</span><span class="tag">settings · skills</span><span class="tag rt">Node · ~80ms</span></div>
+        <h3><span class="no">11</span>config-watch</h3>
+        <p>The out-of-band sibling of config-guard: fires when any config file changes mid-session, whoever changed it. By default it makes the change loudly visible; <em>CONFIG_WATCH_BLOCK=true</em> refuses it outright. Written for the era of the CHAINDROP worm, which hid its payload in <em>.claude/settings.json</em>.</p>
+      </div>
+      <div class="term">
+        <div class="term-bar"><div class="term-dots"><i></i><i></i><i></i></div><div class="term-title">config-watch</div></div>
+        <div class="term-body">
+          <span class="l"><span class="key">event</span>  <span class="val">ConfigChange</span></span>
+          <span class="l"><span class="key">source</span> <span class="val">user_settings</span></span>
+          <span class="l verdict pass"><span class="badge">⚠ surfaced</span><span class="code">exit 0</span></span>
+          <span class="l verdict-note">"settings changed mid-session: verify it was you"</span>
+        </div>
+      </div>
+    </article>
+
+    <!-- 12 -->
+    <article class="entry rev obs">
+      <div>
+        <div class="entry-meta"><span class="tag evt">InstructionsLoaded</span><span class="tag">UserPromptSubmit · PreToolUse</span><span class="tag rt">Node · ~80ms</span></div>
+        <h3><span class="no">12</span>instructions-audit</h3>
+        <p>Scans every CLAUDE.md and rules file as it loads for hidden directives: invisible-Unicode smuggling, bidi overrides, secret exfiltration, decode-and-execute, hook tampering. The event can't block by itself, so the hook locks the session instead: every prompt and tool call is refused until a human fixes the file.</p>
+      </div>
+      <div class="term">
+        <div class="term-bar"><div class="term-dots"><i></i><i></i><i></i></div><div class="term-title">instructions-audit</div></div>
+        <div class="term-body">
+          <span class="l"><span class="key">event</span> <span class="val">InstructionsLoaded</span></span>
+          <span class="l"><span class="key">file</span>  <span class="val">CLAUDE.md · zero-width run, line 41</span></span>
+          <span class="l verdict block"><span class="badge">⊘ locked</span><span class="code">exit 2</span></span>
+          <span class="l verdict-note">"hidden directive in a loaded rules file"</span>
+        </div>
+      </div>
+    </article>
+
     <p style="font-family:var(--mono);font-size:.8rem;color:var(--faint);margin-top:2rem;padding-top:1.5rem;border-top:1px solid var(--line)">
       + <span style="color:var(--dim)">event-logger</span> — a Python diagnostic that dumps every event's JSON so you can see an event's shape before you write a hook against it. The thing you reach for first.
     </p>
@@ -617,7 +671,8 @@
     <div class="sec-head">
       <div>
         <div class="kicker">The marketplace</div>
-        <h2>Seven plugins. One command each.</h2>
+        <h2>Nineteen plugins. One command each.</h2>
+        <p style="font-family:var(--mono);font-size:.76rem;color:var(--faint);margin-top:.7rem">The <a href="#catalog" style="color:var(--pass);border-bottom:1px solid var(--pass-dim)">guardrail twelve ↑</a> plus these seven workflow plugins.</p>
       </div>
       <div class="aside">node · MIT<br>/plugin install</div>
     </div>
@@ -630,59 +685,59 @@
       <div class="term-body">
         <span class="l comment"># 1 · add the marketplace, once</span>
         <span class="l prompt">/plugin marketplace add karanb192/claude-code-hooks</span>
-        <span class="l comment"># 2 · install any of the seven by name</span>
-        <span class="l prompt">/plugin install context-hogs@claude-code-hooks</span>
-        <span class="l verdict pass"><span class="badge">✓ ready</span><span class="code">7 plugins available</span></span>
+        <span class="l comment"># 2 · install any of the nineteen by name</span>
+        <span class="l prompt">/plugin install block-dangerous-commands@claude-code-hooks</span>
+        <span class="l verdict pass"><span class="badge">✓ ready</span><span class="code">19 plugins available</span></span>
         <span class="l comment"># or from your shell — claude plugin marketplace add · claude plugin install</span>
       </div>
     </div>
 
     <div class="mkt-grid">
-      <!-- 07 -->
+      <!-- 13 -->
       <article class="pcard obs">
-        <h3><span class="no">10</span>context-hogs</h3>
+        <h3><span class="no">13</span>context-hogs</h3>
         <p>Per-file context-cost leaderboard — which files eat your tokens.</p>
         <span class="cmd">/context-hogs:leaderboard</span>
         <div class="events"><span class="tag evt">PostToolUse</span><span class="tag evt">SessionEnd</span></div>
       </article>
-      <!-- 08 -->
+      <!-- 14 -->
       <article class="pcard obs">
-        <h3><span class="no">11</span>nerf-receipts</h3>
+        <h3><span class="no">14</span>nerf-receipts</h3>
         <p>Personal model-quality flight recorder — your own receipts when Claude feels nerfed.</p>
         <span class="cmd">/nerf-receipts:receipts</span>
         <div class="events"><span class="tag evt">SessionStart</span><span class="tag evt">PostToolUse</span><span class="tag evt">PostToolUseFailure</span><span class="tag evt">Stop</span><span class="tag evt">SubagentStop</span><span class="tag evt">SessionEnd</span></div>
       </article>
-      <!-- 09 -->
+      <!-- 15 -->
       <article class="pcard obs">
-        <h3><span class="no">12</span>dead-rules-audit</h3>
+        <h3><span class="no">15</span>dead-rules-audit</h3>
         <p>CLAUDE.md compliance scorecard — which rules Claude actually ignores.</p>
         <span class="cmd">/dead-rules-audit:scorecard</span>
         <div class="events"><span class="tag evt">SessionStart</span><span class="tag evt">PostToolUse</span><span class="tag evt">SessionEnd</span></div>
       </article>
-      <!-- 10 -->
+      <!-- 16 -->
       <article class="pcard obs">
-        <h3><span class="no">13</span>pr-provenance-stamp</h3>
+        <h3><span class="no">16</span>pr-provenance-stamp</h3>
         <p>Stamps a prompts / spend / tests / agent-authored receipt into PR bodies on <em style="font-style:normal;color:var(--text)">gh pr create</em>.</p>
         <span class="cmd">/pr-provenance-stamp:provenance</span>
         <div class="events"><span class="tag evt">PreToolUse</span><span class="tag evt">PostToolUse</span></div>
       </article>
-      <!-- 11 -->
+      <!-- 17 -->
       <article class="pcard obs">
-        <h3><span class="no">14</span>standup-autopilot</h3>
+        <h3><span class="no">17</span>standup-autopilot</h3>
         <p>Writes your standup from what your agents actually did; re-injects yesterday's blockers.</p>
         <span class="cmd">/standup-autopilot:standup</span>
         <div class="events"><span class="tag evt">SessionStart</span><span class="tag evt">Stop</span><span class="tag evt">SessionEnd</span></div>
       </article>
-      <!-- 12 -->
+      <!-- 18 -->
       <article class="pcard obs">
-        <h3><span class="no">15</span>dead-end-registry</h3>
+        <h3><span class="no">18</span>dead-end-registry</h3>
         <p>Remembers tried-and-reverted approaches; warns before you pay for a dead end twice.</p>
         <span class="cmd">/dead-end-registry:dead-ends</span>
         <div class="events"><span class="tag evt">UserPromptSubmit</span><span class="tag evt">PreToolUse</span><span class="tag evt">Stop</span><span class="tag evt">SubagentStop</span><span class="tag evt">PreCompact</span></div>
       </article>
-      <!-- 13 -->
+      <!-- 19 -->
       <article class="pcard obs">
-        <h3><span class="no">16</span>bounty-board</h3>
+        <h3><span class="no">19</span>bounty-board</h3>
         <p>Prices TODO/FIXME debt as aging XP bounties; agents clear them as side quests.</p>
         <span class="cmd">/bounty-board:board</span>
         <div class="events"><span class="tag evt">SessionStart</span><span class="tag evt">PostToolUse</span><span class="tag evt">SessionEnd</span></div>
@@ -698,9 +753,9 @@
   <section class="section" id="install">
     <div class="sec-head">
       <div>
-        <div class="kicker">The classic path</div>
+        <div class="kicker">The manual path</div>
         <h2>Copy. Register. Restart.</h2>
-        <p style="font-family:var(--mono);font-size:.76rem;color:var(--faint);margin-top:.7rem">This is the copy-paste nine. The seven plugins install with <a href="#marketplace" style="color:var(--pass);border-bottom:1px solid var(--pass-dim)">/plugin ↑</a> instead.</p>
+        <p style="font-family:var(--mono);font-size:.76rem;color:var(--faint);margin-top:.7rem">Every plugin installs with <a href="#marketplace" style="color:var(--pass);border-bottom:1px solid var(--pass-dim)">/plugin ↑</a>. Prefer to own the file? Each hook is still a plain script you can copy.</p>
       </div>
       <div class="aside">~60 seconds<br>no build step</div>
     </div>
@@ -714,7 +769,7 @@
         <div class="code">
           <button class="copy">copy</button>
 <pre><span class="c">$</span> mkdir -p ~/.claude/hooks
-<span class="c">$</span> cp hook-scripts/pre-tool-use/<span class="k">block-dangerous-commands.js</span> \
+<span class="c">$</span> cp plugins/block-dangerous-commands/<span class="k">block-dangerous-commands.js</span> \
      ~/.claude/hooks/</pre>
         </div>
       </div>
@@ -799,19 +854,19 @@
       <div class="aside">contributions welcome<br>see CONTRIBUTING.md</div>
     </div>
     <div class="index">
-      <div class="ix"><span class="n">17</span><span class="nm">context-snapshot <span>— preserve before compaction</span></span><span class="evt">PreCompact</span></div>
-      <div class="ix"><span class="n">18</span><span class="nm">ntfy-notify <span>— free mobile push</span></span><span class="evt">Notification</span></div>
-      <div class="ix"><span class="n">19</span><span class="nm">discord-notify <span>— webhook alerts</span></span><span class="evt">Notification</span></div>
-      <div class="ix"><span class="n">20</span><span class="nm">tts-alerts <span>— voice notifications via say/espeak</span></span><span class="evt">Notification</span></div>
-      <div class="ix"><span class="n">21</span><span class="nm">rules-injector <span>— auto-attach CLAUDE.md</span></span><span class="evt">UserPromptSubmit</span></div>
-      <div class="ix"><span class="n">22</span><span class="nm">rate-limiter <span>— cap tool calls per minute</span></span><span class="evt">PreToolUse</span></div>
+      <div class="ix"><span class="n">20</span><span class="nm">context-snapshot <span>· preserve before compaction</span></span><span class="evt">PreCompact</span></div>
+      <div class="ix"><span class="n">21</span><span class="nm">ntfy-notify <span>· free mobile push</span></span><span class="evt">Notification</span></div>
+      <div class="ix"><span class="n">22</span><span class="nm">discord-notify <span>· webhook alerts</span></span><span class="evt">Notification</span></div>
+      <div class="ix"><span class="n">23</span><span class="nm">tts-alerts <span>· voice notifications via say/espeak</span></span><span class="evt">Notification</span></div>
+      <div class="ix"><span class="n">24</span><span class="nm">rules-injector <span>· auto-attach CLAUDE.md</span></span><span class="evt">UserPromptSubmit</span></div>
+      <div class="ix"><span class="n">25</span><span class="nm">rate-limiter <span>· cap tool calls per minute</span></span><span class="evt">PreToolUse</span></div>
     </div>
   </section>
 
   <!-- ═══════ CLOSING ═══════ -->
   <section class="close">
     <h2>Put a hook in the loop.</h2>
-    <p>Sixteen tested tools — nine copy-paste guardrails plus seven one-command plugins, MIT licensed, no framework to learn. Install one and restart Claude Code — you're protected in under a minute.</p>
+    <p>Nineteen tested plugins: twelve guardrails plus seven workflow tools, MIT licensed, no framework to learn. Install one and restart Claude Code, and you're protected in under a minute.</p>
     <div class="cta-row">
       <a class="btn btn-primary" href="https://github.com/karanb192/claude-code-hooks">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.5 2 2 6.6 2 12.2c0 4.5 2.9 8.3 6.8 9.7.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.4-3.4-1.4-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.6 2.4 1.1 3 .9.1-.7.4-1.1.6-1.4-2.2-.3-4.6-1.1-4.6-5 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.7 0 0 .8-.3 2.7 1a9.3 9.3 0 0 1 5 0c1.9-1.3 2.7-1 2.7-1 .5 1.4.2 2.4.1 2.7.6.7 1 1.6 1 2.7 0 3.9-2.4 4.7-4.6 5 .4.3.7.9.7 1.9v2.8c0 .3.2.6.7.5 3.9-1.4 6.8-5.2 6.8-9.7C22 6.6 17.5 2 12 2Z"/></svg>

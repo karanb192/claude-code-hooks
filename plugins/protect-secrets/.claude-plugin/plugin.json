@@ -1,0 +1,20 @@
+{
+  "name": "protect-secrets",
+  "description": "A secrets firewall for Claude Code. A PreToolUse hook screens every Read, Edit, Write, and Bash call against tiered patterns (critical/high/strict): sensitive files like .env, SSH keys, AWS/kube/gcloud/docker credentials, and keystores, plus shell commands that expose or exfiltrate them (cat .env, printenv, echo $SECRET_KEY, curl/scp/rsync uploads). Matches are denied, or turned into a prompt via per-level ask mode, with the exact pattern id and reason; .env.example-style templates stay allowed. Safety level is tunable via HOOK_SAFETY_LEVEL, no file edits needed.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "security",
+    "secrets",
+    "credentials",
+    "guardrails",
+    "pretooluse"
+  ]
+}

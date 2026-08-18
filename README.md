@@ -1,11 +1,11 @@
 # claude-code-hooks
 
-🪝 Ready-to-use hooks for Claude Code, plus a 7-plugin installable marketplace: safety, automation, notifications, and more.
+🪝 Ready-to-use hooks for Claude Code, shipped as a 19-plugin installable marketplace: safety, automation, notifications, and more.
 
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml/badge.svg)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
-[![Tests](https://img.shields.io/badge/tests-1499%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-1544%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
 
 **🌐 [Live site & catalog](https://karanb192.github.io/claude-code-hooks/)**
 
@@ -22,9 +22,7 @@
   </tr>
 </table>
 
-A growing collection of tested, documented hooks you can copy, paste, and customize.
-
-> 🔌 **New:** these hooks also install as one-command Claude Code plugins. Run `/plugin marketplace add karanb192/claude-code-hooks`, then `/plugin install <name>@claude-code-hooks`; see [Install as a plugin](#-install-as-a-plugin) for the 7-plugin catalog.
+A growing collection of tested, documented hooks. Every one installs as a one-command Claude Code plugin: run `/plugin marketplace add karanb192/claude-code-hooks`, then `/plugin install <name>@claude-code-hooks`; see [Install as a plugin](#-install-as-a-plugin) for the 19-plugin catalog. Prefer to own the file? Every plugin's script also works standalone: copy `plugins/<name>/<name>.js` and wire it into `settings.json` yourself ([Quick Start](#-quick-start)).
 
 ---
 
@@ -43,44 +41,47 @@ A growing collection of tested, documented hooks you can copy, paste, and custom
 
 ## 🪝 Hooks
 
+Every hook below is an installable plugin; each link goes to the plugin's directory, which holds the script, its tests, and a README. They're grouped by the event that fires them, because the event model is the thing worth learning.
+
 ### Session Lifecycle
 
 Runs at session boundaries: inject context at **SessionStart** and capture outcomes at **Stop / SessionEnd**.
 
-| Hook | Matcher | Description |
+| Hook | Events | Description |
 |------|---------|-------------|
-| [session-logger](hook-scripts/session/session-logger.js) | `SessionStart` + `PostToolUse` + `SessionEnd` | Writes a durable markdown log of every session (cwd, git repo, files touched, bash commands). `PostToolUse` registers with `"async": true` so logging never blocks Claude; concurrent writes are serialized with a file lock. Bash commands get best-effort secret redaction. Drop-in for Obsidian vaults via `CC_SESSION_LOG_DIR`. |
-
-> 🔌 **`bounty-board`** (repo TODO/FIXME/HACK debt priced as aging XP bounties) now ships as an installable **plugin**; see [Install as a plugin](#-install-as-a-plugin).
-
-> 🔌 **`nerf-receipts`** (personal model-quality flight recorder) and **`standup-autopilot`** (writes your daily standup from what your agents actually did; re-injects open blockers) now ship as installable **plugins**; see [Install as a plugin](#-install-as-a-plugin).
+| [session-logger](plugins/session-logger) | `SessionStart` + `PostToolUse` + `SessionEnd` | Writes a durable markdown log of every session (cwd, git repo, files touched, bash commands). `PostToolUse` registers with `"async": true` so logging never blocks Claude; concurrent writes are serialized with a file lock. Bash commands get best-effort secret redaction. Drop-in for Obsidian vaults via `CC_SESSION_LOG_DIR`. |
+| [standup-autopilot](plugins/standup-autopilot) | `SessionStart` (`startup`) + `Stop` + `SessionEnd` | Writes your daily standup from what your agents actually did across repos: captures tasks, tests, PRs, and blockers from session transcripts and re-injects yesterday's open blockers next session |
+| [nerf-receipts](plugins/nerf-receipts) | `SessionStart` + `PostToolUse` + `PostToolUseFailure` + `Stop` + `SubagentStop` + `SessionEnd` | Personal flight recorder: records your own failure rate, edit churn & tokens/task by model version, and flags real shifts when a model changes |
+| [bounty-board](plugins/bounty-board) | `SessionStart` + `PostToolUse` + `SessionEnd` | Prices your repo's TODO/FIXME/HACK/skip debt as aging XP bounties, injects the top 3 as opportunistic side quests, and verifies + pays out bounties you genuinely clear |
 
 ### Instructions-Loaded
 
-Fires when a CLAUDE.md or `.claude/rules/*.md` file is loaded into context. The event has no decision control, its exit code is ignored, and current Claude Code builds ignore even the universal `continue: false` on it (verified live), so detection and enforcement are split: the InstructionsLoaded registration records a per-session lock on a finding (and still emits `continue: false` for builds that honor it), and the same script registered on UserPromptSubmit and PreToolUse blocks every prompt and tool call for that session until a human fixes the file or deletes the named lock file.
+Fires when a CLAUDE.md or `.claude/rules/*.md` file is loaded into context. The event has no decision control, its exit code is ignored, and current Claude Code builds ignore even the universal `continue: false` on it (verified live), so detection and enforcement are split: the InstructionsLoaded registration records a per-session lock on a finding (and still emits `continue: false` for builds that honor it), and the same script registered on UserPromptSubmit and PreToolUse blocks every prompt and tool call for that session until a human fixes the file or deletes the named lock file. The plugin wires all three arms in one install.
 
 | Hook | Matcher | Description |
 |------|---------|-------------|
-| [instructions-audit](hook-scripts/instructions-loaded/instructions-audit.js) | `session_start\|nested_traversal\|path_glob_match\|include\|compact` (or omit for all) | Locks the session when a loaded instruction file carries hidden directives: invisible-Unicode smuggling (zero-width, tag characters, variation-selector runs; the TrapDoor supply-chain signature), bidi overrides, directives to read or exfiltrate secrets, curl\|sh, decode-and-execute, and hook/settings tampering. Names the rule and line number so you can inspect the file; register the same script on UserPromptSubmit and PreToolUse for the enforcement arm; `HOOK_AUDIT_WARN_ONLY=true` warns without locking. |
+| [instructions-audit](plugins/instructions-audit) | all load reasons (narrow with `session_start\|nested_traversal\|path_glob_match\|include\|compact`) | Locks the session when a loaded instruction file carries hidden directives: invisible-Unicode smuggling (zero-width, tag characters, variation-selector runs; the TrapDoor supply-chain signature), bidi overrides, directives to read or exfiltrate secrets, curl\|sh, decode-and-execute, and hook/settings tampering. Names the rule and line number so you can inspect the file; one install wires the detection arm plus both enforcement arms; `HOOK_AUDIT_LEVEL` tunes critical/high/strict, `HOOK_AUDIT_WARN_ONLY=true` warns without locking. |
 
 ### User-Prompt-Submit
 
 Runs when the user submits a prompt, before Claude processes it. Can inject context or block the prompt.
 
-> 🔌 **`dead-end-registry`** (remembers approaches you tried and reverted, then warns before you retry them) now ships as an installable **plugin**; see [Install as a plugin](#-install-as-a-plugin).
+| Hook | Events | Description |
+|------|---------|-------------|
+| [dead-end-registry](plugins/dead-end-registry) | `UserPromptSubmit` + `PreToolUse` (`Edit\|Write`) + `Stop` + `SubagentStop` + `PreCompact` | Remembers approaches you tried and reverted (reason + estimated token cost) and warns before you retry them: a prompt-submit card plus an ask-before-edit guard |
 
 ### Pre-Tool-Use
 
 Runs **before** Claude executes a tool. Can block or modify the operation.
 
-| Hook                                                                              | Matcher                   | Description                                                      |
-| --------------------------------------------------------------------------------- | ------------------------- | ---------------------------------------------------------------- |
-| [block-dangerous-commands](hook-scripts/pre-tool-use/block-dangerous-commands.js) | `Bash`                    | Blocks dangerous shell commands (rm -rf ~, fork bombs, curl\|sh) |
-| [protect-secrets](hook-scripts/pre-tool-use/protect-secrets.js)                   | `Read\|Edit\|Write\|Bash` | Prevents reading/modifying/exfiltrating sensitive files          |
-| [git-safety](hook-scripts/pre-tool-use/git-safety.js)                             | `Bash`                    | Branch-aware git guardrails + destructive gh CLI protection      |
-| [protect-tests](hook-scripts/pre-tool-use/protect-tests.js)                       | `Bash\|Edit\|MultiEdit\|Write` | Stops "fake green": blocks deleting, renaming-away, or skip/xfail-disabling tests |
-| [case-insensitive-guard](hook-scripts/pre-tool-use/case-insensitive-guard.js)     | `Bash`                    | Stops `rm -rf content` destroying `Content` on case-insensitive filesystems (APFS/exFAT/NTFS): resolves real targets through `cd` chains and quotes |
-| [config-guard](hook-scripts/pre-tool-use/config-guard.js)                         | `Bash\|Edit\|MultiEdit\|Write` | Who guards the guards: blocks the agent from tampering with its own guardrail config (settings.json, `.claude/hooks/`, hooks.json, `.mcp.json`, plugin manifests). Reads always pass. See [Config-Change](#config-change) for why and for its out-of-band sibling. |
+| Hook                                                          | Matcher                   | Description                                                      |
+| ------------------------------------------------------------- | ------------------------- | ---------------------------------------------------------------- |
+| [block-dangerous-commands](plugins/block-dangerous-commands)  | `Bash`                    | Blocks dangerous shell commands (rm -rf ~, fork bombs, curl\|sh, force push to main) before they run |
+| [protect-secrets](plugins/protect-secrets)                    | `Read\|Edit\|Write\|Bash` | Prevents reading/modifying/exfiltrating sensitive files          |
+| [git-safety](plugins/git-safety)                              | `Bash`                    | Branch-aware git guardrails + destructive gh CLI protection      |
+| [protect-tests](plugins/protect-tests)                        | `Bash\|Edit\|MultiEdit\|Write` | Stops "fake green": blocks deleting, renaming-away, or skip/xfail-disabling tests |
+| [case-insensitive-guard](plugins/case-insensitive-guard)      | `Bash`                    | Stops `rm -rf content` destroying `Content` on case-insensitive filesystems (APFS/exFAT/NTFS): resolves real targets through `cd` chains and quotes |
+| [config-guard](plugins/config-guard)                          | `Bash\|Edit\|MultiEdit\|Write` | Who guards the guards: blocks the agent from tampering with its own guardrail config (settings.json, `.claude/hooks/`, hooks.json, `.mcp.json`, plugin manifests). Reads always pass. See [Config-Change](#config-change) for why and for its out-of-band sibling. |
 
 ### Post-Tool-Use
 
@@ -88,12 +89,11 @@ Runs **after** Claude executes a tool. Can react to results.
 
 | Hook                                                     | Matcher       | Description                                                                   |
 | -------------------------------------------------------- | ------------- | ----------------------------------------------------------------------------- |
-| [auto-stage](hook-scripts/post-tool-use/auto-stage.js)   | `Edit\|Write` | Automatically git stages files after Claude modifies them                     |
-| [format-code](hook-scripts/post-tool-use/format-code.js) | `Write\|Edit` | Auto-formats Python (ruff) and JS/TS/HTML/JSON/MD/YAML (prettier) after edits |
-
-> 🔌 **`context-hogs`** (per-file context-cost leaderboard) and **`pr-provenance-stamp`** (PR-body provenance receipt) now ship as installable **plugins**; see [Install as a plugin](#-install-as-a-plugin).
-
-> 🔌 **`dead-rules-audit`** (CLAUDE.md compliance scorecard) now ships as an installable **plugin**; see [Install as a plugin](#-install-as-a-plugin).
+| [auto-stage](plugins/auto-stage)                         | `Edit\|Write` | Automatically git stages files after Claude modifies them                     |
+| [format-code](plugins/format-code)                       | `Write\|Edit` | Auto-formats Python (ruff) and JS/TS/HTML/JSON/MD/YAML (prettier) after edits |
+| [context-hogs](plugins/context-hogs)                     | `Read\|Grep\|Glob\|Bash` (async) + `SessionEnd` | Per-file context-cost leaderboard: attributes each tool result's tokens to the files it loaded, so you see which files cost you the most |
+| [pr-provenance-stamp](plugins/pr-provenance-stamp)       | `Edit\|MultiEdit\|Write\|Bash` (async) + `PreToolUse` on `Bash` | Stamps a provenance receipt (prompts, est. spend, tests run, agent-authored lines) into your PR body when Claude runs `gh pr create` |
+| [dead-rules-audit](plugins/dead-rules-audit)             | `Edit\|MultiEdit\|Write` (async) + `SessionStart` + `SessionEnd` | CLAUDE.md compliance scorecard: tallies which rules Claude follows vs ignores as you edit, and flags chronically-ignored rules to promote into a deterministic hook |
 
 ### Notification
 
@@ -101,7 +101,7 @@ Fires when Claude needs user attention.
 
 | Hook                                                                | Matcher                          | Description                                |
 | ------------------------------------------------------------------- | -------------------------------- | ------------------------------------------ |
-| [notify-permission](hook-scripts/notification/notify-permission.js) | `permission_prompt\|idle_prompt\|elicitation_dialog` | Sends Slack alerts when Claude needs input |
+| [notify-permission](plugins/notify-permission) | `permission_prompt\|idle_prompt\|elicitation_dialog` | Sends Slack alerts when Claude needs input |
 
 ### Config-Change
 
@@ -109,28 +109,18 @@ Fires when a configuration file changes during a session. Can block the change (
 
 | Hook                                                            | Matcher                                                                    | Description                                |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------ |
-| [config-watch](hook-scripts/config-change/config-watch.js)      | `user_settings\|project_settings\|local_settings\|policy_settings\|skills` | Makes every mid-session config change loudly visible (default), or blocks it outright with `CONFIG_WATCH_BLOCK=true`. Note: the docs guarantee ConfigChange can block via exit 2 but do not document its payload schema, so the hook parses defensively and logs the raw payload. |
+| [config-watch](plugins/config-watch)      | `user_settings\|project_settings\|local_settings\|policy_settings\|skills` | Makes every mid-session config change loudly visible (default), or blocks it outright with `CONFIG_WATCH_BLOCK=true`. Note: the docs guarantee ConfigChange can block via exit 2 but do not document its payload schema, so the hook parses defensively and logs the raw payload. |
 
 **Why config-guard + config-watch exist:** the Aug 2026 [CHAINDROP npm worm](https://www.elastic.co/security-labs/shai-hulud-chaindrop-npm-supply-chain) hid its payload in `.claude/settings.json`, turning the agent's own config into its persistence mechanism. And [CVE-2026-25725](https://advisories.gitlab.com/pkg/npm/@anthropic-ai/claude-code/CVE-2026-25725) let sandboxed code escape by injecting hooks into a `settings.json` that did not exist yet, which is why `config-guard` treats creating a protected file as mutation. `config-guard` (PreToolUse) blocks the agent itself from rewriting its guardrails before damage happens; `config-watch` (ConfigChange) covers changes made by anything else while a session runs. For intentional config edits, set `CONFIG_GUARD_ALLOW=true` for that call, or use [ask mode](#-ask-mode-prompt-instead-of-block) to get a prompt instead of a hard wall.
 
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash|Edit|MultiEdit|Write",
-        "hooks": [{ "type": "command", "command": "node ~/.claude/hooks/config-guard.js" }]
-      }
-    ],
-    "ConfigChange": [
-      {
-        "matcher": "user_settings|project_settings|local_settings|policy_settings|skills",
-        "hooks": [{ "type": "command", "command": "node ~/.claude/hooks/config-watch.js" }]
-      }
-    ]
-  }
-}
+Install them as a pair:
+
 ```
+/plugin install config-guard@claude-code-hooks
+/plugin install config-watch@claude-code-hooks
+```
+
+> ⚠️ **Heads-up:** once `config-guard` is active it also blocks `claude plugin install/uninstall/disable` at its default `high` level (the plugin manager rewrites config too, including config-guard's own manifest). Install your other plugins first, or set `CONFIG_GUARD_ALLOW=true` for that one call.
 
 ### Utils
 
@@ -138,7 +128,7 @@ Tools to help you build and debug hooks.
 
 | Tool                                               | Language | Description                                        |
 | -------------------------------------------------- | -------- | -------------------------------------------------- |
-| [event-logger](hook-scripts/utils/event-logger.py) | Python   | Logs all hook events to inspect payload structures |
+| [event-logger](utils/event-logger.py) | Python   | Logs all hook events to inspect payload structures |
 
 > 💡 **Building a new hook?** Use `event-logger.py` to discover what data Claude Code provides for each event before writing your own hooks.
 
@@ -146,7 +136,7 @@ Tools to help you build and debug hooks.
 
 ## 🔌 Install as a plugin
 
-This repo is also a **Claude Code plugin marketplace**, so you can install a single hook: no copying scripts, no editing `settings.json` by hand.
+This repo is a **Claude Code plugin marketplace**, so you can install a single hook: no copying scripts, no editing `settings.json` by hand.
 
 **1. Add the marketplace (once):**
 
@@ -162,7 +152,7 @@ This repo is also a **Claude Code plugin marketplace**, so you can install a sin
 
 **3. Restart Claude Code**: the hook is active.
 
-| Plugin                               | What it does                                                                                                                              | Command                                     |
+| Plugin                               | What it does                                                                                                                              | Command / config                            |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
 | [context-hogs](plugins/context-hogs) | Per-file context-cost leaderboard: attributes each tool result's tokens to the files it loaded, so you see which files cost you the most | `/context-hogs:leaderboard` renders the board on demand |
 | [nerf-receipts](plugins/nerf-receipts) | Personal flight recorder: records your own failure rate, edit churn & tokens/task by model version, and flags real shifts when a model changes | `/nerf-receipts:receipts` renders the trend card on demand |
@@ -171,20 +161,45 @@ This repo is also a **Claude Code plugin marketplace**, so you can install a sin
 | [standup-autopilot](plugins/standup-autopilot) | Writes your daily standup from what your agents actually did across repos: captures tasks, tests, PRs, and blockers from session transcripts and re-injects yesterday's open blockers next session | `/standup-autopilot:standup` renders today's card on demand |
 | [dead-end-registry](plugins/dead-end-registry) | Remembers approaches you tried and reverted (reason + estimated token cost) and warns before you retry them: a prompt-submit card plus an ask-before-edit guard | `/dead-end-registry:dead-ends` renders the registry on demand |
 | [bounty-board](plugins/bounty-board) | Prices your repo's TODO/FIXME/HACK/skip debt as aging XP bounties, injects the top 3 as opportunistic side quests, and verifies + pays out bounties you genuinely clear | `/bounty-board:board` renders the board on demand |
+| [block-dangerous-commands](plugins/block-dangerous-commands) | Blocks dangerous shell commands (rm -rf ~, fork bombs, curl\|sh, force push to main) before they run | `HOOK_SAFETY_LEVEL` picks critical/high/strict (default high); `HOOK_ASK_*` prompts instead of denying |
+| [protect-secrets](plugins/protect-secrets) | Prevents reading, modifying, or exfiltrating sensitive files (.env, SSH keys, cloud creds, keystores) by denying or asking before the tool call runs | `HOOK_SAFETY_LEVEL` (critical/high/strict, default high), `HOOK_ASK_CRITICAL/HIGH/STRICT` ask mode; `/plugin install protect-secrets@claude-code-hooks` |
+| [git-safety](plugins/git-safety) | Branch-aware git guardrails + destructive gh CLI protection: blocks pushes to main/master, protected-branch deletion, direct changes on a protected branch, and gh pr merge/close, issue close, release/repo delete | `HOOK_SAFETY_LEVEL` = `critical`/`high`/`strict` (default `high`); `/plugin install git-safety@claude-code-hooks` |
+| [protect-tests](plugins/protect-tests) | Stops "fake green": blocks deleting, renaming-away, or skip/xfail-disabling tests instead of fixing the code (PreToolUse on `Bash\|Edit\|MultiEdit\|Write`) | `HOOK_SAFETY_LEVEL=critical\|high\|strict` (default `high`); `/plugin install protect-tests@claude-code-hooks` |
+| [case-insensitive-guard](plugins/case-insensitive-guard) | Stops `rm -rf content` destroying `Content` on case-insensitive filesystems (APFS/exFAT/NTFS): resolves real targets through `cd` chains, quotes, and subshells | `HOOK_SAFETY_LEVEL=critical\|high\|strict` (default `high`); ask mode via `HOOK_ASK_CRITICAL/HIGH/STRICT=true` |
+| [config-guard](plugins/config-guard) | Who guards the guards: blocks the agent from tampering with its own guardrail config (settings files, `.claude/hooks/`, hooks.json, `.mcp.json`, plugin manifests, `claude config/mcp/plugin` CLI writes); reads always pass, creating a protected file counts as mutation. | `HOOK_SAFETY_LEVEL` (critical/high/strict, default high), `CONFIG_GUARD_ALLOW=true` escape hatch, `HOOK_ASK_*` ask mode |
+| [config-watch](plugins/config-watch) | Makes every mid-session config change loudly visible (default) or blocks it outright, catching out-of-band settings.json writes like the CHAINDROP worm's persistence trick. | `CONFIG_WATCH_BLOCK=true` to block (exit 2); `policy_settings` always warns; or `/plugin install config-watch@claude-code-hooks` |
+| [auto-stage](plugins/auto-stage) | Automatically git stages files after Claude modifies them, so `git status` shows exactly what Claude touched | No config needed; `/plugin install auto-stage@claude-code-hooks`; logs to `~/.claude/hooks-logs/` |
+| [format-code](plugins/format-code) | Auto-formats Python (ruff) and JS/TS/HTML/JSON/MD/YAML (prettier) after every Write/Edit | `/plugin install format-code@claude-code-hooks`; needs `uv` and `npx` on PATH, no env vars |
+| [session-logger](plugins/session-logger) | Writes a durable markdown log of every session (cwd, git repo/branch, files touched, bash commands with best-effort secret redaction); `PostToolUse` runs async so logging never blocks Claude, and concurrent writes are serialized with a file lock. | `CC_SESSION_LOG_DIR` (point at an Obsidian vault for sync), `CC_SESSION_BASH_TRUNCATE`; `/plugin install session-logger@claude-code-hooks` |
+| [instructions-audit](plugins/instructions-audit) | Audits CLAUDE.md / `.claude/rules/*.md` as they load and locks the session on hidden or hostile directives (invisible-Unicode smuggling, secret read/exfil, curl\|sh, decode-and-execute, hook/settings tampering); one install wires the detection arm plus both enforcement arms | `HOOK_AUDIT_LEVEL` tunes critical/high/strict; `HOOK_AUDIT_WARN_ONLY=true` warns without locking |
+| [notify-permission](plugins/notify-permission) | Sends Slack alerts when Claude needs input (permission, idle, or choice prompts): a rich card with project, session, and what needs approval | Requires `CCH_SLA_WEBHOOK` (Slack webhook URL); or `/plugin install notify-permission@claude-code-hooks` |
 
-> ⚡ The PostToolUse recorders in these plugins run **async**: they record in the background and add **~zero latency** to a tool call. Each plugin renders on demand via its own command (e.g. `/context-hogs:leaderboard`) and at SessionEnd.
+> ⚡ The pure recorder events in these plugins run **async**: they record in the background and add **~zero latency** to a tool call. Guard hooks stay synchronous on purpose: a deny has to land before the tool runs. Plugins with a card render it on demand via their own command (e.g. `/context-hogs:leaderboard`) and at SessionEnd.
 
-The hooks listed above under [🪝 Hooks](#-hooks) install the classic way (copy the script + add to `settings.json`); more are being packaged as plugins.
+Prefer the classic route? Every plugin's script is self-contained: copy `plugins/<name>/<name>.js` and register it in `settings.json` yourself; see [Quick Start](#-quick-start).
 
 ---
 
 ## 🚀 Quick Start
 
+**1. Add the marketplace and install a hook:**
+
+```
+/plugin marketplace add karanb192/claude-code-hooks
+/plugin install block-dangerous-commands@claude-code-hooks
+```
+
+**2. Restart Claude Code**: the hook is now active.
+
+### The classic way (copy the script)
+
+Every plugin's script works standalone, so you can skip the marketplace and own the file:
+
 **1. Copy the hook script:**
 
 ```bash
 mkdir -p ~/.claude/hooks
-cp hook-scripts/pre-tool-use/block-dangerous-commands.js ~/.claude/hooks/
+cp plugins/block-dangerous-commands/block-dangerous-commands.js ~/.claude/hooks/
 ```
 
 **2. Add to `.claude/settings.json`:**
@@ -223,7 +238,17 @@ Security hooks support configurable safety levels:
 | `high`     | + Risky (force push main, secrets exposure, git reset --hard) | **Recommended**     |
 | `strict`   | + Cautionary (any force push, sudo rm, docker prune)          | Maximum safety      |
 
-**To change:** Edit the `SAFETY_LEVEL` constant at the top of each hook.
+**To change:** set the `HOOK_SAFETY_LEVEL` environment variable to `critical`, `high`, or `strict` (anything else falls back to `high`). All six guard plugins read it: `block-dangerous-commands`, `protect-secrets`, `git-safety`, `protect-tests`, `case-insensitive-guard`, and `config-guard`. (`instructions-audit` uses `HOOK_AUDIT_LEVEL` for the same three levels.) The `env` block in `settings.json` applies it to every session:
+
+```json
+{
+  "env": {
+    "HOOK_SAFETY_LEVEL": "strict"
+  }
+}
+```
+
+Running a copied script the classic way? You can still edit the `SAFETY_LEVEL` default at the top of the hook instead; for installed plugins prefer the env var, since plugin updates overwrite edited files.
 
 ```javascript
 const SAFETY_LEVEL = "strict"; // or 'critical', 'high'
@@ -241,14 +266,17 @@ Enable per level via environment variables (the literal string `true`; anything 
 | `HOOK_ASK_HIGH`     | `high`-level patterns (git reset --hard, …)    |
 | `HOOK_ASK_STRICT`   | `strict`-level patterns (any force push, …)    |
 
-Set them inline in your hook command in `settings.json`:
+Set them in the `env` block of `settings.json` (works for plugins and classic copies alike):
 
 ```json
 {
-  "type": "command",
-  "command": "HOOK_ASK_STRICT=true node ~/.claude/hooks/block-dangerous-commands.js"
+  "env": {
+    "HOOK_ASK_STRICT": "true"
+  }
 }
 ```
+
+Classic copies can also take them inline in the hook command: `"command": "HOOK_ASK_STRICT=true node ~/.claude/hooks/block-dangerous-commands.js"`.
 
 Everything defaults to **deny**: ask mode is strictly opt-in. A common setup: keep `critical` on deny, set `HOOK_ASK_STRICT=true` so cautionary patterns prompt instead of blocking.
 
@@ -270,8 +298,8 @@ Requires **Node ≥ 18** (no npm dependencies). The `format-code` tests exercise
 # Run all tests
 npm test
 
-# Run specific hook tests
-node --test hook-scripts/tests/pre-tool-use/block-dangerous-commands.test.js
+# Run a single plugin's tests
+node --test plugins/block-dangerous-commands/tests/block-dangerous-commands.test.js
 ```
 
 **Test coverage:**

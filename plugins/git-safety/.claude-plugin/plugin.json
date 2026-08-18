@@ -1,0 +1,20 @@
+{
+  "name": "git-safety",
+  "description": "Branch-aware git guardrails for Claude Code. A PreToolUse hook on Bash that denies destructive git and gh CLI operations before they run: pushing to main/master, deleting protected branches, commit/merge/rebase/reset/push while on a protected branch, and gh pr merge/close, issue close, release delete, repo delete. Three safety levels (critical/high/strict) selectable via HOOK_SAFETY_LEVEL; every block is logged.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "git",
+    "github",
+    "safety",
+    "guardrails",
+    "pretooluse"
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "name": "case-insensitive-guard",
+  "description": "Stops `rm -rf content` silently destroying `Content` on case-insensitive filesystems (APFS default, exFAT, NTFS). A PreToolUse hook on Bash that resolves the real target of destructive commands (rm, rmdir, mv, mkdir, touch, find -delete) through cd/pushd chains, quotes, subshells, and heredocs, and denies the ones that would hit a differently-cased entry of what was typed. Three safety levels (HOOK_SAFETY_LEVEL), per-level ask mode instead of hard deny.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "safety",
+    "filesystem",
+    "case-insensitive",
+    "data-loss",
+    "pretooluse"
+  ]
+}
