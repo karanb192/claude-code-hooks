@@ -5,7 +5,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml/badge.svg)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
-[![Tests](https://img.shields.io/badge/tests-1382%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-1499%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
 
 **🌐 [Live site & catalog](https://karanb192.github.io/claude-code-hooks/)**
 
@@ -57,11 +57,11 @@ Runs at session boundaries — inject context at **SessionStart** and capture ou
 
 ### Instructions-Loaded
 
-Fires when a CLAUDE.md or `.claude/rules/*.md` file is loaded into context. The event has no decision control and its exit code is ignored, so hooks here respond with the universal JSON fields (`continue: false` halts the session) instead of a PreToolUse-style deny.
+Fires when a CLAUDE.md or `.claude/rules/*.md` file is loaded into context. The event has no decision control, its exit code is ignored, and current Claude Code builds ignore even the universal `continue: false` on it (verified live), so detection and enforcement are split: the InstructionsLoaded registration records a per-session lock on a finding (and still emits `continue: false` for builds that honor it), and the same script registered on UserPromptSubmit and PreToolUse blocks every prompt and tool call for that session until a human fixes the file or deletes the named lock file.
 
 | Hook | Matcher | Description |
 |------|---------|-------------|
-| [instructions-audit](hook-scripts/instructions-loaded/instructions-audit.js) | `session_start\|nested_traversal\|path_glob_match\|include\|compact` (or omit for all) | Halts the session when a loaded instruction file carries hidden directives: zero-width/bidi Unicode smuggling (the TrapDoor supply-chain signature), directives to read or exfiltrate secrets, curl\|sh, decode-and-execute, and hook/settings tampering. Names the rule and line number so you can inspect the file; `HOOK_AUDIT_WARN_ONLY=true` warns without halting. |
+| [instructions-audit](hook-scripts/instructions-loaded/instructions-audit.js) | `session_start\|nested_traversal\|path_glob_match\|include\|compact` (or omit for all) | Locks the session when a loaded instruction file carries hidden directives: invisible-Unicode smuggling (zero-width, tag characters, variation-selector runs; the TrapDoor supply-chain signature), bidi overrides, directives to read or exfiltrate secrets, curl\|sh, decode-and-execute, and hook/settings tampering. Names the rule and line number so you can inspect the file; register the same script on UserPromptSubmit and PreToolUse for the enforcement arm; `HOOK_AUDIT_WARN_ONLY=true` warns without locking. |
 
 ### User-Prompt-Submit
 

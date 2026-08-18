@@ -9,20 +9,31 @@
  * its own hook or settings configuration. Logs to: ~/.claude/hooks-logs/
  *
  * SAFETY_LEVEL: 'critical' | 'high' | 'strict'
- *   critical - invisible Unicode smuggling, bidi overrides, decode-and-execute
+ *   critical - invisible Unicode smuggling (zero width, tag characters,
+ *              invisible operators, variation-selector runs), bidi overrides,
+ *              decode-and-execute
  *   high     - + secret read/exfil directives, curl|sh, hook/settings tampering
- *   strict   - + soft hyphens, directives that write new instruction files
+ *   strict   - + soft hyphens, invisible direction marks (legitimate in RTL
+ *              prose), directives that write new instruction files
  * Env overrides: HOOK_AUDIT_LEVEL=critical|high|strict per registration.
  *
- * Event contract (verified against https://code.claude.com/docs/en/hooks):
- * InstructionsLoaded has no decision control and its exit code is ignored,
- * so this hook cannot return a PreToolUse-style "deny". On a finding it
- * emits the universal JSON output fields instead:
- *   { "continue": false, "stopReason": ..., "systemMessage": ... }
- * continue:false halts processing so the poisoned instructions are never
- * acted on; systemMessage and stderr name each rule that fired and the line
- * it fired on, so a human can inspect the file. Set HOOK_AUDIT_WARN_ONLY to
- * the literal string "true" to surface the warning without halting.
+ * Event contract (docs at https://code.claude.com/docs/en/hooks, then
+ * verified live): InstructionsLoaded has no decision control, its exit code
+ * is ignored, and current Claude Code builds ignore even the universal
+ * continue:false on this event, so nothing on the event itself can stop the
+ * session. Detection and enforcement are therefore split:
+ * - The InstructionsLoaded registration audits the file, records a
+ *   per-session lockdown flag on a finding, and still emits
+ *   { "continue": false, "stopReason": ..., "systemMessage": ... } for
+ *   builds that honor the universal fields.
+ * - The SAME script registered on UserPromptSubmit and PreToolUse (both can
+ *   block, verified) then denies every prompt and tool call for that
+ *   session, so the poisoned instructions are never acted on. The lock
+ *   message names the flag file; delete it to clear a false positive, or
+ *   fix the instruction file and start a fresh session.
+ * systemMessage and stderr name each rule that fired and the line it fired
+ * on, so a human can inspect the file. Set HOOK_AUDIT_WARN_ONLY to the
+ * literal string "true" to surface the warning without locking.
  *
  * Precision notes (false positives on normal CLAUDE.md content are the
  * failure mode here):
@@ -38,16 +49,24 @@
  *   (Arabic, Indic conjuncts) are exempt from the invisible-char rules; a
  *   UTF-8 BOM at offset 0 is exempt too.
  *
- * Setup in .claude/settings.json:
+ * Setup in .claude/settings.json (all three registrations, same script):
  * {
  *   "hooks": {
  *     "InstructionsLoaded": [{
  *       "hooks": [{ "type": "command", "command": "node /path/to/instructions-audit.js" }]
+ *     }],
+ *     "UserPromptSubmit": [{
+ *       "hooks": [{ "type": "command", "command": "node /path/to/instructions-audit.js" }]
+ *     }],
+ *     "PreToolUse": [{
+ *       "hooks": [{ "type": "command", "command": "node /path/to/instructions-audit.js" }]
  *     }]
  *   }
  * }
- * Omit "matcher" to audit every load reason, or set one to narrow it, e.g.
- * "matcher": "session_start|nested_traversal|path_glob_match|include|compact".
+ * On InstructionsLoaded, omit "matcher" to audit every load reason, or set
+ * one to narrow it, e.g. "session_start|nested_traversal|path_glob_match".
+ * The UserPromptSubmit and PreToolUse registrations are the enforcement arm;
+ * without them the hook can only warn on current builds.
  */
 
 const fs = require('fs');
@@ -113,8 +132,11 @@ const TEXT_PATTERNS = [
 const NEGATION_CONTEXT = /\b(?:never|do\s+not|don'?t|must\s+not|should\s+not|shall\s+not|avoid|no\s+need\s+to|without|instead\s+of)[ ,]+(?:\w+[ ,-]+){0,4}?(?:read|cat|open|print|dump|display|show|output|echo|paste|include|retrieve|reveal|expose|extract|send|post|upload|submit|transmit|forward|mail|email|pipe|attach|leak|share|run|execute|curl|wget|commit|edit|modify|update|write|change|append|add|overwrite|replace|patch|rewrite|merge|disable|bypass|remove|delete|uninstall|deactivate|skip|ignore|create|generate|save|touch|access)(?:ing|e?s|e?d)?\b/i;
 
 const CHAR_NAMES = {
-  0x00AD: 'SOFT HYPHEN', 0x200B: 'ZERO WIDTH SPACE', 0x200C: 'ZERO WIDTH NON-JOINER',
-  0x200D: 'ZERO WIDTH JOINER', 0x2060: 'WORD JOINER', 0xFEFF: 'ZERO WIDTH NO-BREAK SPACE',
+  0x00AD: 'SOFT HYPHEN', 0x034F: 'COMBINING GRAPHEME JOINER', 0x061C: 'ARABIC LETTER MARK',
+  0x180E: 'MONGOLIAN VOWEL SEPARATOR', 0x200B: 'ZERO WIDTH SPACE', 0x200C: 'ZERO WIDTH NON-JOINER',
+  0x200D: 'ZERO WIDTH JOINER', 0x200E: 'LEFT-TO-RIGHT MARK', 0x200F: 'RIGHT-TO-LEFT MARK',
+  0x2060: 'WORD JOINER', 0x2061: 'FUNCTION APPLICATION', 0x2062: 'INVISIBLE TIMES',
+  0x2063: 'INVISIBLE SEPARATOR', 0x2064: 'INVISIBLE PLUS', 0xFEFF: 'ZERO WIDTH NO-BREAK SPACE',
   0x202A: 'LEFT-TO-RIGHT EMBEDDING', 0x202B: 'RIGHT-TO-LEFT EMBEDDING',
   0x202C: 'POP DIRECTIONAL FORMATTING', 0x202D: 'LEFT-TO-RIGHT OVERRIDE',
   0x202E: 'RIGHT-TO-LEFT OVERRIDE', 0x2066: 'LEFT-TO-RIGHT ISOLATE',
@@ -137,7 +159,8 @@ function log(data) {
 }
 
 function codepointLabel(code) {
-  return `U+${code.toString(16).toUpperCase().padStart(4, '0')} ${CHAR_NAMES[code] || 'UNKNOWN'}`;
+  const name = CHAR_NAMES[code] || (code >= 0xE0001 && code <= 0xE007F ? 'TAG CHARACTER' : 'UNKNOWN');
+  return `U+${code.toString(16).toUpperCase().padStart(4, '0')} ${name}`;
 }
 
 function charBefore(s, i) {
@@ -165,11 +188,18 @@ function invisibleCharRule(content, i, code) {
   if ((code >= 0x202A && code <= 0x202E) || (code >= 0x2066 && code <= 0x2069)) {
     return { level: 'critical', id: 'bidi-control', reason: 'bidirectional control character can reorder or mask instruction text' };
   }
-  if (code === 0x200B || code === 0x2060 || (code === 0xFEFF && i !== 0)) {
+  if (code >= 0xE0001 && code <= 0xE007F) {
+    return { level: 'critical', id: 'tag-char', reason: 'Unicode tag characters encode a parallel invisible ASCII message' };
+  }
+  if (code === 0x200B || code === 0x2060 || (code >= 0x2061 && code <= 0x2064) ||
+      code === 0x034F || code === 0x180E || (code === 0xFEFF && i !== 0)) {
     return { level: 'critical', id: 'zero-width-char', reason: 'zero width character can hide directives in instruction text' };
   }
   if ((code === 0x200C || code === 0x200D) && !joinerExempt(content, i)) {
     return { level: 'critical', id: 'zero-width-joiner', reason: 'zero width joiner outside emoji or joining-script text can hide characters inside words' };
+  }
+  if (code === 0x200E || code === 0x200F || code === 0x061C) {
+    return { level: 'strict', id: 'bidi-mark', reason: 'invisible direction mark; legitimate in RTL prose, suspicious in ASCII instructions' };
   }
   if (code === 0x00AD) {
     return { level: 'strict', id: 'soft-hyphen', reason: 'soft hyphen is invisible in rendered text' };
@@ -177,25 +207,44 @@ function invisibleCharRule(content, i, code) {
   return null;
 }
 
+// Variation selectors encode hidden data when chained (each selector can carry
+// a byte); single selectors are legitimate emoji/CJK presentation, so only a
+// run of 4 or more flags.
+const isVariationSelector = (cp) => (cp >= 0xFE00 && cp <= 0xFE0F) || (cp >= 0xE0100 && cp <= 0xE01EF);
+
 function scanInvisibleChars(content, threshold, findings) {
   let line = 1;
   let col = 0;
+  let vsRun = 0;
+  let vsStart = null;
   for (let i = 0; i < content.length; i++) {
-    if (content[i] === '\n') { line++; col = 0; continue; }
+    if (content[i] === '\n') { line++; col = 0; vsRun = 0; continue; }
     col++;
-    const code = content.charCodeAt(i);
-    if (code < 0xAD || (code > 0xAD && code < 0x200B)) continue; // fast path
-    const rule = invisibleCharRule(content, i, code);
-    if (rule && LEVELS[rule.level] <= threshold) {
-      findings.push({ ...rule, line, column: col, detail: codepointLabel(code) });
+    if (content.charCodeAt(i) < 0xAD) { vsRun = 0; continue; } // fast path: ASCII
+    const code = content.codePointAt(i); // astral-aware: tag chars are surrogate pairs
+    if (isVariationSelector(code)) {
+      if (vsRun === 0) vsStart = { line, column: col };
+      vsRun++;
+      if (vsRun === 4 && LEVELS.critical <= threshold) {
+        findings.push({ level: 'critical', id: 'variation-selector-run', reason: 'a run of variation selectors can encode hidden data', ...vsStart, detail: 'variation selector sequence' });
+      }
+    } else {
+      vsRun = 0;
+      const rule = invisibleCharRule(content, i, code);
+      if (rule && LEVELS[rule.level] <= threshold) {
+        findings.push({ ...rule, line, column: col, detail: codepointLabel(code) });
+      }
     }
+    if (code > 0xFFFF) i++; // skip the low surrogate; the column counts code points
   }
 }
 
 // Strip the characters this hook hunts for out of quoted excerpts, so the
 // report itself cannot smuggle or reorder text in the transcript.
 function sanitizeExcerpt(line) {
-  return line.replace(/[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g, '').trim().slice(0, 96);
+  return line
+    .replace(/[\u00AD\u034F\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFE00-\uFE0F\uFEFF]|[\u{E0001}-\u{E007F}\u{E0100}-\u{E01EF}]/gu, '')
+    .trim().slice(0, 96);
 }
 
 function scanDirectives(content, threshold, findings) {
@@ -209,6 +258,34 @@ function scanDirectives(content, threshold, findings) {
       }
     }
   }
+}
+
+// ─── session lockdown state ──────────────────────────────────────────────────
+// The enforcement arm: a poisoned load writes a per-session flag; the
+// UserPromptSubmit and PreToolUse registrations of this same script read it
+// and deny everything for that session until a human clears it.
+
+const STATE_DIR = path.join(process.env.HOME || '/tmp', '.claude', 'hooks-state', 'instructions-audit');
+
+function flagPath(sessionId) {
+  const safe = String(sessionId || 'unknown-session').replace(/[^A-Za-z0-9._-]/g, '_');
+  return path.join(STATE_DIR, `${safe}.json`);
+}
+
+function writeFlag(sessionId, info) {
+  try {
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    fs.writeFileSync(flagPath(sessionId), JSON.stringify({ ts: new Date().toISOString(), ...info }));
+    // Flags for long-gone sessions are inert; sweep anything over 7 days old.
+    for (const f of fs.readdirSync(STATE_DIR)) {
+      const p = path.join(STATE_DIR, f);
+      try { if (Date.now() - fs.statSync(p).mtimeMs > 7 * 24 * 3600 * 1000) fs.unlinkSync(p); } catch {}
+    }
+  } catch {}
+}
+
+function readFlag(sessionId) {
+  try { return JSON.parse(fs.readFileSync(flagPath(sessionId), 'utf8')); } catch { return null; }
 }
 
 function auditContent(content, safetyLevel = SAFETY_LEVEL) {
@@ -241,6 +318,22 @@ async function main() {
   try {
     const data = JSON.parse(input);
     const { hook_event_name, file_path, load_reason, session_id, cwd } = data;
+
+    // Enforcement arm: on the blocking events, honor an existing lockdown.
+    if (hook_event_name === 'UserPromptSubmit' || hook_event_name === 'PreToolUse') {
+      const flag = readFlag(session_id);
+      if (!flag) return console.log('{}');
+      const notice =
+        `🚨 instructions-audit locked this session: ${flag.count} suspicious pattern(s) in ${flag.file} ` +
+        `(first: [${flag.first}]). Fix or quarantine the file and start a fresh session; ` +
+        `if the findings are false positives, delete ${flagPath(session_id)} to clear the lock.`;
+      if (hook_event_name === 'UserPromptSubmit') {
+        return console.log(JSON.stringify({ decision: 'block', reason: notice }));
+      }
+      return console.log(JSON.stringify({
+        hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: notice },
+      }));
+    }
     if (hook_event_name && hook_event_name !== 'InstructionsLoaded') return console.log('{}');
 
     let content = data.content;
@@ -266,8 +359,11 @@ async function main() {
     const out = { systemMessage: message };
     if (!warnOnly) {
       const top = findings[0];
+      // The lockdown flag is the enforcement that actually works today; the
+      // universal continue:false is emitted too for builds that honor it.
+      writeFlag(session_id, { file: label, count: findings.length, first: `${top.id} line ${top.line}` });
       out.continue = false;
-      out.stopReason = `${EMOJIS[top.level]} instructions-audit halted the session: ${findings.length} suspicious pattern(s) in ${label} (first: [${top.id}] line ${top.line})`;
+      out.stopReason = `${EMOJIS[top.level]} instructions-audit locked the session: ${findings.length} suspicious pattern(s) in ${label} (first: [${top.id}] line ${top.line})`;
     }
     console.log(JSON.stringify(out));
   } catch (e) {
@@ -281,6 +377,6 @@ if (require.main === module) {
 } else {
   module.exports = {
     TEXT_PATTERNS, LEVELS, SAFETY_LEVEL, NEGATION_CONTEXT,
-    auditContent, formatFindings, sanitizeExcerpt, codepointLabel,
+    auditContent, formatFindings, sanitizeExcerpt, codepointLabel, flagPath,
   };
 }

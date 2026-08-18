@@ -110,6 +110,19 @@ describe('Unit: invisible Unicode detection', () => {
     const label = codepointLabel(ch.charCodeAt(0));
     it(`flags bidi control ${label}`, () => shouldFlag(`abc${ch}def`, 'bidi-control'));
   }
+
+  it('flags Unicode tag characters (invisible ASCII smuggling)', () => {
+    const hidden = String.fromCodePoint(0xE0069, 0xE0067, 0xE006E, 0xE006F, 0xE0072, 0xE0065);
+    const findings = shouldFlag(`# Rules\nbe helpful ${hidden}`, 'tag-char');
+    assert.strictEqual(findings[0].line, 2);
+  });
+  it('flags U+2062 invisible times', () => shouldFlag('ab\u2062cd', 'zero-width-char'));
+  it('flags U+034F combining grapheme joiner inside a word', () => shouldFlag('ig\u034Fnore', 'zero-width-char'));
+  it('flags U+180E Mongolian vowel separator', () => shouldFlag('ab\u180Ecd', 'zero-width-char'));
+  it('flags a run of variation selectors (hidden data encoding)', () =>
+    shouldFlag('x\uFE00\uFE01\uFE02\uFE03\uFE04y', 'variation-selector-run'));
+  it('flags U+200E left-to-right mark at strict', () => shouldFlag('ab\u200Ecd', 'bidi-mark', 'strict'));
+  it('flags U+061C Arabic letter mark at strict', () => shouldFlag('ab\u061Ccd', 'bidi-mark', 'strict'));
 });
 
 describe('Unit: exemptions for legitimate invisible characters', () => {
@@ -121,6 +134,8 @@ describe('Unit: exemptions for legitimate invisible characters', () => {
   it('allows Persian text with ZWNJ', () => shouldPass('می\u200Cخواهم test'));
   it('allows plain emoji without joiners', () => shouldPass('Ship it \u{1F680} when tests pass'));
   it('allows U+00AD soft hyphen at default high level', () => shouldPass('so\u00ADft'));
+  it('allows U+200E direction mark at default high level (legitimate in RTL prose)', () => shouldPass('ab\u200Ecd'));
+  it('allows short variation selector runs (emoji presentation)', () => shouldPass('star \u2B50\uFE0F and heart \u2764\uFE0F'));
   it('allows a clean ASCII instruction file', () =>
     shouldPass('# Project rules\n\nAlways run tests before committing.\nUse conventional commits.\n'));
 });
@@ -422,8 +437,8 @@ describe('Integration: stdin/stdout hook flow', () => {
     assert.deepStrictEqual(output, {});
   });
 
-  it('returns empty object for other hook events', async () => {
-    const { output } = await runHook(makePayload(POISONED, { hook_event_name: 'PreToolUse' }));
+  it('returns empty object for unrelated hook events', async () => {
+    const { output } = await runHook(makePayload(POISONED, { hook_event_name: 'SessionStart', session_id: 'no-lock-session' }));
     assert.deepStrictEqual(output, {});
   });
 
@@ -442,5 +457,67 @@ describe('Integration: stdin/stdout hook flow', () => {
     const { code, output } = await runHook({});
     assert.strictEqual(code, 0);
     assert.deepStrictEqual(output, {});
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Integration Tests - session lockdown enforcement
+// (InstructionsLoaded cannot block on current builds, so the same script
+// registered on UserPromptSubmit / PreToolUse enforces via a per-session flag)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Integration: session lockdown enforcement', () => {
+  const LOCKED = 'locked-session-1';
+  const stateDir = path.join(TEST_HOME, '.claude', 'hooks-state', 'instructions-audit');
+
+  it('a poisoned load writes the per-session lockdown flag', async () => {
+    await runHook(makePayload(POISONED, { session_id: LOCKED }));
+    assert.ok(fs.existsSync(path.join(stateDir, `${LOCKED}.json`)));
+  });
+
+  it('UserPromptSubmit is blocked for a locked session', async () => {
+    await runHook(makePayload(POISONED, { session_id: LOCKED }));
+    const { output } = await runHook({ hook_event_name: 'UserPromptSubmit', session_id: LOCKED, prompt: 'hi', cwd: '/tmp' });
+    assert.strictEqual(output.decision, 'block');
+    assert.ok(output.reason.includes('instructions-audit locked'));
+  });
+
+  it('PreToolUse is denied for a locked session', async () => {
+    await runHook(makePayload(POISONED, { session_id: LOCKED }));
+    const { output } = await runHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: LOCKED, cwd: '/tmp' });
+    assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+  });
+
+  it('the lock message names the flag file to delete', async () => {
+    await runHook(makePayload(POISONED, { session_id: LOCKED }));
+    const { output } = await runHook({ hook_event_name: 'UserPromptSubmit', session_id: LOCKED, cwd: '/tmp' });
+    assert.ok(output.reason.includes(`${LOCKED}.json`));
+  });
+
+  it('an unlocked session is unaffected on both blocking events', async () => {
+    const a = await runHook({ hook_event_name: 'UserPromptSubmit', session_id: 'clean-session-1', cwd: '/tmp' });
+    assert.deepStrictEqual(a.output, {});
+    const b = await runHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: 'clean-session-1', cwd: '/tmp' });
+    assert.deepStrictEqual(b.output, {});
+  });
+
+  it('warn-only mode never writes a lock', async () => {
+    await runHook(makePayload(POISONED, { session_id: 'warn-only-session' }), { HOOK_AUDIT_WARN_ONLY: 'true' });
+    assert.ok(!fs.existsSync(path.join(stateDir, 'warn-only-session.json')));
+    const { output } = await runHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: 'warn-only-session', cwd: '/tmp' });
+    assert.deepStrictEqual(output, {});
+  });
+
+  it('deleting the flag clears the lock', async () => {
+    await runHook(makePayload(POISONED, { session_id: 'cleared-session' }));
+    fs.unlinkSync(path.join(stateDir, 'cleared-session.json'));
+    const { output } = await runHook({ hook_event_name: 'UserPromptSubmit', session_id: 'cleared-session', cwd: '/tmp' });
+    assert.deepStrictEqual(output, {});
+  });
+
+  it('a hostile session id cannot escape the state dir', async () => {
+    await runHook(makePayload(POISONED, { session_id: '../../evil' }));
+    assert.ok(!fs.existsSync(path.join(TEST_HOME, '.claude', 'evil.json')));
+    assert.ok(fs.readdirSync(stateDir).some((f) => f.includes('evil')));
   });
 });
