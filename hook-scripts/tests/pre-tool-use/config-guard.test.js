@@ -262,6 +262,14 @@ describe('Unit: checkBashCommand()', () => {
     it('blocks claude plugin marketplace add', () => bashBlocked('claude plugin marketplace add attacker/repo', 'claude-cli-config'));
     it('allows claude plugin list (read-only)', () => bashAllowed('claude plugin list'));
     it('allows claude plugin marketplace list (read-only)', () => bashAllowed('claude plugin marketplace list'));
+    it('blocks CLAUDE MCP ADD (case-insensitive filesystems resolve it)', () => bashBlocked('CLAUDE MCP ADD evil -- npx evil', 'claude-cli-config'));
+  });
+
+  describe('Case evasion of mutation verbs', () => {
+    // APFS/NTFS resolve RM and SED to the same binaries.
+    it('blocks RM of settings.json', () => bashBlocked('RM .claude/settings.json', 'settings-file'));
+    it('blocks SED -I on settings.json', () => bashBlocked("SED -I 's/deny/allow/' .claude/settings.json", 'settings-file'));
+    it('blocks TEE into settings.json', () => bashBlocked('cat evil.json | TEE .claude/settings.json', 'settings-file'));
   });
 
   describe('STRICT tier in Bash', () => {

@@ -105,15 +105,17 @@ const BASH_TOKENS = [
 ];
 
 // Mutation forms in shell commands. Reads (cat, jq, grep, ls, diff, node) pass.
-const DELETE_VERB    = /(\brm\b|\bunlink\b|\bshred\b|\btrash\b|\bgit\s+rm\b)/;
-const MOVE_COPY_VERB = /\b(mv|cp|rsync|install|ln)\b/;
-const WRITE_VERB     = /\b(tee|truncate|dd)\b/;
-const INPLACE_EDIT   = /\b(sed|gsed)\s+[^|;&]*-i\b|\bperl\s+[^|;&]*-\w*i\b|\bgawk\s+[^|;&]*-i\s*inplace\b/;
+// All case-insensitive: on the case-insensitive filesystems macOS and Windows
+// default to, `RM` and `SED` resolve to the same binaries.
+const DELETE_VERB    = /(\brm\b|\bunlink\b|\bshred\b|\btrash\b|\bgit\s+rm\b)/i;
+const MOVE_COPY_VERB = /\b(mv|cp|rsync|install|ln)\b/i;
+const WRITE_VERB     = /\b(tee|truncate|dd)\b/i;
+const INPLACE_EDIT   = /\b(sed|gsed)\s+[^|;&]*-i\b|\bperl\s+[^|;&]*-\w*i\b|\bgawk\s+[^|;&]*-i\s*inplace\b/i;
 
 // CLI commands that rewrite agent config without naming a settings path.
 // `claude plugin install` registers arbitrary hooks and skills, so it is a
 // config write in everything but name; list/get/read forms stay allowed.
-const CLAUDE_CLI_WRITE = /\bclaude\s+(config\s+(set|add|remove|rm)|mcp\s+(add|add-json|add-from-claude-desktop|remove|rm)|plugin\s+(install|uninstall|enable|disable|update|marketplace\s+(add|remove|rm|update)))\b/;
+const CLAUDE_CLI_WRITE = /\bclaude\s+(config\s+(set|add|remove|rm)|mcp\s+(add|add-json|add-from-claude-desktop|remove|rm)|plugin\s+(install|uninstall|enable|disable|update|marketplace\s+(add|remove|rm|update)))\b/i;
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
 const EMOJIS = { critical: '🔒', high: '🛡️', strict: '⚠️' };
