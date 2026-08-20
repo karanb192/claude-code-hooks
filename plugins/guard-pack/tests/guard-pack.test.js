@@ -31,7 +31,10 @@ function runHook(payload, envOverrides = {}) {
         delete env[key];
       }
     }
-    const child = spawn('node', [SCRIPT_PATH], { env });
+    // cwd is the isolated TMP_HOME (not a git repo) so branchOnly guards like
+    // git-safety's push-on-protected read '' for the branch instead of leaking
+    // in whatever branch CI happens to be on (push-to-main runs were HEAD=main).
+    const child = spawn('node', [SCRIPT_PATH], { env, cwd: TMP_HOME });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += d; });
