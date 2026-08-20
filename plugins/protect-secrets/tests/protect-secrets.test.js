@@ -549,3 +549,55 @@ describe('Integration: HOOK_SAFETY_LEVEL override', () => {
     assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Bypasses found on camera during the CodeSecCon 2026 demo takes: bash grep
+// read .env straight past the cat-only patterns, and the built-in Grep tool
+// was not registered at all. Both stay covered here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('grep-env bash pattern (demo-take bypass 1)', () => {
+  it('blocks grep on .env', () => bashBlocked('grep -E "STRIPE_API_VERSION|STRIPE_SECRET_KEY" /app/.env', 'grep-env'));
+  it('blocks rg on .env', () => bashBlocked('rg SECRET_KEY .env', 'grep-env'));
+  it('blocks awk on .env', () => bashBlocked("awk '/KEY/' .env", 'grep-env'));
+  it('blocks fgrep on a nested .env', () => bashBlocked('fgrep KEY services/billing/.env', 'grep-env'));
+  it('allows grep on source files', () => bashAllowed('grep -rn TODO src/'));
+  it('allows grep on .env.example', () => bashAllowed('grep STRIPE .env.example'));
+  it('allows grep for the word env in code', () => bashAllowed('grep -n environment src/config.js'));
+});
+
+describe('Grep tool coverage (demo-take bypass 2)', () => {
+  it('blocks Grep with path at .env', () => {
+    const result = check('Grep', { pattern: 'STRIPE', path: '/app/.env' });
+    assert.strictEqual(result.blocked, true);
+    assert.strictEqual(result.pattern.id, 'env-file');
+  });
+  it('blocks Grep with a .env glob', () => {
+    const result = check('Grep', { pattern: 'KEY', glob: '**/.env' });
+    assert.strictEqual(result.blocked, true);
+  });
+  it('blocks Grep with include targeting .env', () => {
+    const result = check('Grep', { pattern: 'KEY', include: '.env' });
+    assert.strictEqual(result.blocked, true);
+  });
+  it('allows Grep on normal paths', () => {
+    const result = check('Grep', { pattern: 'TODO', path: 'src/' });
+    assert.strictEqual(result.blocked, false);
+  });
+  it('allows Grep on .env.example', () => {
+    const result = check('Grep', { pattern: 'STRIPE', path: '.env.example' });
+    assert.strictEqual(result.blocked, false);
+  });
+  // Documented residual: a pattern-only Grep with no path/glob searches the
+  // whole tree and can still surface secret lines. Blocking it would break
+  // normal use; the sensible mitigation is output-side, not pattern matching.
+  it('allows pattern-only Grep (documented residual)', () => {
+    const result = check('Grep', { pattern: 'TODO' });
+    assert.strictEqual(result.blocked, false);
+  });
+  it('end to end: Grep on .env denies with a search message', async () => {
+    const { output } = await runHook('Grep', { pattern: 'STRIPE', path: '/app/.env' });
+    assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
+    assert.match(output.hookSpecificOutput?.permissionDecisionReason || '', /search/i);
+  });
+});

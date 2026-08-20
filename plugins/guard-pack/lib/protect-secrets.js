@@ -103,6 +103,7 @@ const SENSITIVE_FILES = [
 // Bash patterns that expose or exfiltrate secrets
 const BASH_PATTERNS = [
   // CRITICAL
+  { level: 'critical', id: 'grep-env',           regex: /\b(grep|rg|egrep|fgrep|ag|awk|gawk)\b(?:"[^"]*"|'[^']*'|[^|;&])*\.env\b/i, reason: 'Reading .env via text tools exposes secrets' },
   { level: 'critical', id: 'cat-env',            regex: /\b(cat|less|head|tail|more|bat|view)\s+[^|;]*\.env\b/i,           reason: 'Reading .env file exposes secrets' },
   { level: 'critical', id: 'cat-ssh-key',        regex: /\b(cat|less|head|tail|more|bat)\s+[^|;]*(id_rsa|id_ed25519|id_ecdsa|id_dsa|\.pem|\.key)\b/i, reason: 'Reading private key' },
   { level: 'critical', id: 'cat-aws-creds',      regex: /\b(cat|less|head|tail|more)\s+[^|;]*\.aws\/credentials/i,         reason: 'Reading AWS credentials' },
@@ -185,6 +186,12 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
 }
 
 function check(toolName, toolInput, safetyLevel = SAFETY_LEVEL) {
+  if (toolName === 'Grep') {
+    const candidates = [toolInput.path, toolInput.glob, toolInput.include].filter(Boolean);
+    const target = candidates.find(c => SENSITIVE_FILES.some(s => s.regex.test(c))) || candidates[0] || '';
+    toolInput = { file_path: target };
+    toolName = 'Read';
+  }
   if (['Read', 'Edit', 'Write'].includes(toolName)) {
     return checkFilePath(toolInput?.file_path, safetyLevel);
   }
@@ -202,7 +209,7 @@ async function main() {
     const data = JSON.parse(input);
     const { tool_name, tool_input, session_id, cwd, permission_mode } = data;
 
-    if (!['Read', 'Edit', 'Write', 'Bash'].includes(tool_name)) {
+    if (!['Read', 'Edit', 'Write', 'Bash', 'Grep'].includes(tool_name)) {
       return console.log('{}');
     }
 
@@ -215,7 +222,7 @@ async function main() {
       const target = tool_input?.file_path || tool_input?.command?.slice(0, 100);
       log({ level: shouldAsk ? 'ASK' : 'BLOCKED', id: p.id, priority: p.level, decision, tool: tool_name, target, session_id, cwd, permission_mode });
 
-      const action = { Read: 'read', Edit: 'modify', Write: 'write to', Bash: 'execute' }[tool_name];
+      const action = { Read: 'read', Edit: 'modify', Write: 'write to', Bash: 'execute', Grep: 'search' }[tool_name];
       return console.log(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
