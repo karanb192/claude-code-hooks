@@ -9,6 +9,8 @@
 
 **🌐 [Live site & catalog](https://karanb192.github.io/claude-code-hooks/)**
 
+Claude Code and agents like it run shell commands, edit files, and install packages on their own. claude-code-hooks enforces least privilege on that autonomy at runtime: every tool call passes through a `PreToolUse` or `PostToolUse` hook that allows, denies, or modifies it, with the reason fed back to the agent. Hooks run outside the model as separate processes, so prompt injection can't talk its way past them. The safety set blocks `.env` and secret exfiltration, `curl | sh`, `rm -rf`, force pushes to main, and tampering with the hook config itself; the rest of the catalog handles automation and notifications. Every hook is [mapped against the OWASP LLM Top 10 2026](docs/owasp-llm-top-10-2026.md).
+
 ### 🎬 Quick Demo
 
 <table>
