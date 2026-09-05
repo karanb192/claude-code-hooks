@@ -1,0 +1,22 @@
+{
+  "name": "cache-tax",
+  "description": "The comeback price of a cold prompt cache, shown before you pay it. A UserPromptSubmit guard warns (or refuses once) when your next message will re-write a lapsed 1-hour cache at up to 80x the read rate, a SessionStart hook prices a stale resume, and the same script is a one-line status line segment with the minutes left and the cold-comeback cost.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "cost",
+    "prompt-cache",
+    "cache",
+    "observability",
+    "statusline",
+    "userpromptsubmit",
+    "sessionstart"
+  ]
+}
