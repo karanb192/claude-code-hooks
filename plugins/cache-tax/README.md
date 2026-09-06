@@ -33,7 +33,7 @@ cache-tax: the 1h prompt cache lapsed 3h00m ago. This message re-writes 300,002 
 
 ## What Claude Code already does, and where this adds
 
-On `--resume` of a session older than its cache TTL, recent Claude Code versions (since 2.1.208) show their own dialog, "this session is N old and M tokens, we recommend resuming from a summary". That covers the resume path in tokens. cache-tax adds the dollar figure there, and covers the case that dialog cannot see: a session you left open, came back to after an hour, and typed into. Nothing native intervenes at that keystroke.
+On `--resume` of a session older than its cache TTL, recent Claude Code versions (seen on 2.1.261) show their own dialog, "this session is N old and M tokens, we recommend resuming from a summary". That covers the resume path in tokens. cache-tax adds the dollar figure there, and covers the case that dialog cannot see: a session you left open, came back to after an hour, and typed into. Nothing native intervenes at that keystroke.
 
 ## Status line segment
 
