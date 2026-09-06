@@ -15,7 +15,7 @@
  *                       /clear and hand off instead. Resend to proceed.
  *   SessionStart      - on resume or fork, prints what the first message will
  *                       cost, using the estimate Claude Code already computed.
- *   --statusline      - a one-line segment for your status line: minutes until
+ *   --statusline      - a one-line segment for your status line, minutes until
  *                       cold, context size, and the cold-comeback price. Reads
  *                       the native prompt_cache object when present (2.1.251+),
  *                       falls back to the transcript otherwise.
@@ -96,7 +96,7 @@ function parseUsageLine(line) {
   const input = Number(u.input_tokens) || 0;
   return {
     ts, model: msg.model || null, requestId: o.requestId || msg.id || null,
-    write, w5: cc.ephemeral_5m_input_tokens == null && cc.ephemeral_1h_input_tokens == null ? 0 : w5, w1,
+    write, w5, w1,
     read, input, ctx: write + read + input,
   };
 }
@@ -203,14 +203,14 @@ function fmtDur(sec) {
 function statusLine(payload, nowMs) {
   const pc = payload && payload.prompt_cache;
   const modelId = payload && payload.model && (payload.model.id || payload.model.display_name);
-  if (pc && typeof pc === 'object' && (pc.expires_at != null || pc.recache_tokens_if_cold != null)) {
+  if (pc && typeof pc === 'object' && pc.expires_at != null && pc.recache_tokens_if_cold != null) {
     const pr = priceFor(modelId);
     const ttl = pc.ttl || '1h';
     const tokens = Number(pc.recache_tokens_if_cold) || 0;
     const rate = pr ? (ttl === '5m' ? pr.write5m : pr.write1h) : null;
     const cold = rate == null ? null : tokens * rate / 1e6;
-    const leftSec = pc.expires_at != null ? Number(pc.expires_at) - nowMs / 1000 : null;
-    const warm = pc.warm !== false && leftSec != null && leftSec > 0;
+    const leftSec = Number(pc.expires_at) - nowMs / 1000;
+    const warm = pc.warm !== false && leftSec > 0;
     const cause = pc.last_miss_cause && Array.isArray(pc.last_miss_cause.causes) && pc.last_miss_cause.causes.length
       ? ' · last miss ' + pc.last_miss_cause.causes[0] : '';
     if (warm) return `cache ${fmtDur(leftSec)} left · ${fmtTok(tokens)} · cold costs ${fmtUsd(cold)}${cause}`;
@@ -233,6 +233,8 @@ function guardMessage(st) {
 
 /** UserPromptSubmit. Returns {exit, stdout, stderr}. */
 function guard(payload, nowMs) {
+  // Slash commands (/clear, /compact, /cache-tax:status) are not the message that pays.
+  if (payload && typeof payload.prompt === 'string' && payload.prompt.trimStart().startsWith('/')) return { exit: 0 };
   const u = readLastUsage(payload && payload.transcript_path);
   const st = stateFrom(u, nowMs);
   if (!st || !st.lapsed || st.ctx < BIG_TOKENS) return { exit: 0 };
@@ -317,8 +319,9 @@ function main() {
   const argv = process.argv.slice(2);
   const nowMs = Date.now();
   if (argv.includes('--render')) {
-    const payload = readStdin();
-    const tp = (payload && payload.transcript_path) || guessTranscript(process.cwd());
+    // Never reads stdin: the skill runs it with no payload and an inherited stdin could block.
+    const i = argv.indexOf('--transcript');
+    const tp = (i >= 0 && argv[i + 1]) || process.env.CLAUDE_TRANSCRIPT_PATH || guessTranscript(process.cwd());
     process.stdout.write(renderCard(tp, nowMs) + '\n');
     return 0;
   }

@@ -20,7 +20,9 @@ Restart Claude Code, done. (Or from a shell: `claude plugin install cache-tax@cl
 | UserPromptSubmit | sync, ~30 ms | Reads the newest usage block from the session transcript. If the cache has lapsed and the context is over `CACHE_TAX_BIG` tokens, shows the re-write cost as a warning. With `CACHE_TAX_BLOCK=1` it refuses the prompt once instead (exit 2); resend the same message to proceed, or `/clear` and start from a handoff note. |
 | SessionStart (`resume\|fork`) | sync | On a cold resume, prints the idle gap, the tokens the first message re-writes, and the dollar estimate Claude Code already computed (`estimated_cache_write_usd`, v2.1.251+). Falls back to the transcript on older versions. |
 
-`/cache-tax:status` renders the full card on demand: tier, warm or cold, context size, cold-comeback price, and this session's cache writes, reads and full re-writes so far.
+`/cache-tax:status` renders the full card on demand: tier, warm or cold, context size, cold-comeback price, and this session's cache writes, reads and full re-writes so far. From a shell, `node cache-tax.js --render --transcript <path>` renders the same card for any transcript; without `--transcript` it picks the newest transcript for the current directory.
+
+The guard ignores slash commands, so `/clear` and `/compact` never trigger it.
 
 ### The warning, verbatim
 
@@ -47,7 +49,7 @@ cache 47m left · 218k · cold costs $4.37 · last miss ttl_expired_1h
 cache COLD · next msg re-writes 218k = $4.37 · last miss ttl_expired_1h
 ```
 
-Already have a status line script? Pipe the same stdin into `cache-tax.js --statusline` and print its line as one more row.
+That path is the marketplace clone Claude Code keeps after `/plugin marketplace add`; the installed copy also lives under `~/.claude/plugins/cache/claude-code-hooks/cache-tax/<version>/`. Already have a status line script? Pipe the same stdin into `cache-tax.js --statusline` and print its line as one more row.
 
 ## Configuration
 

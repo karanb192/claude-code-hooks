@@ -131,6 +131,12 @@ describe('status line', () => {
     const line = statusLine({ transcript_path: p }, now);
     assert.match(line, /^cache LAPSED 2h00m ago · next msg re-writes 300k = \$6\.00$/);
   });
+  it('falls back to the transcript when the native object is incomplete (right after compaction)', () => {
+    const now = Date.now();
+    const p = writeTranscript(tmp, [{ ts: now - 60000, write: 1000, read: 99000 }]);
+    const line = statusLine({ transcript_path: p, model: { id: 'claude-fable-5-1' }, prompt_cache: { warm: true, ttl: '1h', expires_at: now / 1000 + 3540, recache_tokens_if_cold: null } }, now);
+    assert.match(line, /^cache 59m left · 100k · cold costs \$2\.00$/);
+  });
   it('prints a placeholder when nothing is known', () => {
     assert.strictEqual(statusLine({ transcript_path: path.join(tmp, 'missing.jsonl') }, Date.now()), 'cache ?');
   });
@@ -141,6 +147,12 @@ describe('guard (UserPromptSubmit)', () => {
     const now = Date.now();
     const p = writeTranscript(tmp, [{ ts: now - 60000, write: 1000, read: 299000 }]);
     assert.deepStrictEqual(guard({ transcript_path: p, session_id: 's1' }, now), { exit: 0 });
+  });
+  it('ignores slash commands even when cold', () => {
+    const now = Date.now();
+    const p = writeTranscript(tmp, [{ ts: now - 3 * HOUR, write: 1000, read: 299000 }]);
+    assert.deepStrictEqual(guard({ transcript_path: p, session_id: 's1', prompt: '/clear' }, now), { exit: 0 });
+    assert.notStrictEqual(guard({ transcript_path: p, session_id: 's1', prompt: 'hi' }, now).exit, undefined);
   });
   it('stays silent when the context is small', () => {
     const now = Date.now();
@@ -196,7 +208,7 @@ describe('card (--render)', () => {
     assert.match(card, /COLD, lapsed 2h00m ago/);
     assert.match(card, /cold cost   \$2\.01/);
     assert.match(card, /session     2 requests/);
-    const r = run({ transcript_path: p }, {}, ['--render']);
+    const r = run({}, {}, ['--render', '--transcript', p]);
     assert.strictEqual(r.code, 0);
     assert.match(r.out, /cache-tax ·/);
   });
