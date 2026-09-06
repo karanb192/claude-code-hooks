@@ -70,6 +70,14 @@ describe('transcript parsing', () => {
     assert.strictEqual(parseUsageLine('{"type":"user","message":{"usage":{}}}'), null);
     assert.strictEqual(parseUsageLine('not json "assistant" "usage"'), null);
   });
+  it('skips synthetic and zero-usage assistant entries', () => {
+    const synthetic = JSON.stringify({ type: 'assistant', timestamp: new Date(3000).toISOString(), message: { model: '<synthetic>', id: 'syn', usage: { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 } } });
+    assert.strictEqual(parseUsageLine(synthetic), null);
+    const p = writeTranscript(tmp, [{ ts: 1000, write: 10, read: 90000 }, synthetic]);
+    const u = readLastUsage(p);
+    assert.strictEqual(u.ts, 1000, 'the real turn, not the synthetic one after it');
+    assert.strictEqual(u.ctx, 90012);
+  });
   it('readLastUsage returns the newest block', () => {
     const p = writeTranscript(tmp, [{ ts: 1000, write: 10, read: 0 }, { ts: 2000, write: 5, read: 50 }]);
     const u = readLastUsage(p);

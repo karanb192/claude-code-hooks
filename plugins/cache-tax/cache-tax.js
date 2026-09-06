@@ -88,12 +88,17 @@ function parseUsageLine(line) {
   if (!u) return null;
   const ts = Date.parse(o.timestamp || '');
   if (!Number.isFinite(ts)) return null;
+  // Claude Code also writes local, synthetic assistant entries (orphaned-task
+  // notices, aborted turns) with model "<synthetic>" and all-zero usage. They
+  // carry a fresh timestamp and no context, so they must not count as a turn.
+  if (String(msg.model || '').startsWith('<')) return null;
   const cc = u.cache_creation || {};
   const write = Number(u.cache_creation_input_tokens) || 0;
   const w5 = Number(cc.ephemeral_5m_input_tokens) || 0;
   const w1 = Number(cc.ephemeral_1h_input_tokens) || 0;
   const read = Number(u.cache_read_input_tokens) || 0;
   const input = Number(u.input_tokens) || 0;
+  if (write + read + input === 0) return null;
   return {
     ts, model: msg.model || null, requestId: o.requestId || msg.id || null,
     write, w5, w1,
