@@ -31,6 +31,10 @@ cache-tax: the 1h prompt cache lapsed 3h00m ago. This message re-writes 300,002 
 (a warm turn would have cost $0.08). If most of that context is stale, /clear and start from a handoff note instead.
 ```
 
+## What Claude Code already does, and where this adds
+
+On `--resume` of a session older than its cache TTL, recent Claude Code versions (since 2.1.208) show their own dialog, "this session is N old and M tokens, we recommend resuming from a summary". That covers the resume path in tokens. cache-tax adds the dollar figure there, and covers the case that dialog cannot see: a session you left open, came back to after an hour, and typed into. Nothing native intervenes at that keystroke.
+
 ## Status line segment
 
 Plugins cannot ship a status line, so wire this one yourself. The same script prints one line when called with `--statusline`, and it prefers the native `prompt_cache` object Claude Code sends to status lines since v2.1.251 (`expires_at`, `recache_tokens_if_cold`, `ttl`, `last_miss_cause`), which also means Claude Code re-runs it the moment the cache goes cold.
