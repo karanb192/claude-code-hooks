@@ -74,6 +74,19 @@ The tier comes from the newest assistant usage block in the transcript: `cache_c
 
 Hooks receive no token counts, so nothing here comes from the hook input except the resume fields Claude Code added in v2.1.251. Everything else is read from `transcript_path`, the file Claude Code is already writing.
 
+## Limits
+
+- Claude Code only. It reads the transcript Claude Code writes and the fields Claude Code sends; nothing here runs under Codex, Cursor or a raw API client.
+- Needs node on PATH, like every plugin in this marketplace.
+- The status line row is wired by hand (plugins cannot ship one), so the countdown is only as live as your `refreshInterval`; the cold flip itself is event-driven and needs no timer.
+- Dollars are API list prices. On a subscription they are the yardstick, not the bill, and how a cache write weighs against the 5-hour and weekly limits is not documented anywhere I could find.
+- The guard reads the newest real turn in the transcript. A session whose last request was a subagent's or a compaction is priced from that request, which can be smaller than the context you are about to send.
+- Two tests pin the false-positive side (warm session, small context) so the guard stays quiet where it should; there is no corpus beyond the test file.
+
+## Related tools
+
+[claude-hud](https://github.com/jarrodwatts/claude-hud) and [ccstatusline](https://github.com/Haleclipse/CCometixLine) show a cache countdown in the status line and price writes at a fixed 1.25x, the 5-minute tier. [cc-cache-alert](https://github.com/candiesdoodle/cc-cache-alert) pings your phone before the cache lapses so you can send a keepalive. [ccusage](https://github.com/ccusage/ccusage) prices the 1-hour tier correctly, after the fact, in reports. cache-tax is the one that puts a dollar figure on the keystroke and can refuse it.
+
 ## Data & privacy
 
 Reads the session transcript's usage blocks and timestamps, never message text. Writes a one-line JSON entry to `~/.claude/hooks-logs/<date>.jsonl` when it warns or blocks, and a tiny acknowledgement file under `~/.claude/cache-tax/` in block mode. No network calls (the script only uses `fs`, `path`, and `os`).
