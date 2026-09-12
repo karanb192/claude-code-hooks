@@ -79,7 +79,7 @@ Runs **before** Claude executes a tool. Can block or modify the operation.
 | Hook                                                          | Matcher                   | Description                                                      |
 | ------------------------------------------------------------- | ------------------------- | ---------------------------------------------------------------- |
 | [block-dangerous-commands](plugins/block-dangerous-commands)  | `Bash`                    | Blocks dangerous shell commands (rm -rf ~, fork bombs, curl\|sh, force push to main) before they run |
-| [protect-secrets](plugins/protect-secrets)                    | `Read\|Edit\|Write\|Bash` | Prevents reading/modifying/exfiltrating sensitive files          |
+| [protect-secrets](plugins/protect-secrets)                    | `Read\|Edit\|Write\|Bash\|Grep` | Prevents reading/modifying/exfiltrating sensitive files          |
 | [git-safety](plugins/git-safety)                              | `Bash`                    | Branch-aware git guardrails + destructive gh CLI protection      |
 | [protect-tests](plugins/protect-tests)                        | `Bash\|Edit\|MultiEdit\|Write` | Stops "fake green": blocks deleting, renaming-away, or skip/xfail-disabling tests |
 | [case-insensitive-guard](plugins/case-insensitive-guard)      | `Bash`                    | Stops `rm -rf content` destroying `Content` on case-insensitive filesystems (APFS/exFAT/NTFS): resolves real targets through `cd` chains and quotes |

@@ -139,7 +139,7 @@
     {
       "name": "protect-secrets",
       "source": "./plugins/protect-secrets",
-      "description": "Secrets firewall for tool calls: denies (or asks, per level) any Read/Edit/Write/Bash that would read, modify, or exfiltrate .env files, SSH keys, cloud credentials, or keystores, with tiered safety levels tunable via HOOK_SAFETY_LEVEL.",
+      "description": "Secrets firewall for tool calls: denies (or asks, per level) any Read/Edit/Write/Bash/Grep that would read, search, modify, or exfiltrate .env files, SSH keys, cloud credentials, or keystores, with tiered safety levels tunable via HOOK_SAFETY_LEVEL.",
       "category": "security",
       "tags": [
         "security",

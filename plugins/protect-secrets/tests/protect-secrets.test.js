@@ -9,6 +9,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 
 const {
@@ -18,6 +19,7 @@ const {
   LEVELS,
   SAFETY_LEVEL,
   ASK,
+  HANDLED_TOOLS,
   check,
   checkFilePath,
   checkBashCommand,
@@ -599,5 +601,62 @@ describe('Grep tool coverage (demo-take bypass 2)', () => {
     const { output } = await runHook('Grep', { pattern: 'STRIPE', path: '/app/.env' });
     assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
     assert.match(output.hookSpecificOutput?.permissionDecisionReason || '', /search/i);
+  });
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reported in #55: on Windows the tool hands the hook a backslash path, which
+// matched no pattern, and the search tool was never registered, so its
+// handling above could not run at all.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Windows paths (#55)', () => {
+  it('blocks a backslash .env path', () =>
+    fileBlocked('C:\\Users\\rossh\\AppData\\Local\\Temp\\protect-secrets-test\\.env', 'env-file'));
+  it('blocks a backslash .env.production path', () =>
+    fileBlocked('C:\\src\\app\\.env.production', 'env-file'));
+  it('blocks a backslash SSH private key', () =>
+    fileBlocked('C:\\Users\\me\\.ssh\\id_rsa', 'ssh-private-key'));
+  it('blocks backslash AWS credentials', () =>
+    fileBlocked('C:\\Users\\me\\.aws\\credentials', 'aws-credentials'));
+  it('blocks a backslash kube config', () =>
+    fileBlocked('C:\\Users\\me\\.kube\\config', 'kube-config'));
+  it('blocks a backslash .npmrc', () =>
+    fileBlocked('C:\\Users\\me\\.npmrc', 'npmrc'));
+  it('blocks a mixed-separator path', () =>
+    fileBlocked('C:/Users/me\\project\\.env', 'env-file'));
+  it('still allows a backslash .env.example', () =>
+    fileAllowed('C:\\src\\app\\.env.example'));
+  it('still allows ordinary backslash source paths', () =>
+    fileAllowed('C:\\src\\app\\config.js'));
+  it('blocks a backslash path through the search tool', () => {
+    const result = check('Grep', { pattern: 'API_KEY', path: 'C:\\app\\.env' });
+    assert.strictEqual(result.blocked, true);
+    assert.strictEqual(result.pattern.id, 'env-file');
+  });
+  it('end to end: a backslash .env read is denied', async () => {
+    const { output } = await runHook('Read', {
+      file_path: 'C:\\Users\\rossh\\AppData\\Local\\Temp\\protect-secrets-test\\.env',
+    });
+    assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
+    assert.match(output.hookSpecificOutput?.permissionDecisionReason || '', /env-file/);
+  });
+});
+
+describe('hook registration (#55)', () => {
+  it('hooks.json registers exactly the tools the hook inspects', () => {
+    const config = JSON.parse(
+      fs.readFileSync(path.join(__dirname, '..', 'hooks', 'hooks.json'), 'utf8')
+    );
+    const entries = config.hooks?.PreToolUse || [];
+    assert.strictEqual(entries.length, 1, 'expected a single PreToolUse registration');
+    const matched = entries[0].matcher.split('|');
+    assert.deepStrictEqual(
+      [...matched].sort(),
+      [...HANDLED_TOOLS].sort(),
+      'a tool handled in check() but missing from the matcher never reaches the hook, ' +
+        'and a tool in the matcher that check() ignores costs a node start per call'
+    );
   });
 });

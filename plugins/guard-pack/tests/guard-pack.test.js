@@ -15,7 +15,7 @@ const os = require('node:os');
 
 const PACK_DIR = path.join(__dirname, '..');
 const SCRIPT_PATH = path.join(PACK_DIR, 'guard-pack.js');
-const { GUARDS } = require(SCRIPT_PATH);
+const { GUARDS, PACK_TOOLS } = require(SCRIPT_PATH);
 
 const TMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-pack-test-'));
 
@@ -124,6 +124,20 @@ describe('Integration: verdicts through the pack', () => {
     assert.match(reasonOf(output), /\[env-file\] Cannot read:/);
   });
 
+  // #55: the pack matched no search tool, so protect-secrets' handling of it
+  // was unreachable here too, and a Windows path matched no pattern at all.
+  it('protect-secrets: a search of .env is denied with the Cannot-search phrasing', async () => {
+    const { output } = await runHook(payload('Grep', { pattern: 'API_KEY', path: '/app/.env' }));
+    assert.strictEqual(decisionOf(output), 'deny');
+    assert.match(reasonOf(output), /\[env-file\] Cannot search:/);
+  });
+
+  it('protect-secrets: a backslash .env read is denied', async () => {
+    const { output } = await runHook(payload('Read', { file_path: 'C:\\\\Users\\\\me\\\\project\\\\.env' }));
+    assert.strictEqual(decisionOf(output), 'deny');
+    assert.match(reasonOf(output), /\[env-file\] Cannot read:/);
+  });
+
   it('protect-tests: deleting a test dir denied with its advice line', async () => {
     const { output } = await runHook(payload('Bash', { command: 'rm -rf tests/' }));
     assert.strictEqual(decisionOf(output), 'deny');
@@ -211,5 +225,7 @@ describe('Integration: robustness', () => {
 test('meta: the pack advertises exactly one PreToolUse registration', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(PACK_DIR, 'hooks', 'hooks.json'), 'utf8'));
   assert.deepStrictEqual(Object.keys(manifest.hooks), ['PreToolUse']);
-  assert.strictEqual(manifest.hooks.PreToolUse[0].matcher, 'Bash|Read|Edit|MultiEdit|Write');
+  // Derived, not spelled out: a tool the pack learns to inspect has to reach
+  // it through the matcher, or its handling is dead code (#55).
+  assert.deepStrictEqual(manifest.hooks.PreToolUse[0].matcher.split('|'), PACK_TOOLS);
 });
