@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Protect Secrets - PreToolUse Hook for Read|Edit|Write|Bash
+ * Protect Secrets - PreToolUse Hook for Read|Edit|Write|Bash|Grep
  * Prevents reading, modifying, or exfiltrating sensitive files.
  * Logs to: ~/.claude/hooks-logs/
  *
@@ -26,7 +26,7 @@
  * {
  *   "hooks": {
  *     "PreToolUse": [{
- *       "matcher": "Read|Edit|Write|Bash",
+ *       "matcher": "Read|Edit|Write|Bash|Grep",
  *       "hooks": [{ "type": "command", "command": "node /path/to/protect-secrets.js" }]
  *     }]
  *   }
@@ -35,6 +35,12 @@
 
 const fs = require('fs');
 const path = require('path');
+
+// Tools this hook inspects. The plugin's hooks/hooks.json matcher must list
+// exactly these: a tool that reaches check() but is missing from the matcher
+// is never sent to the hook, so its handling here is dead code (#55). A repo
+// test pins the two together.
+const HANDLED_TOOLS = ['Read', 'Edit', 'Write', 'Bash', 'Grep'];
 
 // Safety level: override via HOOK_SAFETY_LEVEL ('critical' | 'high' | 'strict').
 // Anything else (or unset) falls back to the default so a typo can never
@@ -156,15 +162,26 @@ function log(data) {
   } catch {}
 }
 
+// Tool-provided paths carry the host separator, so on Windows `file_path` is
+// `C:\\Users\\me\\project\\.env`. Every pattern above anchors its path boundary
+// on `/`, so a backslash path matched none of them and walked straight past
+// the guard (#55). Match on a separator-normalized copy: the hook only ever
+// reads the path, never opens it, so the rewrite is local to matching.
+function toPosixPath(filePath) {
+  return typeof filePath === 'string' ? filePath.replace(/\\/g, '/') : filePath;
+}
+
 function isAllowlisted(filePath) {
-  return filePath && ALLOWLIST.some(p => p.test(filePath));
+  const target = toPosixPath(filePath);
+  return target && ALLOWLIST.some(p => p.test(target));
 }
 
 function checkFilePath(filePath, safetyLevel = SAFETY_LEVEL) {
-  if (!filePath || isAllowlisted(filePath)) return { blocked: false, pattern: null };
+  const target = toPosixPath(filePath);
+  if (!target || isAllowlisted(target)) return { blocked: false, pattern: null };
   const threshold = LEVELS[safetyLevel] || 2;
   for (const p of SENSITIVE_FILES) {
-    if (LEVELS[p.level] <= threshold && p.regex.test(filePath)) {
+    if (LEVELS[p.level] <= threshold && p.regex.test(target)) {
       return { blocked: true, pattern: p };
     }
   }
@@ -188,7 +205,7 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
 function check(toolName, toolInput, safetyLevel = SAFETY_LEVEL) {
   if (toolName === 'Grep') {
     const candidates = [toolInput.path, toolInput.glob, toolInput.include].filter(Boolean);
-    const target = candidates.find(c => SENSITIVE_FILES.some(s => s.regex.test(c))) || candidates[0] || '';
+    const target = candidates.find(c => SENSITIVE_FILES.some(s => s.regex.test(toPosixPath(c)))) || candidates[0] || '';
     toolInput = { file_path: target };
     toolName = 'Read';
   }
@@ -209,7 +226,7 @@ async function main() {
     const data = JSON.parse(input);
     const { tool_name, tool_input, session_id, cwd, permission_mode } = data;
 
-    if (!['Read', 'Edit', 'Write', 'Bash', 'Grep'].includes(tool_name)) {
+    if (!HANDLED_TOOLS.includes(tool_name)) {
       return console.log('{}');
     }
 
@@ -243,6 +260,7 @@ if (require.main === module) {
 } else {
   module.exports = {
     SENSITIVE_FILES, BASH_PATTERNS, ALLOWLIST, LEVELS, SAFETY_LEVEL, ASK,
-    check, checkFilePath, checkBashCommand, isAllowlisted,
+    HANDLED_TOOLS,
+    check, checkFilePath, checkBashCommand, isAllowlisted, toPosixPath,
   };
 }
