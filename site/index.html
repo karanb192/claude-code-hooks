@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>claude-code-hooks: guardrails for the Claude Code agent loop</title>
-<meta name="description" content="Tested hooks that intercept the Claude Code agent loop: read stdin, exit 0 to pass or exit 2 to block. Twenty-one installable plugins: /plugin marketplace add karanb192/claude-code-hooks, then /plugin install <name>@claude-code-hooks.">
+<meta name="description" content="Tested hooks that intercept the Claude Code agent loop: read stdin, exit 0 to pass or exit 2 to block. Twenty-two installable plugins: /plugin marketplace add karanb192/claude-code-hooks, then /plugin install <name>@claude-code-hooks.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;450;500;600&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
@@ -339,7 +339,7 @@
       <p class="hero-deck">
         Small programs that watch what <b>Claude Code</b> is about to do, and step in.
         Block a destructive command. Refuse to read a secret. Stage and format an edit.
-        Ping you on Slack. Twenty-one <b>exhaustively tested</b> plugins, each one command to install.
+        Ping you on Slack. Twenty-two <b>exhaustively tested</b> plugins, each one command to install.
       </p>
       <div class="cta-row">
         <a class="btn btn-primary" href="#marketplace">
@@ -671,7 +671,7 @@
     <div class="sec-head">
       <div>
         <div class="kicker">The marketplace</div>
-        <h2>Twenty-one plugins. One command each.</h2>
+        <h2>Twenty-two plugins. One command each.</h2>
         <p style="font-family:var(--mono);font-size:.76rem;color:var(--faint);margin-top:.7rem">The <a href="#catalog" style="color:var(--pass);border-bottom:1px solid var(--pass-dim)">guardrail twelve ↑</a> plus these eight workflow plugins, the subagent spawn cap, and the seven-in-one guard pack.</p>
       </div>
       <div class="aside">node · MIT<br>/plugin install</div>
@@ -759,7 +759,7 @@
       <!-- 22 -->
       <article class="pcard obs">
         <h3><span class="no">22</span>subagent-spawn-cap</h3>
-        <p>Per-session subagent spawn budget: asks at 20, denies at 60, nested fan-outs included. The total cap Claude Code 2.1.224 dropped, back under your control.</p>
+        <p>Per-session subagent spawn budget: asks at 20 and every 10 after, denies at 60, nested fan-outs included. The total cap Claude Code 2.1.224 dropped, back under your control.</p>
         <span class="cmd">/plugin install subagent-spawn-cap@claude-code-hooks</span>
         <div class="events"><span class="tag evt">PreToolUse</span></div>
       </article>

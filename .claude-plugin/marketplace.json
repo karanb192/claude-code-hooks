@@ -206,7 +206,7 @@
     {
       "name": "subagent-spawn-cap",
       "source": "./plugins/subagent-spawn-cap",
-      "description": "Per-session subagent spawn budget: a PreToolUse guard on the Agent tool that counts every spawn (nested fan-outs included) in an append-only ledger, asks at SPAWN_CAP_ASK (default 20) and denies at SPAWN_CAP_DENY (default 60). The total cap Claude Code 2.1.224 removed, back under the user's control.",
+      "description": "Per-session subagent spawn budget: a PreToolUse guard on the Agent tool that counts every spawn (nested fan-outs included) in an append-only ledger, asks at SPAWN_CAP_ASK (default 20) and every SPAWN_CAP_ASK_STEP after it (default 10), and denies at SPAWN_CAP_DENY (default 60). The total cap Claude Code 2.1.224 removed, back under the user's control.",
       "category": "safety",
       "tags": [
         "safety",

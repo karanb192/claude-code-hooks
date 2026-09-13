@@ -1,6 +1,6 @@
 {
   "name": "subagent-spawn-cap",
-  "description": "A total-spawns-per-session budget for subagents: a PreToolUse guard on the Agent tool that counts every spawn in a session (nested spawns from inside subagents included), asks for approval at SPAWN_CAP_ASK (default 20) and denies at SPAWN_CAP_DENY (default 60). Closes the gap left when Claude Code 2.1.224 removed its native per-session spawn cap; the native concurrency and depth caps bound the rate, not the total. Append-only per-session ledger, so parallel spawns in one turn are all counted. SPAWN_CAP_ALLOW=true lets one call through.",
+  "description": "A total-spawns-per-session budget for subagents: a PreToolUse guard on the Agent tool that counts every spawn in a session (nested spawns from inside subagents included), asks for approval at SPAWN_CAP_ASK (default 20) and every SPAWN_CAP_ASK_STEP spawns after it (default 10), and denies at SPAWN_CAP_DENY (default 60): prompts at 20, 30, 40, 50, hard stop at 60. Closes the gap left when Claude Code 2.1.224 removed its native per-session spawn cap; the native concurrency and depth caps bound the rate, not the total. Append-only per-session ledger, so parallel spawns in one turn are all counted. SPAWN_CAP_ALLOW=true lets spawns through while set, still counted.",
   "version": "1.0.0",
   "author": {
     "name": "Karan Bansal",

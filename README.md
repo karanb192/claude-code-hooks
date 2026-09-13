@@ -1,6 +1,6 @@
 # claude-code-hooks
 
-🪝 Ready-to-use hooks for Claude Code, shipped as a 21-plugin installable marketplace: safety, automation, notifications, and more.
+🪝 Ready-to-use hooks for Claude Code, shipped as a 22-plugin installable marketplace: safety, automation, notifications, and more.
 
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -24,7 +24,7 @@ Claude Code and agents like it run shell commands, edit files, and install packa
   </tr>
 </table>
 
-A growing collection of tested, documented hooks. Every one installs as a one-command Claude Code plugin: run `/plugin marketplace add karanb192/claude-code-hooks`, then `/plugin install <name>@claude-code-hooks`; see [Install as a plugin](#-install-as-a-plugin) for the 21-plugin catalog. Prefer to own the file? Every plugin's script also works standalone: copy `plugins/<name>/<name>.js` and wire it into `settings.json` yourself ([Quick Start](#-quick-start)).
+A growing collection of tested, documented hooks. Every one installs as a one-command Claude Code plugin: run `/plugin marketplace add karanb192/claude-code-hooks`, then `/plugin install <name>@claude-code-hooks`; see [Install as a plugin](#-install-as-a-plugin) for the 22-plugin catalog. Prefer to own the file? Every plugin's script also works standalone: copy `plugins/<name>/<name>.js` and wire it into `settings.json` yourself ([Quick Start](#-quick-start)).
 
 ---
 
@@ -85,7 +85,7 @@ Runs **before** Claude executes a tool. Can block or modify the operation.
 | [protect-tests](plugins/protect-tests)                        | `Bash\|Edit\|MultiEdit\|Write` | Stops "fake green": blocks deleting, renaming-away, or skip/xfail-disabling tests |
 | [case-insensitive-guard](plugins/case-insensitive-guard)      | `Bash`                    | Stops `rm -rf content` destroying `Content` on case-insensitive filesystems (APFS/exFAT/NTFS): resolves real targets through `cd` chains and quotes |
 | [config-guard](plugins/config-guard)                          | `Bash\|Edit\|MultiEdit\|Write` | Who guards the guards: blocks the agent from tampering with its own guardrail config (settings.json, `.claude/hooks/`, hooks.json, `.mcp.json`, plugin manifests). Reads always pass. See [Config-Change](#config-change) for why and for its out-of-band sibling. |
-| [subagent-spawn-cap](plugins/subagent-spawn-cap)              | `Agent\|Task`            | Per-session subagent spawn budget: asks at spawn 20, denies at 60, nested fan-outs included. The total cap Claude Code 2.1.224 removed, back under your control. |
+| [subagent-spawn-cap](plugins/subagent-spawn-cap)              | `Agent\|Task`            | Per-session subagent spawn budget: asks at spawn 20 and every 10 after, denies at 60, nested fan-outs included. The total cap Claude Code 2.1.224 removed, back under your control. |
 
 ### Post-Tool-Use
 
@@ -173,7 +173,7 @@ This repo is a **Claude Code plugin marketplace**, so you can install a single h
 | [protect-tests](plugins/protect-tests) | Stops "fake green": blocks deleting, renaming-away, or skip/xfail-disabling tests instead of fixing the code (PreToolUse on `Bash\|Edit\|MultiEdit\|Write`) | `HOOK_SAFETY_LEVEL=critical\|high\|strict` (default `high`); `/plugin install protect-tests@claude-code-hooks` |
 | [case-insensitive-guard](plugins/case-insensitive-guard) | Stops `rm -rf content` destroying `Content` on case-insensitive filesystems (APFS/exFAT/NTFS): resolves real targets through `cd` chains, quotes, and subshells | `HOOK_SAFETY_LEVEL=critical\|high\|strict` (default `high`); ask mode via `HOOK_ASK_CRITICAL/HIGH/STRICT=true` |
 | [config-guard](plugins/config-guard) | Who guards the guards: blocks the agent from tampering with its own guardrail config (settings files, `.claude/hooks/`, hooks.json, `.mcp.json`, plugin manifests, `claude config/mcp/plugin` CLI writes); reads always pass, creating a protected file counts as mutation. | `HOOK_SAFETY_LEVEL` (critical/high/strict, default high), `CONFIG_GUARD_ALLOW=true` escape hatch, `HOOK_ASK_*` ask mode |
-| [subagent-spawn-cap](plugins/subagent-spawn-cap) | Per-session subagent spawn budget: counts every `Agent` call (nested spawns included) in an append-only ledger, asks at 20 and denies at 60. The total cap Claude Code 2.1.224 removed, back under your control; the native concurrency and depth caps bound the rate, not the total. | `SPAWN_CAP_ASK` (default 20), `SPAWN_CAP_DENY` (default 60), `SPAWN_CAP_ALLOW=true` one-call escape hatch |
+| [subagent-spawn-cap](plugins/subagent-spawn-cap) | Per-session subagent spawn budget: counts every `Agent` call (nested spawns included) in an append-only ledger, asks at 20, 30, 40, 50 and denies at 60. The total cap Claude Code 2.1.224 removed, back under your control; the native concurrency and depth caps bound the rate, not the total. | `SPAWN_CAP_ASK` (default 20), `SPAWN_CAP_ASK_STEP` (default 10), `SPAWN_CAP_DENY` (default 60), `SPAWN_CAP_ALLOW=true` bypass while set; unattended runs: set ASK equal to DENY |
 | [config-watch](plugins/config-watch) | Makes every mid-session config change loudly visible (default) or blocks it outright, catching out-of-band settings.json writes like the CHAINDROP worm's persistence trick. | `CONFIG_WATCH_BLOCK=true` to block (exit 2); `policy_settings` always warns; or `/plugin install config-watch@claude-code-hooks` |
 | [auto-stage](plugins/auto-stage) | Automatically git stages files after Claude modifies them, so `git status` shows exactly what Claude touched | No config needed; `/plugin install auto-stage@claude-code-hooks`; logs to `~/.claude/hooks-logs/` |
 | [format-code](plugins/format-code) | Auto-formats Python (ruff) and JS/TS/HTML/JSON/MD/YAML (prettier) after every Write/Edit | `/plugin install format-code@claude-code-hooks`; needs `uv` and `npx` on PATH, no env vars |
