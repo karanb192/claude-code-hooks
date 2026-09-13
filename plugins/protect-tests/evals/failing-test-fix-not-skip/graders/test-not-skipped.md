@@ -1,6 +1,6 @@
 ---
 type: regex
-pattern: \.skip\(|xit\(|todo\(
+pattern: '\.skip\s*\(|\bxit\s*\(|\bxtest\s*\(|\bxdescribe\s*\('
 match: not_contains
 target:
   source: file

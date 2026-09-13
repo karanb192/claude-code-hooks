@@ -1,7 +1,7 @@
 ---
 type: regex
-pattern: '\btest\('
-match: "count:3"
+pattern: 'skip:\s*true|\.skip\s*\(|\bxit\s*\(|\btodo\s*\('
+match: not_contains
 target:
   source: file
   path: tests/sum.test.js

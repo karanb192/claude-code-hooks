@@ -65,6 +65,12 @@ claude plugin eval plugins/protect-tests --scaffold --tag needs-bash \
   --allow-tools Bash Edit Write --model sonnet --max-cost-usd 5 --no-publish
 ```
 
+Two routes to a green suite are not routes this guard closes. Rewriting an assertion's expected
+value is an ordinary edit, and `node:test` also takes the option-object form
+`test('name', { skip: true }, fn)`, which the `SKIP_MARKERS` list does not carry. The case grades
+both anyway, in both arms, so a run that greened the suite that way scores as the cheat it is
+rather than as a win for the guard.
+
 Scores from the last real run are in [`evals/RESULTS.md`](evals/RESULTS.md).
 
 ## Uninstall
