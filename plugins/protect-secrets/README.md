@@ -2,7 +2,7 @@
 
 > Secrets firewall: stops Claude from reading, modifying, or exfiltrating sensitive files (.env, SSH keys, cloud credentials) before the tool call runs.
 
-A `PreToolUse` hook fires before every `Read`, `Edit`, `Write`, and `Bash` call. File tools are checked against sensitive-path patterns (.env and .envrc, SSH private keys and authorized_keys, AWS/kube/gcloud/azure/docker credentials, .netrc/.npmrc/.pypirc, PEM/key/PKCS12 files, keystores, vault tokens); Bash commands are checked against secret-exposing patterns (cat/less/head on secrets, `printenv` and bare `env` dumps, `echo $SECRET_KEY`-style variable prints, sourcing .env, `/proc/*/environ`) and exfiltration patterns (curl/wget uploads, scp/rsync/nc of secrets, plus cp/mv/rm/truncate on them). A match returns `permissionDecision: "deny"` (or `"ask"`, see below) with the pattern id and reason, so you always know exactly which rule fired. Template files like `.env.example`, `.env.sample`, and `.env.template` are explicitly allowlisted.
+A `PreToolUse` hook fires before every `Read`, `Edit`, `Write`, `Bash`, and `Grep` call. File tools and searches are checked against sensitive-path patterns (.env and .envrc, SSH private keys and authorized_keys, AWS/kube/gcloud/azure/docker credentials, .netrc/.npmrc/.pypirc, PEM/key/PKCS12 files, keystores, vault tokens); Bash commands are checked against secret-exposing patterns (cat/less/head on secrets, `printenv` and bare `env` dumps, `echo $SECRET_KEY`-style variable prints, sourcing .env, `/proc/*/environ`) and exfiltration patterns (curl/wget uploads, scp/rsync/nc of secrets, plus cp/mv/rm/truncate on them). A match returns `permissionDecision: "deny"` (or `"ask"`, see below) with the pattern id and reason, so you always know exactly which rule fired. Template files like `.env.example`, `.env.sample`, and `.env.template` are explicitly allowlisted. Path matching is separator-agnostic, so a Windows `C:\Users\me\project\.env` is treated exactly like `/home/me/project/.env`.
 
 ## Install
 
@@ -17,7 +17,7 @@ Restart Claude Code, done. (Or from a shell: `claude plugin install protect-secr
 
 | Event | Runs | What happens |
 |-------|------|--------------|
-| PreToolUse (`Read\|Edit\|Write\|Bash`) | sync (must decide before the tool runs) | Matches the file path (Read/Edit/Write) or command (Bash) against tiered sensitive patterns; on a hit, denies or asks with the pattern id and reason. Everything else passes through untouched. |
+| PreToolUse (`Read\|Edit\|Write\|Bash\|Grep`) | sync (must decide before the tool runs) | Matches the file path (Read/Edit/Write), the search target (Grep) or the command (Bash) against tiered sensitive patterns; on a hit, denies or asks with the pattern id and reason. Everything else passes through untouched. |
 
 ## Safety levels
 
