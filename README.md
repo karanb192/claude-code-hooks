@@ -35,7 +35,7 @@ A growing collection of tested, documented hooks. Every one installs as a one-co
 - [Quick Start](#-quick-start)
 - [Safety Levels](#-safety-levels)
 - [Testing](#-testing)
-- [Token diet](#-token-diet)
+- [Token Diet](#-token-diet)
 - [Configuration Reference](#-configuration-reference)
 - [Contributing](#-contributing)
 - [License](#-license)
@@ -328,7 +328,7 @@ A synchronous hook adds its full runtime to every matching tool call. Measured w
 
 ---
 
-## 🍃 Token diet
+## 🍃 Token Diet
 
 Not every context problem needs a hook. [docs/token-diet.md](docs/token-diet.md) is three presets (light, lean, strict) built from settings Claude Code already ships: the per-Read token cap, the subagent model and concurrency knobs, the auto-compact window, and `bashOutputMaxChars`, each linked to where it is documented, with a table of what they replace from [Spotify's shunt](https://github.com/spotify/portal-ai-plugins/tree/main/plugins/shunt) plugin.
 Measure before you change anything: [`bench/read-replay`](bench/read-replay/) replays your own transcripts and prints how many Read calls a 350-line gate would have caught and what share of your context tokens they were. One command, nothing leaves your machine.
