@@ -5,26 +5,22 @@
  * individually costs seven Node startups per matching tool call (about
  * 35 ms each, see bench/RESULTS.md); this pack pays one.
  *
- * Evaluation order (cheap string checks first, filesystem and subprocess
- * work last): subagent-spawn-cap (one cached module load and one
- * tool-name compare for anything but the Agent tool; on a spawn it is
- * the only guard that applies),
- * config-guard, block-dangerous-commands, protect-secrets, protect-tests,
- * git-safety, case-insensitive-guard. The first blocking verdict wins
- * and is emitted in that guard's own output format, suffixed
- * "(via guard-pack)". A guard that throws is logged and skipped so one
- * broken guard can never switch off the other six (fail-open per guard,
- * same convention as the standalone hooks).
+ * Evaluation order (cheap checks first, filesystem and subprocess work
+ * last): subagent-spawn-cap, config-guard, block-dangerous-commands,
+ * protect-secrets, protect-tests, git-safety, case-insensitive-guard. The
+ * first blocking verdict wins and is emitted in that guard's own output
+ * format, suffixed "(via guard-pack)". A guard that throws is logged and
+ * skipped so one broken guard can never switch off the other six
+ * (fail-open per guard, same convention as the standalone hooks).
  *
  * The guard scripts in lib/ are byte-identical copies of the individual
  * plugin scripts; a repo test pins them, so they cannot drift. All the
  * guards' env vars pass straight through, since the modules read them
- * directly: HOOK_SAFETY_LEVEL (applies to the six pattern guards
- * uniformly; subagent-spawn-cap ignores it), HOOK_ASK_CRITICAL /
- * HOOK_ASK_HIGH / HOOK_ASK_STRICT, CONFIG_GUARD_ALLOW, and the spawn
- * cap's SPAWN_CAP_ASK / SPAWN_CAP_DENY / SPAWN_CAP_ALLOW. Want different
- * safety levels per guard? Install the individual guard plugins instead
- * of the pack.
+ * directly: HOOK_SAFETY_LEVEL (the six pattern guards uniformly),
+ * HOOK_ASK_CRITICAL / HOOK_ASK_HIGH / HOOK_ASK_STRICT, CONFIG_GUARD_ALLOW,
+ * and SPAWN_CAP_ASK / SPAWN_CAP_ASK_STEP / SPAWN_CAP_DENY / SPAWN_CAP_ALLOW.
+ * Want different safety levels per guard? Install the individual guard
+ * plugins instead of the pack.
  *
  * Do NOT install this pack alongside the individual guard plugins (or a
  * manual registration of any of the seven): every duplicated guard runs
@@ -51,16 +47,11 @@ const LOCK_EMOJIS = { critical: '🔒', high: '🛡️', strict: '⚠️' };
 
 // Each entry mirrors its guard's main(): same tool filter, same escape
 // hatches, same reason template. run(mod, tool, input, cwd, event) returns
-// null (pass) or { id, level, ask, reason, log? } with reason lacking only
-// the emoji prefix and `log` holding extra fields for the audit line.
-// `event` is the whole hook payload, for guards that key on more than the
-// tool (the spawn cap needs session_id).
+// null (pass) or { id, level, ask, reason, log? }; reason lacks only the
+// emoji prefix, log adds fields to the audit line, event is the full payload.
 const GUARDS = [
   {
-    // First because its filter is one string compare, and on a spawn call
-    // none of the pattern guards apply anyway. SPAWN_CAP_ALLOW is handled
-    // inside the module (the bypassed spawn is still counted and the module
-    // writes the ALLOW_OVERRIDE audit line itself), so no skip().
+    // One string compare for other tools; the only guard that applies on a spawn.
     name: 'subagent-spawn-cap',
     emojis: { critical: '🚨', high: '⚠️', strict: '⚠️' },
     run(mod, tool, input, cwd, event) {
@@ -153,8 +144,7 @@ function log(data) {
 }
 
 // Evaluate all guards for one event; returns null or the winning verdict
-// with its guard attached. `event` is the full hook payload (optional for
-// callers that only have the tool). Exported for tests.
+// with its guard attached. Exported for tests.
 function evaluate(toolName, toolInput, cwd, event) {
   for (const g of GUARDS) {
     try {
