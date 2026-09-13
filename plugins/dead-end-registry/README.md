@@ -37,6 +37,20 @@ No environment variables. Behavior is governed by in-source constants with these
 
 State is stored per-project (keyed by a hash of the repo path) under `~/.claude/dead-end-registry/<repo>.jsonl`, outside the repo so nothing is accidentally committed.
 
+## Evals
+
+Two cases under [`evals/`](evals) measure the `UserPromptSubmit` leg, the part no unit test can reach: whether the injected card changes what Claude does. `dead-end-card-steers` seeds a reverted attempt and then asks for that same change, grading whether Claude surfaces the prior attempt instead of silently redoing it, and `unrelated-prompt-no-card` is the control that proves a prompt with no keyword overlap gets no card in either arm.
+
+Both cases are read-only, so the suite needs no tool grants. Run it from the repo root:
+
+```bash
+claude plugin eval plugins/dead-end-registry --scaffold --tag read-only --model sonnet --max-cost-usd 3 --no-publish
+```
+
+`--scaffold` is required: each case's `fixture.sh` writes the workspace file the prompt refers to, plus one registry entry under the run's throwaway home, keyed to the temp workspace exactly the way the hook keys it. The runner discards that home after every run, so nothing reaches your own `~/.claude/`. No case needs Bash, Edit or Write. The `PreToolUse` leg returns `ask`, which a headless run cannot surface, so it stays out of scope.
+
+Scores per case, with and without the plugin: [`evals/RESULTS.md`](evals/RESULTS.md).
+
 ## Data & privacy
 
 Recorded: short summaries and truncated code snapshots of reverted approaches, plus reason, date, and an estimated token cost, all mined from your local transcripts. Everything stays on your machine: the hook makes no network calls.
