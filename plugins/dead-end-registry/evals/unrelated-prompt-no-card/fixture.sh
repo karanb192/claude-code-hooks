@@ -4,6 +4,13 @@
 # with the entry, so the hook must stay silent.
 set -e
 
+# Hard stop if this is a real home. The runner hands every run a fresh throwaway
+# HOME, so ~/.claude/projects can only exist when the script was launched by hand.
+if [ -d "${HOME}/.claude/projects" ]; then
+  echo "fixture.sh refuses to run: \$HOME looks like a real home (${HOME}/.claude/projects exists)" >&2
+  exit 1
+fi
+
 MARKER="cch-eval-unrelated-prompt-no-card"
 REGISTRY_DIR="${HOME}/.claude/dead-end-registry"
 SUMMARY="switched fetchWithRetry in client.js to exponential backoff with jitter"

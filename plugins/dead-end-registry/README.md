@@ -47,7 +47,7 @@ Both cases are read-only, so the suite needs no tool grants. Run it from the rep
 claude plugin eval plugins/dead-end-registry --scaffold --tag read-only --model sonnet --max-cost-usd 3 --no-publish
 ```
 
-`--scaffold` is required: each case's `fixture.sh` writes the workspace file the prompt refers to, plus one registry entry under the run's throwaway home, keyed to the temp workspace exactly the way the hook keys it. The runner discards that home after every run, so nothing reaches your own `~/.claude/`. No case needs Bash, Edit or Write. The `PreToolUse` leg returns `ask`, which a headless run cannot surface, so it stays out of scope.
+`--scaffold` is required: each case's `fixture.sh` writes the workspace file the prompt refers to, plus one registry entry under the run's throwaway home, keyed to the temp workspace exactly the way the hook keys it. The runner builds a fresh home per run and discards it afterwards, so nothing reaches your own `~/.claude/`, and each fixture also refuses to run outright if `$HOME/.claude/projects` exists, so launching one by hand cannot overwrite a real registry either. No case needs Bash, Edit or Write. The `PreToolUse` leg returns `ask`, which a headless run cannot surface, so it stays out of scope.
 
 Scores per case, with and without the plugin: [`evals/RESULTS.md`](evals/RESULTS.md).
 
