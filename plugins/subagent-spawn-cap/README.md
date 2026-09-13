@@ -50,7 +50,7 @@ Hook processes inherit the environment Claude Code was launched with: set these 
 
 ## State
 
-One append-only JSONL per session at `~/.claude/subagent-spawn-cap/<session_id>.jsonl`, one line per allowed or asked spawn (`ts`, `n`, `decision`, `subagent_type`, `description` truncated to 80 chars, plus `agent_id` / `agent_type` inside subagents). Append-only because parallel tool calls in one turn fire parallel hook processes; `O_APPEND` writes survive that, a read-modify-write counter does not. Denied calls are not written. An asked call is written before you answer, so a declined ask still consumed one budget unit. Ledgers untouched for 7 days are pruned, at most once a day. Delete a session's file to reset its budget.
+One append-only JSONL per session at `~/.claude/subagent-spawn-cap/<session_id>.jsonl`, one line per allowed or asked spawn (`ts`, `n`, `decision`, `subagent_type`, `description` truncated to 80 chars, plus `agent_id` / `agent_type` inside subagents). Append-only because parallel tool calls in one turn fire parallel hook processes; `O_APPEND` writes survive that, a read-modify-write counter does not. Denied calls are not written. An asked call is written before you answer, so a declined ask still consumed one budget unit. Ledgers untouched for 7 days are pruned, at most once a day. Delete a session's file to reset its budget. Verdicts, `ALLOW_OVERRIDE` bypasses and config warnings go to `~/.claude/hooks-logs/`; the ledger never stores the prompt; no network calls.
 
 ## Known limits
 
@@ -58,12 +58,7 @@ One append-only JSONL per session at `~/.claude/subagent-spawn-cap/<session_id>.
 - Counts key on `session_id`, so a resumed session continues its count.
 - Parallel calls in one turn each read the count before any appends; a batch can overshoot a threshold by up to the native concurrency limit, and the next call is judged on the full count.
 - The ledger is a plain file; an agent with Bash could delete it. [config-guard](../config-guard) does not cover that directory yet.
-- Session ids are sanitised to `[A-Za-z0-9._-]` for the file name; ids differing only in other characters share a ledger. Real ids are UUIDs.
-- `O_APPEND` atomicity holds on macOS and Linux for lines this short; Windows makes no cross-process guarantee.
-
-## Data & privacy
-
-Verdicts (count, thresholds, session id, agent id and type), `ALLOW_OVERRIDE` bypasses and config warnings go to `~/.claude/hooks-logs/`. The ledger never stores the prompt. No network calls.
+- Session ids are sanitised to `[A-Za-z0-9._-]` for the file name (real ids are UUIDs); `O_APPEND` atomicity holds on macOS and Linux, Windows makes no cross-process guarantee.
 
 ## Uninstall
 
