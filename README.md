@@ -35,6 +35,7 @@ A growing collection of tested, documented hooks. Every one installs as a one-co
 - [Quick Start](#-quick-start)
 - [Safety Levels](#-safety-levels)
 - [Testing](#-testing)
+- [Token diet](#-token-diet)
 - [Configuration Reference](#-configuration-reference)
 - [Contributing](#-contributing)
 - [License](#-license)
@@ -324,6 +325,13 @@ node --test plugins/block-dangerous-commands/tests/block-dangerous-commands.test
 ## ⚡ Performance
 
 A synchronous hook adds its full runtime to every matching tool call. Measured with a fresh Node process per call and a realistic event on stdin, every guard hook here holds a 34-38 ms median on an Apple M3 Pro (Node v26). The two PostToolUse hooks that spawn real subprocesses cost more: auto-stage 68 ms with two git calls, format-code 114 ms with two ruff runs. The harness and committed numbers for all seven hooks live in [`bench/`](bench/); reproduce with `node bench/run.mjs`.
+
+---
+
+## 🍃 Token diet
+
+Not every context problem needs a hook. [docs/token-diet.md](docs/token-diet.md) is three presets (light, lean, strict) built from settings Claude Code already ships: the per-Read token cap, the subagent model and concurrency knobs, the auto-compact window, and `bashOutputMaxChars`, each linked to where it is documented, with a table of what they replace from [Spotify's shunt](https://github.com/spotify/portal-ai-plugins/tree/main/plugins/shunt) plugin.
+Measure before you change anything: [`bench/read-replay`](bench/read-replay/) replays your own transcripts and prints how many Read calls a 350-line gate would have caught and what share of your context tokens they were. One command, nothing leaves your machine.
 
 ---
 
