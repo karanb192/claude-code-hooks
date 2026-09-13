@@ -4,44 +4,79 @@
 // Read calls would it have caught, and what share of your context tokens were
 // they? Nothing is sent anywhere; the script only reads ~/.claude/projects.
 // See bench/read-replay/README.md for how to read the numbers.
-//
-// Usage: node bench/read-replay/replay.mjs [--days=30] [--projects=<dir>]
-//                                          [--min-lines=350] [--json]
 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-// ---------------------------------------------------------------------------
-// Flags
-// ---------------------------------------------------------------------------
+const USAGE = `Usage: node bench/read-replay/replay.mjs [options]
 
-function flag(name, fallback) {
-  const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
-  return hit ? hit.slice(name.length + 3) : fallback;
-}
+  --days=<n>         window in days, by transcript mtime (default 30)
+  --projects=<dir>   transcript root (default ~/.claude/projects)
+  --min-lines=<n>    gate threshold in lines, shunt's SHUNT_MIN_LINES (default 350)
+  --json             print the raw object instead of the markdown receipt
+  --help, -h         show this help
 
-const DAYS = Number(flag('days', '30'));
-const MIN_LINES = Number(flag('min-lines', '350')); // shunt's SHUNT_MIN_LINES default
-const PROJECTS = flag('projects', path.join(os.homedir(), '.claude', 'projects'));
-const JSON_OUT = process.argv.includes('--json');
+Prints a receipt of how many Read calls a whole-file gate over --min-lines
+would have caught in your own transcripts, and what share of your context
+tokens they were. Token counts are estimated as ceil(chars / 4).`;
 
 // A whole-file read also qualifies when the returned text is huge even if the
 // line count is small (minified bundles, long single lines). Same rule as the
 // original forecast script.
 const BIG_RESULT_CHARS = 100_000;
 
-if (!Number.isFinite(DAYS) || DAYS <= 0) fail('invalid --days: expected a positive number, e.g. --days=30');
-if (!Number.isInteger(MIN_LINES) || MIN_LINES < 1) fail('invalid --min-lines: expected a positive integer, e.g. --min-lines=350');
+// ---------------------------------------------------------------------------
+// Flags
+// ---------------------------------------------------------------------------
 
 function fail(msg) {
   console.error(msg);
   process.exit(1);
 }
 
+// Strict argv parsing: a typo like --dyas=5 or a space-separated --days 30
+// must not silently fall back to the defaults.
+function parseArgs(argv) {
+  const opts = { days: '30', projects: path.join(os.homedir(), '.claude', 'projects'), 'min-lines': '350', json: false };
+  const valueFlags = new Set(['days', 'projects', 'min-lines']);
+  for (const arg of argv) {
+    if (arg === '--help' || arg === '-h') {
+      console.log(USAGE);
+      process.exit(0);
+    }
+    const m = /^--([^=]+)(?:=(.*))?$/.exec(arg);
+    if (!m) fail(`unexpected argument: ${arg}\n\n${USAGE}`);
+    const [, name, value] = m;
+    if (name === 'json' && value === undefined) { opts.json = true; continue; }
+    if (!valueFlags.has(name)) fail(`unknown option: ${arg}\n\n${USAGE}`);
+    if (value === undefined) fail(`${arg} needs a value, e.g. ${arg}=<value>\n\n${USAGE}`);
+    opts[name] = value;
+  }
+  return opts;
+}
+
+const opts = parseArgs(process.argv.slice(2));
+const isPositiveInt = (s) => /^\d+$/.test(s) && Number(s) > 0;
+if (!isPositiveInt(opts.days)) fail('invalid --days: expected a positive whole number, e.g. --days=30');
+if (!isPositiveInt(opts['min-lines'])) fail('invalid --min-lines: expected a positive whole number, e.g. --min-lines=350');
+const DAYS = Number(opts.days);
+const MIN_LINES = Number(opts['min-lines']);
+const PROJECTS = opts.projects;
+const JSON_OUT = opts.json;
+
 // ---------------------------------------------------------------------------
 // Transcript discovery
 // ---------------------------------------------------------------------------
+
+// Every fs call here tolerates a missing, unreadable or wrongly typed entry:
+// one locked project dir must not abort the whole run.
+function readdirSafe(dir) {
+  try { return fs.readdirSync(dir); } catch { return []; }
+}
+function statSafe(p) {
+  try { return fs.statSync(p); } catch { return null; }
+}
 
 // Layout under ~/.claude/projects:
 //   <project-slug>/<session>.jsonl                  main transcript
@@ -50,20 +85,19 @@ function fail(msg) {
 function discoverTranscripts(root, cutoffMs) {
   const files = [];
   const pushIfRecent = (fp) => {
-    let st;
-    try { st = fs.statSync(fp); } catch { return; }
-    if (st.isFile() && st.mtimeMs > cutoffMs) files.push(fp);
+    const st = statSafe(fp);
+    if (st && st.isFile() && st.mtimeMs > cutoffMs) files.push(fp);
   };
-  for (const project of fs.readdirSync(root)) {
+  for (const project of readdirSafe(root)) {
     const projectDir = path.join(root, project);
-    let st;
-    try { st = fs.statSync(projectDir); } catch { continue; }
-    if (!st.isDirectory()) continue;
-    for (const entry of fs.readdirSync(projectDir)) {
+    const st = statSafe(projectDir);
+    if (!st || !st.isDirectory()) continue;
+    for (const entry of readdirSafe(projectDir)) {
       if (entry.endsWith('.jsonl')) pushIfRecent(path.join(projectDir, entry));
       const subagentDir = path.join(projectDir, entry, 'subagents');
-      if (!fs.existsSync(subagentDir)) continue;
-      for (const sub of fs.readdirSync(subagentDir)) {
+      const subSt = statSafe(subagentDir);
+      if (!subSt || !subSt.isDirectory()) continue;
+      for (const sub of readdirSafe(subagentDir)) {
         if (sub.endsWith('.jsonl')) pushIfRecent(path.join(subagentDir, sub));
       }
     }
@@ -83,7 +117,7 @@ const estimateTokens = (text) => Math.ceil(text.length / 4);
 function resultText(block) {
   if (typeof block.content === 'string') return block.content;
   if (Array.isArray(block.content)) {
-    return block.content.map((part) => (part.type === 'text' ? part.text : '')).join('');
+    return block.content.map((part) => (part && part.type === 'text' ? part.text : '')).join('');
   }
   return '';
 }
@@ -114,6 +148,8 @@ function newTotals() {
     outputTokens: 0,
     reads: 0,
     imageReads: 0,
+    pdfReads: 0,
+    errorReads: 0,
     targetedReads: 0,
     smallFullReads: 0,
     qualifyingReads: 0,
@@ -121,6 +157,8 @@ function newTotals() {
     qualifyingCarriedTokens: 0,
     bashReads: 0,
     bashReadTokens: 0,
+    atMentionFiles: 0,
+    atMentionTokens: 0,
     histogram: {},
     versions: new Set(),
   };
@@ -141,10 +179,11 @@ function replayTranscript(text, t) {
     pending = [];
   };
 
-  for (const line of text.split('\n')) {
+  for (const line of text.replace(/^﻿/, '').split('\n')) {
     if (!line) continue;
     let o;
     try { o = JSON.parse(line); } catch { continue; }
+    if (!o || typeof o !== 'object') continue; // a bare `null` or number parses fine; skip it
 
     if (typeof o.version === 'string') t.versions.add(o.version);
 
@@ -153,14 +192,26 @@ function replayTranscript(text, t) {
       continue;
     }
 
+    // Files pulled in with @-mention arrive as attachments, not Read calls.
+    // Counted separately; they never enter the Read denominator.
+    if (o.type === 'attachment' && o.attachment && o.attachment.type === 'file') {
+      t.atMentionFiles++;
+      const content = o.attachment.content && o.attachment.content.file && o.attachment.content.file.content;
+      if (typeof content === 'string') t.atMentionTokens += estimateTokens(content);
+      continue;
+    }
+
     if (o.type === 'assistant' && o.message) {
       const m = o.message;
       // One API response can be logged as several assistant lines (one per
       // content block) that share a message id and usage: count usage once.
-      // Models starting with "<" are synthetic local messages with no API call.
+      // A line with usage but no id cannot be a duplicate of anything, so it
+      // counts. Models starting with "<" are synthetic local messages with no
+      // API call.
       const synthetic = String(m.model || '').startsWith('<');
-      if (m.usage && !synthetic && !seenMessageIds.has(m.id)) {
-        seenMessageIds.add(m.id);
+      const duplicate = m.id != null && seenMessageIds.has(m.id);
+      if (m.usage && !synthetic && !duplicate) {
+        if (m.id != null) seenMessageIds.add(m.id);
         const u = m.usage;
         const input = u.input_tokens || 0;
         const cacheW = u.cache_creation_input_tokens || 0;
@@ -174,7 +225,7 @@ function replayTranscript(text, t) {
       }
       if (Array.isArray(m.content)) {
         for (const b of m.content) {
-          if (b.type !== 'tool_use') continue;
+          if (!b || b.type !== 'tool_use') continue;
           if (b.name === 'Read') toolUseById[b.id] = { read: b.input || {} };
           if (b.name === 'Bash') toolUseById[b.id] = { bash: String((b.input && b.input.command) || '') };
         }
@@ -184,12 +235,15 @@ function replayTranscript(text, t) {
 
     if (o.type === 'user' && o.message && Array.isArray(o.message.content)) {
       for (const b of o.message.content) {
-        if (b.type !== 'tool_result') continue;
+        if (!b || b.type !== 'tool_result') continue;
         const meta = toolUseById[b.tool_use_id];
         if (!meta) continue;
         const txt = resultText(b);
         const tokens = estimateTokens(txt);
 
+        // Deliberate divergence from forecast.js, which tested `if (meta.bash)`
+        // and so let a Bash call with an empty command fall through and be
+        // counted as a Read. Any Bash call is a Bash call.
         if (meta.bash !== undefined) {
           if (BASH_READ.test(meta.bash) && !PIPED_OR_REDIRECTED.test(meta.bash)) {
             t.bashReads++;
@@ -201,8 +255,16 @@ function replayTranscript(text, t) {
         // A Read call paired with its result.
         t.reads++;
         const r = o.toolUseResult || {};
+        if (b.is_error) {
+          t.errorReads++; // missing file, permission denied, blocked by a hook: nothing entered context
+          continue;
+        }
         if (r.type === 'image' || (r.file && r.file.base64)) {
           t.imageReads++; // a gate on line counts has nothing to say about images
+          continue;
+        }
+        if (r.type === 'pdf') {
+          t.pdfReads++; // same for PDFs
           continue;
         }
         const input = meta.read;
@@ -211,7 +273,9 @@ function replayTranscript(text, t) {
           continue;
         }
         const file = r.file || {};
-        const linesReturned = file.numLines || (txt.match(/\n/g) || []).length;
+        // Fallback when the result carries no line metadata: count the lines
+        // of the returned text itself.
+        const linesReturned = file.numLines || (txt ? txt.split('\n').length : 0);
         const bucket = lineBucket(linesReturned);
         t.histogram[bucket] = (t.histogram[bucket] || 0) + 1;
 
@@ -233,7 +297,8 @@ function replayTranscript(text, t) {
 // Main
 // ---------------------------------------------------------------------------
 
-if (!fs.existsSync(PROJECTS) || !fs.statSync(PROJECTS).isDirectory()) {
+const projectsStat = statSafe(PROJECTS);
+if (!projectsStat || !projectsStat.isDirectory()) {
   fail(`projects dir not found: ${PROJECTS}\nPass --projects=<dir> or run Claude Code once so ~/.claude/projects exists.`);
 }
 
@@ -251,7 +316,9 @@ for (const fp of files) {
 }
 
 const seconds = (Date.now() - started) / 1000;
-const nonImageReads = Math.max(1, totals.reads - totals.imageReads);
+// The gate can only ever act on text reads that were not already paged, so
+// images, PDFs and errored reads leave the denominator.
+const textReads = Math.max(1, totals.reads - totals.imageReads - totals.pdfReads - totals.errorReads);
 const ctx = Math.max(1, totals.contextTokens);
 const pct = (num, den, digits) => Number(((100 * num) / den).toFixed(digits));
 
@@ -270,11 +337,13 @@ const result = {
   reads: {
     total: totals.reads,
     images: totals.imageReads,
+    pdfs: totals.pdfReads,
+    errors: totals.errorReads,
     targeted: totals.targetedReads,
     smallFull: totals.smallFullReads,
     qualifying: totals.qualifyingReads,
-    pctQualifyingOfNonImage: pct(totals.qualifyingReads, nonImageReads, 1),
-    pctTargetedOfNonImage: pct(totals.targetedReads, nonImageReads, 1),
+    pctQualifyingOfText: pct(totals.qualifyingReads, textReads, 1),
+    pctTargetedOfText: pct(totals.targetedReads, textReads, 1),
     histogram: totals.histogram,
   },
   wouldGate: {
@@ -284,6 +353,7 @@ const result = {
     pctCarriedOfContext: pct(totals.qualifyingCarriedTokens, ctx, 2),
   },
   bashReads: { calls: totals.bashReads, tokens: totals.bashReadTokens },
+  atMentions: { files: totals.atMentionFiles, tokens: totals.atMentionTokens },
 };
 
 if (JSON_OUT) {
@@ -321,12 +391,14 @@ function receipt(r) {
     ['Transcripts scanned', `${n(r.scan.files)} files, ${n(r.scan.megabytes)} MB, ${r.scan.seconds.toFixed(1)} s`],
     ['Claude Code versions seen', versionCell],
     ['Read calls paired with a result', n(r.reads.total)],
-    ['Image reads (excluded)', n(r.reads.images)],
-    ['Targeted reads, offset or limit set (never gated)', `${n(r.reads.targeted)} (${r.reads.pctTargetedOfNonImage}% of non-image)`],
-    [`Reads that would qualify (> ${n(r.window.minLines)} lines or > ${n(BIG_RESULT_CHARS)} chars)`, `${n(r.reads.qualifying)} (${r.reads.pctQualifyingOfNonImage}% of non-image)`],
+    ['Image and PDF reads (excluded)', `${n(r.reads.images + r.reads.pdfs)} (${n(r.reads.images)} images, ${n(r.reads.pdfs)} PDFs)`],
+    ['Errored reads (excluded)', n(r.reads.errors)],
+    ['Targeted reads, offset or limit set (never gated)', `${n(r.reads.targeted)} (${r.reads.pctTargetedOfText}% of text reads)`],
+    [`Reads that would qualify (> ${n(r.window.minLines)} lines or > ${n(BIG_RESULT_CHARS)} chars)`, `${n(r.reads.qualifying)} (${r.reads.pctQualifyingOfText}% of text reads)`],
     ['One-shot tokens gated (est.)', `${n(r.wouldGate.oneShotTokens)} = ${r.wouldGate.pctOneShotOfContext}% of ${short(r.tokens.context)} context tokens`],
     ['Carried to the next compact (upper bound, est.)', `${n(r.wouldGate.carriedTokens)} = ${r.wouldGate.pctCarriedOfContext}% of context tokens`],
     ['Unpiped Bash reads (cat, head, tail, sed -n)', `${n(r.bashReads.calls)} calls, ${n(r.bashReads.tokens)} tokens (est.)`],
+    ['@-mentioned files (attachments, not Read calls, not gated)', `${n(r.atMentions.files)} files, ${n(r.atMentions.tokens)} tokens (est.)`],
   ];
   return [
     `## Read-gate replay receipt (last ${r.window.days} days)`,
