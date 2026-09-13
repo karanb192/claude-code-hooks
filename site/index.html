@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>claude-code-hooks: guardrails for the Claude Code agent loop</title>
-<meta name="description" content="Tested hooks that intercept the Claude Code agent loop: read stdin, exit 0 to pass or exit 2 to block. Twenty-one installable plugins: /plugin marketplace add karanb192/claude-code-hooks, then /plugin install <name>@claude-code-hooks.">
+<meta name="description" content="Tested hooks that intercept the Claude Code agent loop: read stdin, exit 0 to pass or exit 2 to block. Twenty-two installable plugins: /plugin marketplace add karanb192/claude-code-hooks, then /plugin install <name>@claude-code-hooks.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;450;500;600&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
@@ -339,7 +339,7 @@
       <p class="hero-deck">
         Small programs that watch what <b>Claude Code</b> is about to do, and step in.
         Block a destructive command. Refuse to read a secret. Stage and format an edit.
-        Ping you on Slack. Twenty-one <b>exhaustively tested</b> plugins, each one command to install.
+        Ping you on Slack. Twenty-two <b>exhaustively tested</b> plugins, each one command to install.
       </p>
       <div class="cta-row">
         <a class="btn btn-primary" href="#marketplace">
@@ -352,8 +352,8 @@
         </a>
       </div>
       <div class="hero-stats">
-        <div class="s"><b>21</b><span>Plugins</span></div>
-        <div class="s"><b class="accent">1570</b><span>Tests pass</span></div>
+        <div class="s"><b>22</b><span>Plugins</span></div>
+        <div class="s"><b class="accent">1922</b><span>Tests pass</span></div>
         <div class="s"><b>~35<small style="font-size:.7rem">ms</small></b><span>Per call</span></div>
         <div class="s"><b>0 · 2</b><span>Exit codes</span></div>
       </div>
@@ -671,8 +671,8 @@
     <div class="sec-head">
       <div>
         <div class="kicker">The marketplace</div>
-        <h2>Twenty-one plugins. One command each.</h2>
-        <p style="font-family:var(--mono);font-size:.76rem;color:var(--faint);margin-top:.7rem">The <a href="#catalog" style="color:var(--pass);border-bottom:1px solid var(--pass-dim)">guardrail twelve ↑</a> plus these seven workflow plugins and the six-in-one guard pack.</p>
+        <h2>Twenty-two plugins. One command each.</h2>
+        <p style="font-family:var(--mono);font-size:.76rem;color:var(--faint);margin-top:.7rem">The <a href="#catalog" style="color:var(--pass);border-bottom:1px solid var(--pass-dim)">guardrail twelve ↑</a> plus these eight workflow plugins, the subagent spawn cap, and the seven-in-one guard pack.</p>
       </div>
       <div class="aside">node · MIT<br>/plugin install</div>
     </div>
@@ -685,9 +685,9 @@
       <div class="term-body">
         <span class="l comment"># 1 · add the marketplace, once</span>
         <span class="l prompt">/plugin marketplace add karanb192/claude-code-hooks</span>
-        <span class="l comment"># 2 · install any of the twenty-one by name</span>
+        <span class="l comment"># 2 · install any of the twenty-two by name</span>
         <span class="l prompt">/plugin install block-dangerous-commands@claude-code-hooks</span>
-        <span class="l verdict pass"><span class="badge">✓ ready</span><span class="code">21 plugins available</span></span>
+        <span class="l verdict pass"><span class="badge">✓ ready</span><span class="code">22 plugins available</span></span>
         <span class="l comment"># or from your shell: claude plugin marketplace add · claude plugin install</span>
       </div>
     </div>
@@ -752,8 +752,15 @@
       <!-- 21 -->
       <article class="pcard obs">
         <h3><span class="no">21</span>guard-pack</h3>
-        <p>All six guards in one Node process: 38ms per tool call instead of 199ms for six separate installs.</p>
+        <p>All seven guards in one Node process: one ~35ms Node startup per tool call instead of seven.</p>
         <span class="cmd">/plugin install guard-pack@claude-code-hooks</span>
+        <div class="events"><span class="tag evt">PreToolUse</span></div>
+      </article>
+      <!-- 22 -->
+      <article class="pcard obs">
+        <h3><span class="no">22</span>subagent-spawn-cap</h3>
+        <p>Per-session subagent spawn budget: asks at 20 and every 10 after, denies at 60, nested fan-outs included. The total cap Claude Code 2.1.224 dropped, back under your control.</p>
+        <span class="cmd">/plugin install subagent-spawn-cap@claude-code-hooks</span>
         <div class="events"><span class="tag evt">PreToolUse</span></div>
       </article>
     </div>
@@ -880,7 +887,7 @@
   <!-- ═══════ CLOSING ═══════ -->
   <section class="close">
     <h2>Put a hook in the loop.</h2>
-    <p>Twenty-one tested plugins: twelve guardrails, eight workflow tools, and a six-in-one guard pack, MIT licensed, no framework to learn. Install one and restart Claude Code, and you're protected in under a minute.</p>
+    <p>Twenty-two tested plugins: twelve guardrails, a subagent spawn cap, eight workflow tools, and a seven-in-one guard pack, MIT licensed, no framework to learn. Install one and restart Claude Code, and you're protected in under a minute.</p>
     <div class="cta-row">
       <a class="btn btn-primary" href="https://github.com/karanb192/claude-code-hooks">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.5 2 2 6.6 2 12.2c0 4.5 2.9 8.3 6.8 9.7.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.4-3.4-1.4-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.6 2.4 1.1 3 .9.1-.7.4-1.1.6-1.4-2.2-.3-4.6-1.1-4.6-5 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.7 0 0 .8-.3 2.7 1a9.3 9.3 0 0 1 5 0c1.9-1.3 2.7-1 2.7-1 .5 1.4.2 2.4.1 2.7.6.7 1 1.6 1 2.7 0 3.9-2.4 4.7-4.6 5 .4.3.7.9.7 1.9v2.8c0 .3.2.6.7.5 3.9-1.4 6.8-5.2 6.8-9.7C22 6.6 17.5 2 12 2Z"/></svg>

@@ -21,7 +21,7 @@ No dependencies. HOME is pointed at a throwaway temp dir during the run, so hook
 
 ## Scope
 
-Covers the ten PreToolUse/PostToolUse hook plugins in `plugins/`: block-dangerous-commands, case-insensitive-guard, git-safety, protect-secrets, protect-tests, config-guard, instructions-audit (its PreToolUse enforcement arm, measured with no lockdown flag set), guard-pack (all six guards in one process; compare its row against the sum of the six individual guard rows), auto-stage, format-code. The format-code payload writes a small unformatted Python file, so `uv` and `ruff` must be on PATH (CI installs them); without them the run aborts instead of reporting a no-op.
+Covers the eleven PreToolUse/PostToolUse hook plugins in `plugins/`: block-dangerous-commands, case-insensitive-guard, git-safety, protect-secrets, protect-tests, config-guard, instructions-audit (its PreToolUse enforcement arm, measured with no lockdown flag set), guard-pack (all seven guards in one process, driven with a Bash payload so it exercises the six pattern guards; compare its row against the sum of those six individual rows), subagent-spawn-cap (an `Agent` payload with the caps raised far above the sample count, so every sample takes the real read-and-append path and none returns a verdict), auto-stage, format-code. The format-code payload writes a small unformatted Python file, so `uv` and `ruff` must be on PATH (CI installs them); without them the run aborts instead of reporting a no-op.
 
 Excluded:
 
@@ -30,3 +30,7 @@ Excluded:
 - `utils/event-logger.py` and the remaining plugins: out of scope for this harness.
 
 Committed numbers: [RESULTS.md](RESULTS.md).
+
+## Read-gate replay
+
+A second, unrelated measurement lives in [`read-replay/`](read-replay/): it replays your own Claude Code transcripts and reports how many Read calls a Spotify-shunt-style 350-line gate would have caught, and what share of your context tokens they were. Run `node bench/read-replay/replay.mjs`; presets built on the native knobs are in [docs/token-diet.md](../docs/token-diet.md).

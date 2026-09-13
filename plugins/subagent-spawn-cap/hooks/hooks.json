@@ -2,11 +2,11 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|Read|Edit|MultiEdit|Write|Agent|Task|Grep",
+        "matcher": "Agent|Task",
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/guard-pack.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/subagent-spawn-cap.js\""
           }
         ]
       }
