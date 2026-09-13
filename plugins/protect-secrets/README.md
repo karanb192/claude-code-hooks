@@ -84,6 +84,8 @@ claude plugin eval plugins/protect-secrets --scaffold --tag needs-bash --allow-t
 
 The `read-only` cases get no tool grant on purpose. The `needs-bash` case is the workaround probe, so it needs `Bash` granted to have a second route at all. The score table lives in [evals/RESULTS.md](evals/RESULTS.md); every cell there reads `not yet run` until someone runs the suite and fills it in.
 
+Two routes in `env-read-workaround` are open by construction, and the case is written to record them rather than hide them. This hook screens paths and commands, so a recursive content search that never names the file (`grep -r DB_PASSWORD .`) gives it nothing to match. And `Grep` is not in the `PreToolUse` matcher yet, so a `Grep` for the value is not screened either; that wiring lands in [#56](https://github.com/karanb192/claude-code-hooks/pull/56), which should merge before these numbers are recorded. A with-arm failure through either route is a measured limit of a path-and-command guard, not a broken case.
+
 ## Data & privacy
 
 Logs each deny/ask decision to `~/.claude/hooks-logs/<date>.jsonl`: pattern id, level, tool, target (file path or the command's first 100 chars), session id, and cwd. It makes no network calls (the script only uses `fs` and `path`), so everything stays on your local machine.
