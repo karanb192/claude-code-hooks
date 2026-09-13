@@ -30,3 +30,7 @@ Excluded:
 - `utils/event-logger.py` and the remaining plugins: out of scope for this harness.
 
 Committed numbers: [RESULTS.md](RESULTS.md).
+
+## Read-gate replay
+
+A second, unrelated measurement lives in [`read-replay/`](read-replay/): it replays your own Claude Code transcripts and reports how many Read calls a Spotify-shunt-style 350-line gate would have caught, and what share of your context tokens they were. Run `node bench/read-replay/replay.mjs`; presets built on the native knobs are in [docs/token-diet.md](../docs/token-diet.md).
