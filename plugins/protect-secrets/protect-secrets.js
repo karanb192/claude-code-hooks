@@ -86,6 +86,7 @@ const SENSITIVE_FILES = [
   { level: 'high', id: 'azure-creds',            regex: /(?:^|\/)\.azure\/(credentials|accessTokens)/i,  reason: 'Azure credentials' },
   { level: 'high', id: 'docker-config',          regex: /(?:^|\/)\.docker\/config\.json$/,               reason: 'Docker config may contain registry auth' },
   { level: 'high', id: 'netrc',                  regex: /(?:^|\/)\.netrc$/,                              reason: '.netrc contains credentials' },
+  { level: 'high', id: 'git-credentials',        regex: /(?:^|\/)\.git-credentials$/,                    reason: '.git-credentials stores plaintext tokens' },
   { level: 'high', id: 'npmrc',                  regex: /(?:^|\/)\.npmrc$/,                              reason: '.npmrc may contain auth tokens' },
   { level: 'high', id: 'pypirc',                 regex: /(?:^|\/)\.pypirc$/,                             reason: '.pypirc contains PyPI credentials' },
   { level: 'high', id: 'gem-creds',              regex: /(?:^|\/)\.gem\/credentials$/,                   reason: 'RubyGems credentials' },
@@ -106,29 +107,119 @@ const SENSITIVE_FILES = [
 // into an external model (a model CLI, or a model API host via an HTTP
 // client). The regexes below are built from these shared fragments so each
 // pattern stays readable. README section "Delegation sinks" has the reasoning.
-const SINK_CLI = '(?:gemini|codex|llm|sgpt|aichat|openai|mods|fabric)';
-// A sink CLI in command position: line start, or after | ; & ( or a backtick,
-// optionally wrapped (sudo, npx, uvx, bunx, command, time) or given by path.
-// Never mid-word, so `npm run codex-lint` and `grep -r gemini src/` do not qualify.
-const SINK_CMD = '(?:^|[|;&(`])\\s*(?:(?:sudo|npx|uvx|bunx|command|time)\\s+)*(?:[^\\s"\';|&]*\\/)?' + SINK_CLI + '(?=\\s|$)';
-const SINK_HOST = '(?:generativelanguage\\.googleapis\\.com|aiplatform\\.googleapis\\.com|api\\.openai\\.com|[\\w.-]+\\.openai\\.azure\\.com|api\\.anthropic\\.com|openrouter\\.ai|api\\.mistral\\.ai|api\\.groq\\.com|api\\.together\\.xyz|api\\.deepseek\\.com|api\\.x\\.ai|api\\.cohere\\.com|api\\.perplexity\\.ai)';
-const HTTP_CMD = '\\b(?:curl|wget|http|xh)\\b';
-// Secret file names, same vocabulary as SENSITIVE_FILES, with an optional
-// directory prefix. .env.example-style templates are excluded here directly.
-const SECRET_NAME = '(?:\\.env(?:\\.(?!(?:example|sample|template|schema|defaults)\\b)[\\w.-]+)?(?![\\w.])|\\.envrc\\b|(?:secrets?|credentials?)\\.(?:json|ya?ml|toml)\\b|id_(?:rsa|ed25519|ecdsa|dsa)\\b|[^\\s"\';|&<>()]*\\.(?:pem|key|p12|pfx)\\b|\\.(?:netrc|npmrc|pypirc|pgpass)\\b|\\.aws\\/credentials\\b|\\.kube\\/config\\b)';
-const FILE_REF = '["\']?(?:[^\\s"\';|&<>()]*\\/)?';
-const SECRET_FILE = '(?:^|[\\s"\'=<@(])\\s*' + FILE_REF + SECRET_NAME;
-// Same vocabulary as echo-secret-var.
-const SECRET_VAR = '\\$\\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\\}?';
-// Ways a command takes a file's contents: @file (curl/httpie), < file,
-// $(cat file), $(< file), `cat file`, wget --post-file/--body-file.
-const FILE_BODY = '(?:@|(?<!<)<(?!<)\\s*|\\$\\(\\s*(?:cat|head|tail|<)\\s+|`\\s*(?:cat|head|tail)\\s+|--(?:post|body)-file[=\\s]+)';
-// Flags an HTTP client reads its request body from (used for the secret-var check).
+const SINK_CLI = '(?:gemini(?:-cli)?|codex|llm|sgpt|aichat|openai|mods|fabric)';
+// Where a sink CLI may start: line start, after | ; & ( a backtick or a quote
+// (bash -c "gemini ..."), or after do/then/else. Then any number of leading
+// env assignments (GEMINI_API_KEY=x gemini ...) and wrappers with their own
+// options (sudo -u me, npx -y, pnpm dlx, env FOO=bar, timeout 30, nice -n 5,
+// nohup, exec, command, time, xargs -I{}). The name may carry a path or an
+// npm scope (npx @google/gemini-cli) and must end at whitespace, a redirect
+// or the end of the string, so `npm run codex-lint`, `grep -r gemini src/`
+// and `docker run gemini-image` never qualify.
+const SINK_PREFIX = '(?:^|[|;&(`"\'!\\n]|\\b(?:do|then|else)\\b)\\s*'
+  + '(?:(?:sudo|npx|uvx|bunx|pnpm\\s+dlx|command|time|exec|nice|nohup|env|timeout|xargs)\\b[^;|&\\n]*?\\s+|[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*'
+  + '(?:[^\\s"\';|&]*\\/)?';
+const SINK_END = '(?=[\\s<]|$)';
+const SINK_CMD = SINK_PREFIX + SINK_CLI + SINK_END;
+const sinkCmd = (cli) => SINK_PREFIX + cli + SINK_END;
+// A command segment that treats balanced quotes as opaque units, so a file
+// name or a < inside a quoted prompt ("what is a .env file") is prose, not
+// an operand. Lazy: it stops at the first match of what follows.
+const SEG_QA = '(?:[^;|&\\n"\']|"[^"\\n]*"|\'[^\'\\n]*\')*?';
+// Commands whose stdout is the contents of the file they are given (readers,
+// decoders, decryptors, scripting one-liners). ssh -i, kubectl --kubeconfig
+// and openssl x509 -in use a secret file but do not print it.
+const CONTENT_CMD = '\\b(?:cat|tac|head|tail|bat|more|less|sops|gpg|age|base64|xxd|od|rev|sed|awk|grep|jq|yq|strings|openssl\\s+enc|python3?|node|ruby|perl)\\b';
+const SINK_HOST = '(?:generativelanguage\\.googleapis\\.com|aiplatform\\.googleapis\\.com|api\\.openai\\.com|[\\w.-]+\\.openai\\.azure\\.com|api\\.anthropic\\.com|openrouter\\.ai|api\\.mistral\\.ai|api\\.groq\\.com|api\\.together\\.xyz|api\\.deepseek\\.com|api\\.x\\.ai|api\\.cohere\\.com|api\\.perplexity\\.ai|api\\.fireworks\\.ai|api\\.cerebras\\.ai|router\\.huggingface\\.co|bedrock-runtime(?:-fips)?\\.[\\w-]+\\.amazonaws\\.com|integrate\\.api\\.nvidia\\.com|api\\.deepinfra\\.com)';
+// HTTP clients as a command word (never the "https" inside a URL).
+const HTTP_CMD = '(?<![\\w:/.-])(?:curl|curlie|wget|https?|xh)(?=\\s)';
+const HTTPIE_CMD = '(?<![\\w:/.-])(?:https?|xh)(?=\\s)';
+
+// Secret file names, derived from the critical and high entries of
+// SENSITIVE_FILES so the two lists cannot drift. Anchored patterns
+// ("(?:^|\/)name$") must start a path segment (FILE_DIR); suffix patterns
+// (.pem, keystores, service-account json) may end any token (FILE_ANY). The
+// .env entry swaps in a variant that skips the allowlisted templates, since
+// the command-level ALLOWLIST only matches a template that ends the command.
+const FILE_DIR = '["\']?(?:[^\\s"\';|&<>()]*\\/)?';
+const FILE_ANY = '["\']?[^\\s"\';|&<>()]*?';
+const ENV_FILE_NAME = '\\.env(?!\\.(?:example|sample|template|schema|defaults)\\b)(?:\\.[^/\\s"\']*)?(?![\\w.])';
+const PATH_ANCHOR = '(?:^|\\/)';
+function fileNameSource(p) {
+  if (p.id === 'env-file') return ENV_FILE_NAME;
+  return p.regex.source
+    .replace(/^\(\?:\^\|\\\/\)/, '')
+    .replace(/\$$/, '')
+    .replace(/\((?!\?)/g, '(?:')
+    .replace(/\[\^\/\]/g, '[^/\\s"\']')
+    .replace(/\.\*/g, '[^\\s"\']*');
+}
+const secretFiles = SENSITIVE_FILES.filter(p => p.level !== 'strict');
+const anchoredNames = secretFiles.filter(p => p.regex.source.startsWith(PATH_ANCHOR)).map(fileNameSource);
+const floatingNames = secretFiles.filter(p => !p.regex.source.startsWith(PATH_ANCHOR)).map(fileNameSource);
+// A glob that can expand to a secret: a hidden-file glob (.e*, .en?, .*) or
+// any glob under a credentials directory (~/.ssh/*, ~/.aws/*).
+const SECRET_GLOB = '(?:\\.[A-Za-z]{0,3}[*?]|\\.(?:ssh|aws|kube|gnupg|azure|docker|config\\/gcloud)\\/[^\\s"\']*[*?])';
+const SECRET_NAME = '(?:' + FILE_DIR + '(?:' + anchoredNames.join('|') + '|' + SECRET_GLOB + ')|' + FILE_ANY + '(?:' + floatingNames.join('|') + '))(?![A-Za-z0-9])';
+const SECRET_FILE = '(?:^|[\\s"\'=<@(])\\s*' + SECRET_NAME;
+// Secret-named variables, matched on whole name segments so $AUTHOR, $KEYWORDS,
+// $TOKENS_USED and $AUTH_MODE stay clean while $OPENAI_API_KEY, $GH_PAT,
+// $DB_PASS, $GITHUB_AUTH and ${!VAR} indirection match. echo-secret-var keeps
+// its older substring vocabulary; aligning it is a separate change.
+const SECRET_WORD = '(?:SECRETS?|KEY|TOKEN|PASSWORD|PASSWD|PASSW|PASSPHRASE|PASS|CREDENTIALS?|API_KEY|APIKEY|PAT)';
+// After the secret word only qualifier segments may follow ($AWS_ACCESS_KEY_ID,
+// $PRIVATE_KEY_PEM, $API_KEY_2), so $TOKEN_ENDPOINT and $KEY_NAME stay prose.
+const SECRET_TAIL = '(?:_(?:ID|FILE|PATH|VALUE|VAL|STR|STRING|B64|BASE64|JSON|PEM|DATA|CONTENT|TEXT|RAW|HEX|PROD|PRODUCTION|DEV|STAGING|TEST|OLD|NEW|[0-9]+))*';
+const SECRET_VAR = '\\$\\{?!?(?:(?:[A-Z0-9]+_)*' + SECRET_WORD + SECRET_TAIL + '|(?:[A-Z0-9]+_)*(?:AUTH|PRIVATE))\\}?(?![A-Za-z0-9_])';
+// An input redirect: not a heredoc (<<), herestring (<<<), process
+// substitution (<( ) or /dev/*.
+const REDIRECT_IN = '(?<!<)<(?![<(])\\s*(?!\\/dev\\/)';
+// curl -T / --upload-file as whole flags (the patterns run case-insensitive,
+// so a bare -T would also match inside --max-time or Content-Type).
+const UPLOAD_FLAG = '(?:(?<![\\w-])-T(?![A-Za-z0-9-])\\s*|--(?:upload|post|body)-file[=\\s]+)';
+// Ways a command takes a file's contents: @file, < file, $(cat file),
+// $(< file), `cat file`, curl -T/--upload-file, wget --post-file/--body-file.
+const FILE_BODY = '(?:@|' + REDIRECT_IN + '|\\$\\(\\s*(?:cat|head|tail|<)\\s+|`\\s*(?:cat|head|tail)\\s+|' + UPLOAD_FLAG + ')';
+// The same for a CLI argument: substitution or redirect, never a bare @
+// (that would match e-mail addresses in prompts).
+const SUBST_FILE = '(?:\\$\\(\\s*(?:cat|head|tail|<)\\s+|`\\s*(?:cat|head|tail)\\s+)["\']?[^\\s"\';|&<>()-]';
+// Flags an HTTP client reads its request body from, and the body shapes a
+// model API pattern accepts after one: @file (also field=@file), $(cat file),
+// a < redirect, or an upload flag.
 const BODY_FLAG = '(?:-d|--data(?:-binary|-raw|-urlencode|-ascii)?|--json|-F|--form(?:-string)?)';
-// Flags the sink CLIs read a file through: llm -f/-a, aichat -f, codex -i.
-const FILE_FLAG = '\\s(?:-f|--file|-a|--attachment|--fragment|-i|--image|--input)[\\s=]+["\']?[^\\s"\'-]';
-// Commands whose stdout is a file's contents.
-const READER_CMD = '\\b(?:cat|head|tail|bat|tac|more|less|git\\s+(?:diff|show))\\b';
+const API_BODY = '(?:' + BODY_FLAG + '\\s*=?\\s*["\']?(?:[\\w-]+=?)?(?:@|\\$\\(\\s*(?:cat|head|tail|<)\\s+|`\\s*cat\\s+)|' + REDIRECT_IN + '|' + UPLOAD_FLAG + ')';
+// httpie/xh request items: name=@file or name@file uploads a file, name=value
+// and name:=value are body fields (name:value is a header, not a body).
+const HTTPIE_FILE_ITEM = '\\s(?:[\\w-]+:?=?)?@';
+const HTTPIE_FIELD = '\\s[\\w-]+:?=';
+// One body token after a body flag: quoted chunks and bare text, stopping at
+// the first $ inside double quotes so a secret var anywhere in the body is
+// seen, while a var in a later -H header (outside the token) is not.
+const BODY_TOKEN = '(?:"[^"$]*|\'[^\']*\'|[^\\s"\'$])*"?';
+// File flags per CLI, from each tool's own flag table: llm -a/--attachment,
+// -f/--fragment, --sf/--system-fragment (docs/help.md); aichat -f/--file
+// (src/cli.rs); codex -i/--image (codex-rs/cli/src/main.rs); fabric
+// -a/--attachment (README, Application Options); openai --file and @path
+// (openai-cli README). gemini also reads @path references in a prompt.
+// gemini -i is --prompt-interactive, mods -f is --format and sgpt has no
+// file flag, so those three take files only via stdin, < or $(cat).
+const CLI_FILE_FLAGS = {
+  llm: '-a|--attachment|-f|--fragment|--sf|--system-fragment',
+  aichat: '-f|--file',
+  codex: '-i|--image',
+  fabric: '-a|--attachment',
+  openai: '--file',
+};
+const FLAG_ARG = '[\\s=]+["\']?[^\\s"\'-]';
+const FILE_TOKEN = '["\']?[^\\s"\';|&<>()-]';
+const AT_PATH = '(?<![\\w.])@(?=[\\w.~\\/])';
+const SINK_FILE_FLAG = Object.entries(CLI_FILE_FLAGS)
+  .map(([cli, flags]) => sinkCmd(cli) + SEG_QA + '\\s(?:' + flags + ')' + FLAG_ARG)
+  .concat([sinkCmd('(?:gemini(?:-cli)?|openai)') + '[^;|&\\n]*' + AT_PATH])
+  .join('|');
+// Commands whose stdout is a file's contents: a reader with a file operand
+// (so `ps aux | head | llm` is a filter, not a read), or git diff/show.
+const READER_CMD = '(?:\\b(?:cat|head|tail|bat|tac|more|less)\\b(?:\\s+-\\S+)*\\s+[^\\s|;&<>-]|\\bgit\\s+(?:diff|show)\\b)';
 
 // Bash patterns that expose or exfiltrate secrets
 const BASH_PATTERNS = [
@@ -139,7 +230,7 @@ const BASH_PATTERNS = [
   { level: 'critical', id: 'cat-aws-creds',      regex: /\b(cat|less|head|tail|more)\s+[^|;]*\.aws\/credentials/i,         reason: 'Reading AWS credentials' },
 
   // HIGH - Environment exposure
-  { level: 'high', id: 'env-dump',               regex: /\bprintenv\b|(?:^|[;&|]\s*)env\s*(?:$|[;&|])/,                    reason: 'Environment dump may expose secrets' },
+  { level: 'high', id: 'env-dump',               regex: /\bprintenv\b|(?:^|[;&|(]\s*)(?:env|set|export|declare\s+-x)\s*(?:$|[;&|)])/, reason: 'Environment dump may expose secrets' },
   { level: 'high', id: 'echo-secret-var',        regex: /\becho\b[^;|&]*\$\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\}?/i, reason: 'Echoing secret variable' },
   { level: 'high', id: 'printf-secret-var',      regex: /\bprintf\b[^;|&]*\$\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\}?/i, reason: 'Printing secret variable' },
   { level: 'high', id: 'cat-secrets-file',       regex: /\b(cat|less|head|tail|more)\s+[^|;]*(credentials?|secrets?)\.(json|ya?ml|toml)/i, reason: 'Reading secrets file' },
@@ -148,7 +239,7 @@ const BASH_PATTERNS = [
   { level: 'high', id: 'export-cat-env',         regex: /export\s+.*\$\(cat\s+[^)]*\.env/i,                                reason: 'Exporting secrets from .env' },
 
   // HIGH - Exfiltration
-  { level: 'high', id: 'curl-upload-env',        regex: /\bcurl\b[^;|&]*(-d\s*@|-F\s*[^=]+=@|--data[^=]*=@)[^;|&]*(\.env|credentials|secrets|id_rsa|\.pem|\.key)/i, reason: 'Uploading secrets via curl' },
+  { level: 'high', id: 'curl-upload-env',        regex: /\bcurl\b[^;|&]*(-d\s*@|-F\s*[^=]+=@|--data[^=]*=@|--data[-a-z]*\s+@|(?<![\w-])-T(?![A-Za-z0-9-])\s*|--upload-file[=\s]+)[^;|&]*(\.env|credentials|secrets|id_rsa|\.pem|\.key)/i, reason: 'Uploading secrets via curl' },
   { level: 'high', id: 'curl-post-secrets',      regex: /\bcurl\b[^;|&]*-X\s*POST[^;|&]*[^;|&]*(\.env|credentials|secrets)/i, reason: 'POSTing secrets via curl' },
   { level: 'high', id: 'wget-post-secrets',      regex: /\bwget\b[^;|&]*--post-file[^;|&]*(\.env|credentials|secrets)/i,  reason: 'POSTing secrets via wget' },
   { level: 'high', id: 'scp-secrets',            regex: /\bscp\b[^;|&]*(\.env|credentials|secrets|id_rsa|\.pem|\.key)[^;|&]+:/i, reason: 'Copying secrets via scp' },
@@ -156,9 +247,9 @@ const BASH_PATTERNS = [
   { level: 'high', id: 'nc-secrets',             regex: /\bnc\b[^;|&]*<[^;|&]*(\.env|credentials|secrets|id_rsa)/i,       reason: 'Exfiltrating secrets via netcat' },
 
   // HIGH - Delegation sinks (secret material into an external model)
-  { level: 'high', id: 'model-cli-secret-file',   regex: new RegExp(SINK_CMD + '[^;|&]*' + SECRET_FILE + '|' + SECRET_FILE + '[^;&]*' + SINK_CMD, 'i'), reason: 'Feeding a secrets file to an external model CLI' },
-  { level: 'high', id: 'model-cli-secret-var',    regex: new RegExp(SINK_CMD + '[^;|&]*' + SECRET_VAR + '|' + SECRET_VAR + '[^;&]*' + SINK_CMD, 'i'), reason: 'Passing a secret variable to an external model CLI' },
-  { level: 'high', id: 'model-api-secret-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&]*' + SINK_HOST + ')[^;|&]*(?:' + FILE_BODY + FILE_REF + SECRET_NAME + '|' + BODY_FLAG + '\\s*=?\\s*(?:"[^"]*"|\'[^\']*\'|[^\\s"\'])*"?' + SECRET_VAR + ')', 'i'), reason: 'Sending secrets to a model API endpoint' },
+  { level: 'high', id: 'model-cli-secret-file',   regex: new RegExp(SINK_CMD + SEG_QA + '[\\s<@=(]\\s*' + SECRET_NAME + '|' + SINK_CMD + '[^;|&\\n]*(?:\\$\\(|`)[^`\\n]*?[\\s"\'=<@(]\\s*' + SECRET_NAME + '|' + CONTENT_CMD + '[^;|&\\n]*' + SECRET_FILE + '[^;&\\n]*' + SINK_CMD, 'i'), reason: 'Feeding a secrets file to an external model CLI' },
+  { level: 'high', id: 'model-cli-secret-var',    regex: new RegExp(SINK_CMD + '[^;|&\\n]*' + SECRET_VAR, 'i'), reason: 'Passing a secret variable to an external model CLI' },
+  { level: 'high', id: 'model-api-secret-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + '(?:' + API_BODY + SECRET_NAME + '|' + BODY_FLAG + '\\s*=?\\s*' + BODY_TOKEN + SECRET_VAR + ')|' + HTTPIE_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + '(?:' + HTTPIE_FILE_ITEM + SECRET_NAME + '|' + HTTPIE_FIELD + BODY_TOKEN + SECRET_VAR + ')', 'i'), reason: 'Sending secrets to a model API endpoint' },
 
   // HIGH - Copy/move/delete secrets
   { level: 'high', id: 'cp-env',                 regex: /\bcp\b[^;|&]*\.env\b/i,                                           reason: 'Copying .env file' },
@@ -179,8 +270,8 @@ const BASH_PATTERNS = [
   { level: 'strict', id: 'base64-secrets',       regex: /\bbase64\b[^|;]*(\.env|credentials|secrets|id_rsa|\.pem)/i,       reason: 'Base64 encoding secrets' },
 
   // STRICT - Delegation sinks (any file contents into an external model)
-  { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&]*' + SINK_CMD + '|' + SINK_CMD + '[^;|&]*(?:' + FILE_BODY + '|' + FILE_FLAG + ')', 'i'), reason: 'Piping file contents to an external model CLI' },
-  { level: 'strict', id: 'model-api-file-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&]*' + SINK_HOST + ')[^;|&]*' + FILE_BODY + FILE_REF + '[^\\s"\';|&<>()]', 'i'), reason: 'Sending file contents to a model API endpoint' },
+  { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&\\n]*' + SINK_CMD + '|' + SINK_CMD + SEG_QA + REDIRECT_IN + FILE_TOKEN + '|' + SINK_CMD + '[^;|&\\n]*' + SUBST_FILE + '|' + SINK_FILE_FLAG, 'i'), reason: 'Piping file contents to an external model CLI' },
+  { level: 'strict', id: 'model-api-file-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + API_BODY + FILE_TOKEN + '|' + HTTPIE_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + HTTPIE_FILE_ITEM + '[\\w.~\\/]|' + READER_CMD + '[^;&\\n]*' + HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')', 'i'), reason: 'Sending file contents to a model API endpoint' },
 ];
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
@@ -212,6 +303,7 @@ function checkFilePath(filePath, safetyLevel = SAFETY_LEVEL) {
 
 function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   if (!cmd) return { blocked: false, pattern: null };
+  cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
   for (const allow of ALLOWLIST) {
     if (allow.test(cmd)) return { blocked: false, pattern: null };
   }
