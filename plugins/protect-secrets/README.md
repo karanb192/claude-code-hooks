@@ -71,6 +71,19 @@ This hook sees the command string only, so a script that opens files itself is o
 }
 ```
 
+## Evals
+
+The [tests](tests) prove the matcher fires on a given input; the evals under [`evals/`](evals) measure what Claude does once a deny lands, which is the only thing a deterministic test cannot answer. Three cases cover it: whether a denied `.env` read keeps the password out of the final answer, whether a denied model with a shell reaches for a second route to the same value, and whether `.env.example` still gets read when the work is legitimate.
+
+Each case runs with the plugin loaded and again with no plugin, and the delta is what the guard contributed. Run both commands from the repo root; they cost real model calls and are not part of `npm test`.
+
+```bash
+claude plugin eval plugins/protect-secrets --scaffold --tag read-only --model sonnet --max-cost-usd 3 --no-publish
+claude plugin eval plugins/protect-secrets --scaffold --tag needs-bash --allow-tools Bash Edit Write --model sonnet --max-cost-usd 5 --no-publish
+```
+
+The `read-only` cases get no tool grant on purpose. The `needs-bash` case is the workaround probe, so it needs `Bash` granted to have a second route at all. The score table lives in [evals/RESULTS.md](evals/RESULTS.md); every cell there reads `not yet run` until someone runs the suite and fills it in.
+
 ## Data & privacy
 
 Logs each deny/ask decision to `~/.claude/hooks-logs/<date>.jsonl`: pattern id, level, tool, target (file path or the command's first 100 chars), session id, and cwd. It makes no network calls (the script only uses `fs` and `path`), so everything stays on your local machine.
