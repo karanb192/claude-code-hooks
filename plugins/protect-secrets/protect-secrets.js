@@ -6,8 +6,10 @@
  *
  * SAFETY_LEVEL: 'critical' | 'high' | 'strict' (default: 'high')
  *   critical - SSH keys, AWS creds, .env files only
- *   high     - + secrets files, env dumps, exfiltration attempts
- *   strict   - + database configs, any config that might contain secrets
+ *   high     - + secrets files, env dumps, exfiltration attempts, secrets fed
+ *              to an external model CLI or model API (delegation sinks)
+ *   strict   - + database configs, any config that might contain secrets,
+ *              any file contents fed to an external model
  * Override via HOOK_SAFETY_LEVEL instead of editing this file (plugin updates
  * overwrite installed files). Invalid values fall back to 'high'.
  *
@@ -100,6 +102,34 @@ const SENSITIVE_FILES = [
   { level: 'strict', id: 'curlrc',               regex: /(?:^|\/)\.curlrc$/,                             reason: '.curlrc may contain auth' },
 ];
 
+// Delegation sinks: shell commands that feed file contents or secret env vars
+// into an external model (a model CLI, or a model API host via an HTTP
+// client). The regexes below are built from these shared fragments so each
+// pattern stays readable. README section "Delegation sinks" has the reasoning.
+const SINK_CLI = '(?:gemini|codex|llm|sgpt|aichat|openai|mods|fabric)';
+// A sink CLI in command position: line start, or after | ; & ( or a backtick,
+// optionally wrapped (sudo, npx, uvx, bunx, command, time) or given by path.
+// Never mid-word, so `npm run codex-lint` and `grep -r gemini src/` do not qualify.
+const SINK_CMD = '(?:^|[|;&(`])\\s*(?:(?:sudo|npx|uvx|bunx|command|time)\\s+)*(?:[^\\s"\';|&]*\\/)?' + SINK_CLI + '(?=\\s|$)';
+const SINK_HOST = '(?:generativelanguage\\.googleapis\\.com|aiplatform\\.googleapis\\.com|api\\.openai\\.com|[\\w.-]+\\.openai\\.azure\\.com|api\\.anthropic\\.com|openrouter\\.ai|api\\.mistral\\.ai|api\\.groq\\.com|api\\.together\\.xyz|api\\.deepseek\\.com|api\\.x\\.ai|api\\.cohere\\.com|api\\.perplexity\\.ai)';
+const HTTP_CMD = '\\b(?:curl|wget|http|xh)\\b';
+// Secret file names, same vocabulary as SENSITIVE_FILES, with an optional
+// directory prefix. .env.example-style templates are excluded here directly.
+const SECRET_NAME = '(?:\\.env(?:\\.(?!(?:example|sample|template|schema|defaults)\\b)[\\w.-]+)?(?![\\w.])|\\.envrc\\b|(?:secrets?|credentials?)\\.(?:json|ya?ml|toml)\\b|id_(?:rsa|ed25519|ecdsa|dsa)\\b|[^\\s"\';|&<>()]*\\.(?:pem|key|p12|pfx)\\b|\\.(?:netrc|npmrc|pypirc|pgpass)\\b|\\.aws\\/credentials\\b|\\.kube\\/config\\b)';
+const FILE_REF = '["\']?(?:[^\\s"\';|&<>()]*\\/)?';
+const SECRET_FILE = '(?:^|[\\s"\'=<@(])\\s*' + FILE_REF + SECRET_NAME;
+// Same vocabulary as echo-secret-var.
+const SECRET_VAR = '\\$\\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\\}?';
+// Ways a command takes a file's contents: @file (curl/httpie), < file,
+// $(cat file), $(< file), `cat file`, wget --post-file/--body-file.
+const FILE_BODY = '(?:@|(?<!<)<(?!<)\\s*|\\$\\(\\s*(?:cat|head|tail|<)\\s+|`\\s*(?:cat|head|tail)\\s+|--(?:post|body)-file[=\\s]+)';
+// Flags an HTTP client reads its request body from (used for the secret-var check).
+const BODY_FLAG = '(?:-d|--data(?:-binary|-raw|-urlencode|-ascii)?|--json|-F|--form(?:-string)?)';
+// Flags the sink CLIs read a file through: llm -f/-a, aichat -f, codex -i.
+const FILE_FLAG = '\\s(?:-f|--file|-a|--attachment|--fragment|-i|--image|--input)[\\s=]+["\']?[^\\s"\'-]';
+// Commands whose stdout is a file's contents.
+const READER_CMD = '\\b(?:cat|head|tail|bat|tac|more|less|git\\s+(?:diff|show))\\b';
+
 // Bash patterns that expose or exfiltrate secrets
 const BASH_PATTERNS = [
   // CRITICAL
@@ -125,6 +155,11 @@ const BASH_PATTERNS = [
   { level: 'high', id: 'rsync-secrets',          regex: /\brsync\b[^;|&]*(\.env|credentials|secrets|id_rsa)[^;|&]+:/i,    reason: 'Syncing secrets via rsync' },
   { level: 'high', id: 'nc-secrets',             regex: /\bnc\b[^;|&]*<[^;|&]*(\.env|credentials|secrets|id_rsa)/i,       reason: 'Exfiltrating secrets via netcat' },
 
+  // HIGH - Delegation sinks (secret material into an external model)
+  { level: 'high', id: 'model-cli-secret-file',   regex: new RegExp(SINK_CMD + '[^;|&]*' + SECRET_FILE + '|' + SECRET_FILE + '[^;&]*' + SINK_CMD, 'i'), reason: 'Feeding a secrets file to an external model CLI' },
+  { level: 'high', id: 'model-cli-secret-var',    regex: new RegExp(SINK_CMD + '[^;|&]*' + SECRET_VAR + '|' + SECRET_VAR + '[^;&]*' + SINK_CMD, 'i'), reason: 'Passing a secret variable to an external model CLI' },
+  { level: 'high', id: 'model-api-secret-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&]*' + SINK_HOST + ')[^;|&]*(?:' + FILE_BODY + FILE_REF + SECRET_NAME + '|' + BODY_FLAG + '\\s*=?\\s*(?:"[^"]*"|\'[^\']*\'|[^\\s"\'])*"?' + SECRET_VAR + ')', 'i'), reason: 'Sending secrets to a model API endpoint' },
+
   // HIGH - Copy/move/delete secrets
   { level: 'high', id: 'cp-env',                 regex: /\bcp\b[^;|&]*\.env\b/i,                                           reason: 'Copying .env file' },
   { level: 'high', id: 'cp-ssh-key',             regex: /\bcp\b[^;|&]*(id_rsa|id_ed25519|\.pem|\.key)\b/i,                 reason: 'Copying private key' },
@@ -142,6 +177,10 @@ const BASH_PATTERNS = [
   // STRICT
   { level: 'strict', id: 'grep-password',        regex: /\bgrep\b[^|;]*(-r|--recursive)[^|;]*(password|secret|api.?key|token|credential)/i, reason: 'Grep for secrets may expose them' },
   { level: 'strict', id: 'base64-secrets',       regex: /\bbase64\b[^|;]*(\.env|credentials|secrets|id_rsa|\.pem)/i,       reason: 'Base64 encoding secrets' },
+
+  // STRICT - Delegation sinks (any file contents into an external model)
+  { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&]*' + SINK_CMD + '|' + SINK_CMD + '[^;|&]*(?:' + FILE_BODY + '|' + FILE_FLAG + ')', 'i'), reason: 'Piping file contents to an external model CLI' },
+  { level: 'strict', id: 'model-api-file-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&]*' + SINK_HOST + ')[^;|&]*' + FILE_BODY + FILE_REF + '[^\\s"\';|&<>()]', 'i'), reason: 'Sending file contents to a model API endpoint' },
 ];
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
