@@ -66,7 +66,8 @@ Lines from inside a subagent also carry `agent_id` and `agent_type`. Denied call
 - Only spawns that go through the `Agent` tool are seen. A Workflow script or any other path that starts agents without a tool call is invisible to `PreToolUse`.
 - Counts key on `session_id`, so a resumed session continues its count (that is the budget working as intended; `rm ~/.claude/subagent-spawn-cap/<id>.jsonl` resets it).
 - Parallel calls in the same turn each read the count before any of them appends, so one batch can overshoot a threshold by up to the native concurrency limit. The next call is judged on the full count.
-- A user can raise or bypass the caps. That is the point of env tunables; the model cannot, since hooks run outside it and [config-guard](../config-guard) stops it editing `settings.json`.
+- A user can raise or bypass the caps. That is the point of env tunables; the model cannot reach them, since hook processes inherit Claude Code's environment, not the Bash tool's, and [config-guard](../config-guard) stops it editing the `env` block in `settings.json`.
+- The ledger is a plain file. An agent with Bash could delete `~/.claude/subagent-spawn-cap/` and reset its own count; nothing in this repo protects that directory yet.
 - Append atomicity relies on `O_APPEND` semantics, which hold on macOS and Linux for lines this short. On Windows, concurrent appends from separate processes are not guaranteed atomic.
 
 ## Data & privacy

@@ -204,6 +204,20 @@
       ]
     },
     {
+      "name": "subagent-spawn-cap",
+      "source": "./plugins/subagent-spawn-cap",
+      "description": "Per-session subagent spawn budget: a PreToolUse guard on the Agent tool that counts every spawn (nested fan-outs included) in an append-only ledger, asks at SPAWN_CAP_ASK (default 20) and denies at SPAWN_CAP_DENY (default 60). The total cap Claude Code 2.1.224 removed, back under the user's control.",
+      "category": "safety",
+      "tags": [
+        "safety",
+        "cost",
+        "subagents",
+        "guardrails",
+        "hooks",
+        "pretooluse"
+      ]
+    },
+    {
       "name": "config-watch",
       "source": "./plugins/config-watch",
       "description": "Tripwire for out-of-band config changes: warns on every mid-session settings/skills change (or blocks it with CONFIG_WATCH_BLOCK=true) to catch installer scripts and npm payloads rewriting settings behind Claude Code's back.",
@@ -290,14 +304,15 @@
     {
       "name": "guard-pack",
       "source": "./plugins/guard-pack",
-      "description": "All six guard hooks in one Node process: config-guard, block-dangerous-commands, protect-secrets, protect-tests, git-safety, and case-insensitive-guard, first blocking verdict wins. One ~35 ms Node startup per tool call instead of six. Do not install alongside the individual guard plugins.",
+      "description": "All seven guard hooks in one Node process: subagent-spawn-cap, config-guard, block-dangerous-commands, protect-secrets, protect-tests, git-safety, and case-insensitive-guard, first blocking verdict wins. One ~35 ms Node startup per tool call instead of seven. Do not install alongside the individual guard plugins.",
       "category": "security",
       "tags": [
         "security",
         "safety",
         "guardrails",
         "pretooluse",
-        "latency"
+        "latency",
+        "subagents"
       ]
     }
   ]
