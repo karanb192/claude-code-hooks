@@ -1,28 +1,29 @@
 #!/usr/bin/env node
 /**
- * Guard Pack - PreToolUse Hook for Bash|Read|Edit|MultiEdit|Write
- * All six guard hooks in ONE Node process. Installing the guards
- * individually costs six Node startups per matching tool call (about 35 ms
- * each, see bench/RESULTS.md); this pack pays one.
+ * Guard Pack - PreToolUse Hook for Bash|Read|Edit|MultiEdit|Write|Agent|Task
+ * All seven guard hooks in ONE Node process. Installing the guards
+ * individually costs seven Node startups per matching tool call (about
+ * 35 ms each, see bench/RESULTS.md); this pack pays one.
  *
- * Evaluation order (cheap string checks first, filesystem and subprocess
- * work last): config-guard, block-dangerous-commands, protect-secrets,
- * protect-tests, git-safety, case-insensitive-guard. The first blocking
- * verdict wins and is emitted in that guard's own output format, suffixed
- * "(via guard-pack)". A guard that throws is logged and skipped so one
- * broken guard can never switch off the other five (fail-open per guard,
- * same convention as the standalone hooks).
+ * Evaluation order (cheap checks first, filesystem and subprocess work
+ * last): subagent-spawn-cap, config-guard, block-dangerous-commands,
+ * protect-secrets, protect-tests, git-safety, case-insensitive-guard. The
+ * first blocking verdict wins and is emitted in that guard's own output
+ * format, suffixed "(via guard-pack)". A guard that throws is logged and
+ * skipped so one broken guard can never switch off the other six
+ * (fail-open per guard, same convention as the standalone hooks).
  *
  * The guard scripts in lib/ are byte-identical copies of the individual
  * plugin scripts; a repo test pins them, so they cannot drift. All the
  * guards' env vars pass straight through, since the modules read them
- * directly: HOOK_SAFETY_LEVEL (applies to every guard in the pack
- * uniformly), HOOK_ASK_CRITICAL / HOOK_ASK_HIGH / HOOK_ASK_STRICT, and
- * CONFIG_GUARD_ALLOW. Want different safety levels per guard? Install the
- * individual guard plugins instead of the pack.
+ * directly: HOOK_SAFETY_LEVEL (the six pattern guards uniformly),
+ * HOOK_ASK_CRITICAL / HOOK_ASK_HIGH / HOOK_ASK_STRICT, CONFIG_GUARD_ALLOW,
+ * and SPAWN_CAP_ASK / SPAWN_CAP_ASK_STEP / SPAWN_CAP_DENY / SPAWN_CAP_ALLOW.
+ * Want different safety levels per guard? Install the individual guard
+ * plugins instead of the pack.
  *
  * Do NOT install this pack alongside the individual guard plugins (or a
- * manual registration of any of the six): every duplicated guard runs
+ * manual registration of any of the seven): every duplicated guard runs
  * twice on each matching tool call. Logs to: ~/.claude/hooks-logs/
  *
  * Setup (plugin, recommended):
@@ -45,9 +46,21 @@ const STD_EMOJIS = { critical: '🚨', high: '⛔', strict: '⚠️' };
 const LOCK_EMOJIS = { critical: '🔒', high: '🛡️', strict: '⚠️' };
 
 // Each entry mirrors its guard's main(): same tool filter, same escape
-// hatches, same reason template. run() returns null (pass) or
-// { id, level, ask, reason } with reason lacking only the emoji prefix.
+// hatches, same reason template. run(mod, tool, input, cwd, event) returns
+// null (pass) or { id, level, ask, reason, log? }; reason lacks only the
+// emoji prefix, log adds fields to the audit line, event is the full payload.
 const GUARDS = [
+  {
+    // One string compare for other tools; the only guard that applies on a spawn.
+    name: 'subagent-spawn-cap',
+    emojis: { critical: '🚨', high: '⚠️', strict: '⚠️' },
+    run(mod, tool, input, cwd, event) {
+      if (!mod.isSpawnTool(tool)) return null;
+      const r = mod.evaluateSpawn({ ...(event || {}), tool_name: tool, tool_input: input });
+      if (r.decision === 'allow') return null;
+      return { id: 'spawn-cap', level: r.decision === 'deny' ? 'critical' : 'high', ask: r.decision === 'ask', reason: r.reason, log: r.logFields };
+    },
+  },
   {
     name: 'config-guard',
     emojis: LOCK_EMOJIS,
@@ -132,12 +145,12 @@ function log(data) {
 
 // Evaluate all guards for one event; returns null or the winning verdict
 // with its guard attached. Exported for tests.
-function evaluate(toolName, toolInput, cwd) {
+function evaluate(toolName, toolInput, cwd, event) {
   for (const g of GUARDS) {
     try {
       if (g.skip && g.skip()) continue;
       const mod = require(path.join(LIB, `${g.name}.js`));
-      const verdict = g.run(mod, toolName, toolInput, cwd);
+      const verdict = g.run(mod, toolName, toolInput, cwd, event);
       if (verdict) return { guard: g.name, emojis: g.emojis, ...verdict };
     } catch (e) {
       log({ level: 'ERROR', guard: g.name, error: e.message });
@@ -153,13 +166,13 @@ async function main() {
   try {
     const data = JSON.parse(input);
     const { tool_name, tool_input, session_id, cwd, permission_mode } = data;
-    if (!['Bash', 'Read', 'Edit', 'MultiEdit', 'Write'].includes(tool_name)) return console.log('{}');
+    if (!['Bash', 'Read', 'Edit', 'MultiEdit', 'Write', 'Agent', 'Task'].includes(tool_name)) return console.log('{}');
 
-    const v = evaluate(tool_name, tool_input, cwd);
+    const v = evaluate(tool_name, tool_input, cwd, data);
     if (!v) return console.log('{}');
 
     const decision = v.ask ? 'ask' : 'deny';
-    log({ level: v.ask ? 'ASK' : 'BLOCKED', guard: v.guard, id: v.id, priority: v.level, decision, tool: tool_name, session_id, cwd, permission_mode });
+    log({ level: v.ask ? 'ASK' : 'BLOCKED', guard: v.guard, id: v.id, priority: v.level, decision, tool: tool_name, ...(v.log || {}), session_id, cwd, permission_mode });
     return console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',

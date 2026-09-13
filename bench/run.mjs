@@ -74,10 +74,21 @@ const HOOKS = [
       tool_input: { command: 'git status && ls -la src/' } },
   },
   {
-    // All six guards in one process; compare against the sum of the six rows above.
+    // All seven guards in one process. A Bash payload exercises the six pattern
+    // guards (the spawn cap returns on its tool-name compare); compare against
+    // the sum of the six rows above.
     script: 'plugins/guard-pack/guard-pack.js',
     payload: { ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash',
       tool_input: { command: 'git status && ls -la src/' } },
+  },
+  {
+    // Spawn budget: reads and appends the session ledger on every call, so
+    // the sample measures the real per-spawn cost. Caps are raised so N
+    // samples never cross the ask threshold (a verdict aborts the run).
+    script: 'plugins/subagent-spawn-cap/subagent-spawn-cap.js',
+    payload: { ...base, hook_event_name: 'PreToolUse', tool_name: 'Agent',
+      tool_input: { description: 'bench', prompt: 'list the files', subagent_type: 'Explore' } },
+    env: { SPAWN_CAP_ASK: '100000', SPAWN_CAP_DENY: '100000' },
   },
   {
     script: 'plugins/auto-stage/auto-stage.js',
@@ -104,7 +115,7 @@ function invoke(hook) {
   const res = spawnSync(process.execPath, [path.join(ROOT, hook.script)], {
     input: JSON.stringify(hook.payload),
     encoding: 'utf8',
-    env: { ...process.env, HOME: sandbox },
+    env: { ...process.env, HOME: sandbox, ...(hook.env || {}) },
   });
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   if (res.status !== 0) throw new Error(`${hook.script} exited ${res.status}: ${res.stderr}`);

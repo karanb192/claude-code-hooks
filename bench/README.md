@@ -21,7 +21,7 @@ No dependencies. HOME is pointed at a throwaway temp dir during the run, so hook
 
 ## Scope
 
-Covers the ten PreToolUse/PostToolUse hook plugins in `plugins/`: block-dangerous-commands, case-insensitive-guard, git-safety, protect-secrets, protect-tests, config-guard, instructions-audit (its PreToolUse enforcement arm, measured with no lockdown flag set), guard-pack (all six guards in one process; compare its row against the sum of the six individual guard rows), auto-stage, format-code. The format-code payload writes a small unformatted Python file, so `uv` and `ruff` must be on PATH (CI installs them); without them the run aborts instead of reporting a no-op.
+Covers the eleven PreToolUse/PostToolUse hook plugins in `plugins/`: block-dangerous-commands, case-insensitive-guard, git-safety, protect-secrets, protect-tests, config-guard, instructions-audit (its PreToolUse enforcement arm, measured with no lockdown flag set), guard-pack (all seven guards in one process, driven with a Bash payload so it exercises the six pattern guards; compare its row against the sum of those six individual rows), subagent-spawn-cap (an `Agent` payload with the caps raised far above the sample count, so every sample takes the real read-and-append path and none returns a verdict), auto-stage, format-code. The format-code payload writes a small unformatted Python file, so `uv` and `ruff` must be on PATH (CI installs them); without them the run aborts instead of reporting a no-op.
 
 Excluded:
 
