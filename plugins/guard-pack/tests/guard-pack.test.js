@@ -208,8 +208,8 @@ describe('Integration: subagent-spawn-cap through the pack', () => {
     assert.deepStrictEqual(first.output, {});
     const second = await runHook(spawnCall('pack-s2'), env);
     assert.strictEqual(decisionOf(second.output), 'ask');
-    assert.match(reasonOf(second.output), /^⚠️ \[spawn-cap\] Subagent spawn #2 in this session reached the ask threshold \(SPAWN_CAP_ASK=2; hard cap SPAWN_CAP_DENY=3\)/);
-    assert.match(reasonOf(second.output), /SPAWN_CAP_ALLOW=true/);
+    assert.match(reasonOf(second.output), /^⚠️ \[spawn-cap\] Subagent spawn #2 in this session \(ask threshold SPAWN_CAP_ASK=2, hard cap SPAWN_CAP_DENY=3\)/);
+    assert.match(reasonOf(second.output), /deleting ~\/\.claude\/subagent-spawn-cap\/pack-s2\.jsonl/);
     assert.match(reasonOf(second.output), /\(via guard-pack\)$/);
   });
 
@@ -219,17 +219,42 @@ describe('Integration: subagent-spawn-cap through the pack', () => {
     await runHook(spawnCall('pack-s3'), env);
     const { output } = await runHook(spawnCall('pack-s3'), env);
     assert.strictEqual(decisionOf(output), 'deny');
-    assert.match(reasonOf(output), /^🚨 \[spawn-cap\] Subagent spawn #2 in this session reached the hard cap \(SPAWN_CAP_DENY=2\)/);
+    assert.match(reasonOf(output), /^🚨 \[spawn-cap\] Subagent spawn #2 in this session hit the hard cap \(SPAWN_CAP_DENY=2\)\. Do not retry/);
     assert.strictEqual(fs.readFileSync(ledgerOf(home, 'pack-s3'), 'utf8').split('\n').filter(Boolean).length, 1);
   });
 
-  it('SPAWN_CAP_ALLOW=true lets one call through past deny', async () => {
+  const logLines = (home) => {
+    const dir = path.join(home, '.claude', 'hooks-logs');
+    if (!fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir).flatMap((f) => fs.readFileSync(path.join(dir, f), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)));
+  };
+
+  it('SPAWN_CAP_ALLOW=true lets a call through past deny and the pack path logs ALLOW_OVERRIDE', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-pack-spawn-'));
     const env = { HOME: home, SPAWN_CAP_ASK: '1', SPAWN_CAP_DENY: '1' };
     const blocked = await runHook(spawnCall('pack-s4'), env);
     assert.strictEqual(decisionOf(blocked.output), 'deny');
     const allowed = await runHook(spawnCall('pack-s4'), { ...env, SPAWN_CAP_ALLOW: 'true' });
     assert.deepStrictEqual(allowed.output, {});
+    const overrides = logLines(home).filter((l) => l.level === 'ALLOW_OVERRIDE');
+    assert.strictEqual(overrides.length, 1, 'bypass past the hard cap must leave an audit line through the pack');
+    assert.strictEqual(overrides[0].hook, 'subagent-spawn-cap');
+    assert.strictEqual(overrides[0].session_id, 'pack-s4');
+    assert.strictEqual(overrides[0].count, 1);
+  });
+
+  it('the pack verdict log carries the spawn count, thresholds, and subagent_type', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-pack-spawn-'));
+    await runHook(spawnCall('pack-s8'), { HOME: home, SPAWN_CAP_ASK: '1', SPAWN_CAP_ASK_STEP: '4', SPAWN_CAP_DENY: '9' });
+    const [line] = logLines(home).filter((l) => l.hook === 'guard-pack' && l.level === 'ASK');
+    assert.ok(line, 'expected a guard-pack ASK line');
+    assert.deepStrictEqual([line.guard, line.id, line.count, line.ask, line.step, line.deny, line.subagent_type], ['subagent-spawn-cap', 'spawn-cap', 1, 1, 4, 9, 'general-purpose']);
+  });
+
+  it('a clamped SPAWN_CAP_DENY is logged through the pack too', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-pack-spawn-'));
+    await runHook(spawnCall('pack-s9'), { HOME: home, SPAWN_CAP_ASK: '5', SPAWN_CAP_DENY: '2' });
+    assert.strictEqual(logLines(home).filter((l) => l.level === 'WARN' && /clamped/.test(l.msg)).length, 1);
   });
 
   it('a nested spawn (agent_id present) draws from the same session budget', async () => {
@@ -270,6 +295,8 @@ describe('Integration: subagent-spawn-cap through the pack', () => {
       assert.strictEqual(v.ask, true);
       assert.strictEqual(v.emojis[v.level], '⚠️');
       assert.match(v.reason, /^\[spawn-cap\] Subagent spawn #2 /);
+      assert.strictEqual(v.log.count, 2);
+      assert.strictEqual(v.log.deny, 9);
       assert.strictEqual(evaluate('Bash', { command: 'git status' }, home, event), null);
     } finally {
       for (const [k, val] of Object.entries(saved)) {

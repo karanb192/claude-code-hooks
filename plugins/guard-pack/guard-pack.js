@@ -6,8 +6,9 @@
  * 35 ms each, see bench/RESULTS.md); this pack pays one.
  *
  * Evaluation order (cheap string checks first, filesystem and subprocess
- * work last): subagent-spawn-cap (one tool-name compare for anything
- * but the Agent tool; on a spawn it is the only guard that applies),
+ * work last): subagent-spawn-cap (one cached module load and one
+ * tool-name compare for anything but the Agent tool; on a spawn it is
+ * the only guard that applies),
  * config-guard, block-dangerous-commands, protect-secrets, protect-tests,
  * git-safety, case-insensitive-guard. The first blocking verdict wins
  * and is emitted in that guard's own output format, suffixed
@@ -50,21 +51,23 @@ const LOCK_EMOJIS = { critical: '🔒', high: '🛡️', strict: '⚠️' };
 
 // Each entry mirrors its guard's main(): same tool filter, same escape
 // hatches, same reason template. run(mod, tool, input, cwd, event) returns
-// null (pass) or { id, level, ask, reason } with reason lacking only the
-// emoji prefix. `event` is the whole hook payload, for guards that key on
-// more than the tool (the spawn cap needs session_id).
+// null (pass) or { id, level, ask, reason, log? } with reason lacking only
+// the emoji prefix and `log` holding extra fields for the audit line.
+// `event` is the whole hook payload, for guards that key on more than the
+// tool (the spawn cap needs session_id).
 const GUARDS = [
   {
     // First because its filter is one string compare, and on a spawn call
     // none of the pattern guards apply anyway. SPAWN_CAP_ALLOW is handled
-    // inside the module (the bypassed spawn is still counted), so no skip().
+    // inside the module (the bypassed spawn is still counted and the module
+    // writes the ALLOW_OVERRIDE audit line itself), so no skip().
     name: 'subagent-spawn-cap',
     emojis: { critical: '🚨', high: '⚠️', strict: '⚠️' },
     run(mod, tool, input, cwd, event) {
       if (!mod.isSpawnTool(tool)) return null;
       const r = mod.evaluateSpawn({ ...(event || {}), tool_name: tool, tool_input: input });
       if (r.decision === 'allow') return null;
-      return { id: 'spawn-cap', level: r.decision === 'deny' ? 'critical' : 'high', ask: r.decision === 'ask', reason: r.reason };
+      return { id: 'spawn-cap', level: r.decision === 'deny' ? 'critical' : 'high', ask: r.decision === 'ask', reason: r.reason, log: r.logFields };
     },
   },
   {
@@ -179,7 +182,7 @@ async function main() {
     if (!v) return console.log('{}');
 
     const decision = v.ask ? 'ask' : 'deny';
-    log({ level: v.ask ? 'ASK' : 'BLOCKED', guard: v.guard, id: v.id, priority: v.level, decision, tool: tool_name, session_id, cwd, permission_mode });
+    log({ level: v.ask ? 'ASK' : 'BLOCKED', guard: v.guard, id: v.id, priority: v.level, decision, tool: tool_name, ...(v.log || {}), session_id, cwd, permission_mode });
     return console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',

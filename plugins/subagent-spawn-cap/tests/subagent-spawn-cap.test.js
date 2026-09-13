@@ -18,6 +18,13 @@ const os = require('node:os');
 
 const PLUGIN_DIR = path.join(__dirname, '..');
 const SCRIPT_PATH = path.join(PLUGIN_DIR, 'subagent-spawn-cap.js');
+
+// The module fixes HOME on first require. Point it at a temp dir before
+// that happens, so in-process calls (evaluateSpawn, pruneStale) are as
+// hermetic as the spawned ones and never touch the real ~/.claude.
+const MODULE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'spawn-cap-module-'));
+process.env.HOME = MODULE_HOME;
+process.env.USERPROFILE = MODULE_HOME;
 const mod = require(SCRIPT_PATH);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -28,6 +35,13 @@ const freshHome = () => fs.mkdtempSync(path.join(os.tmpdir(), 'spawn-cap-test-')
 const stateDir = (home) => path.join(home, '.claude', 'subagent-spawn-cap');
 const ledger = (home, sessionId) => path.join(stateDir(home), `${sessionId}.jsonl`);
 const lineCount = (file) => fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length;
+
+// Every hooks-logs line under a HOME, parsed.
+function logLines(home) {
+  const dir = path.join(home, '.claude', 'hooks-logs');
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir).flatMap((f) => fs.readFileSync(path.join(dir, f), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)));
+}
 
 function runHook(home, payload, envOverrides = {}) {
   return new Promise((resolve, reject) => {
@@ -79,29 +93,34 @@ async function spawnN(home, n, sessionId = 'sess-1', env = {}) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('readThresholds: env validation', () => {
-  it('defaults to 20 / 60 with nothing set', () => {
-    assert.deepStrictEqual(mod.readThresholds({}), { ask: 20, deny: 60, clamped: false });
+  it('defaults to ask 20, step 10, deny 60 with nothing set', () => {
+    assert.deepStrictEqual(mod.readThresholds({}), { ask: 20, step: 10, deny: 60, clamped: false });
   });
 
   it('reads valid integers, tolerating whitespace', () => {
-    assert.deepStrictEqual(mod.readThresholds({ SPAWN_CAP_ASK: ' 5 ', SPAWN_CAP_DENY: '9' }), { ask: 5, deny: 9, clamped: false });
+    assert.deepStrictEqual(mod.readThresholds({ SPAWN_CAP_ASK: ' 5 ', SPAWN_CAP_ASK_STEP: '2', SPAWN_CAP_DENY: '9' }), { ask: 5, step: 2, deny: 9, clamped: false });
+  });
+
+  it('an invalid SPAWN_CAP_ASK_STEP falls back to 10', () => {
+    for (const bad of ['0', '-1', 'x', '']) assert.strictEqual(mod.readThresholds({ SPAWN_CAP_ASK_STEP: bad }).step, 10);
   });
 
   for (const bad of ['0', '-3', '2e1', 'twenty', '', '1.5', '10abc']) {
     it(`falls back to the default on ${JSON.stringify(bad)}`, () => {
-      const t = mod.readThresholds({ SPAWN_CAP_ASK: bad, SPAWN_CAP_DENY: bad });
+      const t = mod.readThresholds({ SPAWN_CAP_ASK: bad, SPAWN_CAP_ASK_STEP: bad, SPAWN_CAP_DENY: bad });
       assert.strictEqual(t.ask, 20);
+      assert.strictEqual(t.step, 10);
       assert.strictEqual(t.deny, 60);
     });
   }
 
   it('clamps deny up to ask when set lower, and says so', () => {
-    assert.deepStrictEqual(mod.readThresholds({ SPAWN_CAP_ASK: '100' }), { ask: 100, deny: 100, clamped: true });
-    assert.deepStrictEqual(mod.readThresholds({ SPAWN_CAP_ASK: '10', SPAWN_CAP_DENY: '3' }), { ask: 10, deny: 10, clamped: true });
+    assert.deepStrictEqual(mod.readThresholds({ SPAWN_CAP_ASK: '100' }), { ask: 100, step: 10, deny: 100, clamped: true });
+    assert.deepStrictEqual(mod.readThresholds({ SPAWN_CAP_ASK: '10', SPAWN_CAP_DENY: '3' }), { ask: 10, step: 10, deny: 10, clamped: true });
   });
 
   it('ask equal to deny is allowed (skips the ask stage)', () => {
-    assert.deepStrictEqual(mod.readThresholds({ SPAWN_CAP_ASK: '7', SPAWN_CAP_DENY: '7' }), { ask: 7, deny: 7, clamped: false });
+    assert.deepStrictEqual(mod.readThresholds({ SPAWN_CAP_ASK: '7', SPAWN_CAP_DENY: '7' }), { ask: 7, step: 10, deny: 7, clamped: false });
   });
 });
 
@@ -116,14 +135,46 @@ describe('sessionFile and buildReason', () => {
     assert.ok(path.basename(mod.sessionFile('a'.repeat(500))).length <= 134);
   });
 
-  it('reason strings carry count, threshold, env var, and the escape hatch', () => {
-    const t = { ask: 20, deny: 60 };
-    for (const [decision, n] of [['ask', 20], ['deny', 60]]) {
-      const r = mod.buildReason(decision, n, t);
-      assert.match(r, new RegExp(`#${n}\\b`));
-      assert.match(r, decision === 'ask' ? /SPAWN_CAP_ASK=20/ : /SPAWN_CAP_DENY=60/);
-      assert.match(r, /SPAWN_CAP_ALLOW=true/);
-    }
+  it('ask reason talks to the human: count, thresholds, next check, ledger path, cadence knobs', () => {
+    const t = { ask: 20, step: 10, deny: 60 };
+    const r = mod.buildReason('ask', 20, t, mod.sessionFile('s1'));
+    assert.match(r, /^\[spawn-cap\] Subagent spawn #20 in this session \(ask threshold SPAWN_CAP_ASK=20, next check at #30, hard cap SPAWN_CAP_DENY=60\)\./);
+    assert.match(r, /Approve to continue; the next 9 spawns then pass without asking\. Deny to stop the fan-out\./);
+    assert.match(r, /deleting ~\/\.claude\/subagent-spawn-cap\/s1\.jsonl/);
+    assert.match(r, /SPAWN_CAP_ASK \/ SPAWN_CAP_ASK_STEP/);
+    assert.match(r, /restart needed/);
+    assert.doesNotMatch(r, /this one call/);
+  });
+
+  it('ask reason at the last check before the cap says the cap is next', () => {
+    const t = { ask: 20, step: 10, deny: 60 };
+    const r = mod.buildReason('ask', 50, t, mod.sessionFile('s1'));
+    assert.match(r, /\(ask threshold SPAWN_CAP_ASK=20, hard cap SPAWN_CAP_DENY=60\)/);
+    assert.match(r, /the next 9 spawns then pass without asking/);
+    const tight = mod.buildReason('ask', 1, { ask: 1, step: 10, deny: 2 }, mod.sessionFile('s1'));
+    assert.match(tight, /spawn #2 is then denied\./);
+    const one = mod.buildReason('ask', 1, { ask: 1, step: 10, deny: 3 }, mod.sessionFile('s1'));
+    assert.match(one, /the next 1 spawn then passes|the next 1 spawn then pass without asking/);
+  });
+
+  it('deny reason talks to Claude: hard cap, do not retry, reset path, env remedy', () => {
+    const r = mod.buildReason('deny', 60, { ask: 20, step: 10, deny: 60 }, mod.sessionFile('s1'));
+    assert.match(r, /^\[spawn-cap\] Subagent spawn #60 in this session hit the hard cap \(SPAWN_CAP_DENY=60\)\. Do not retry/);
+    assert.match(r, /deleting ~\/\.claude\/subagent-spawn-cap\/s1\.jsonl/);
+    assert.match(r, /raise SPAWN_CAP_DENY in the settings\.json env block and restart/);
+    assert.doesNotMatch(r, /this one call/);
+  });
+
+  it('displayPath shortens HOME to ~ and leaves other paths alone', () => {
+    assert.strictEqual(mod.displayPath(path.join(MODULE_HOME, '.claude', 'x.jsonl')), '~/.claude/x.jsonl');
+    assert.strictEqual(mod.displayPath('/elsewhere/x.jsonl'), '/elsewhere/x.jsonl');
+  });
+
+  it('shouldAsk fires at ask and every step after it', () => {
+    const t = { ask: 20, step: 10, deny: 60 };
+    const asks = [];
+    for (let n = 1; n <= 60; n++) if (mod.shouldAsk(n, t)) asks.push(n);
+    assert.deepStrictEqual(asks, [20, 30, 40, 50, 60]);
   });
 
   it('isSpawnTool matches Agent and Task only', () => {
@@ -146,19 +197,36 @@ describe('Thresholds', () => {
     assert.strictEqual(lineCount(ledger(home, 'sess-1')), 3);
   });
 
-  it('asks exactly at the ask threshold and keeps asking until deny', async () => {
+  it('asks exactly at the ask threshold, then every SPAWN_CAP_ASK_STEP spawns, until deny', async () => {
     const home = freshHome();
-    const decisions = await spawnN(home, 5, 'sess-1', { SPAWN_CAP_ASK: '3', SPAWN_CAP_DENY: '5' });
+    const decisions = await spawnN(home, 8, 'sess-1', { SPAWN_CAP_ASK: '2', SPAWN_CAP_ASK_STEP: '2', SPAWN_CAP_DENY: '7' });
+    assert.deepStrictEqual(decisions, ['allow', 'ask', 'allow', 'ask', 'allow', 'ask', 'deny', 'deny']);
+  });
+
+  it('step 1 asks on every spawn from the threshold to the cap', async () => {
+    const home = freshHome();
+    const decisions = await spawnN(home, 5, 'sess-1', { SPAWN_CAP_ASK: '3', SPAWN_CAP_ASK_STEP: '1', SPAWN_CAP_DENY: '5' });
     assert.deepStrictEqual(decisions, ['allow', 'allow', 'ask', 'ask', 'deny']);
   });
 
-  it('the ask reason names the count, both thresholds, and the escape hatch', async () => {
+  it('default cadence in-process: prompts at 20, 30, 40, 50 and denies at 60', () => {
+    const event = { tool_name: 'Agent', session_id: 'cadence-default', tool_input: { prompt: 'p' } };
+    const decisions = [];
+    for (let i = 0; i < 61; i++) decisions.push(mod.evaluateSpawn(event, {}).decision);
+    const asks = decisions.map((d, i) => (d === 'ask' ? i + 1 : null)).filter(Boolean);
+    assert.deepStrictEqual(asks, [20, 30, 40, 50]);
+    assert.deepStrictEqual(decisions.slice(59), ['deny', 'deny']);
+    assert.strictEqual(decisions.filter((d) => d === 'allow').length, 55);
+    assert.strictEqual(lineCount(mod.sessionFile('cadence-default')), 59);
+  });
+
+  it('the ask reason names the count, both thresholds, the next check, and the ledger path', async () => {
     const home = freshHome();
-    const { output } = await runHook(home, spawnPayload(), { SPAWN_CAP_ASK: '1', SPAWN_CAP_DENY: '9' });
+    const { output } = await runHook(home, spawnPayload(), { SPAWN_CAP_ASK: '1', SPAWN_CAP_ASK_STEP: '3', SPAWN_CAP_DENY: '9' });
     assert.strictEqual(decisionOf(output), 'ask');
-    assert.match(reasonOf(output), /^⚠️ \[spawn-cap\] Subagent spawn #1 /);
-    assert.match(reasonOf(output), /SPAWN_CAP_ASK=1; hard cap SPAWN_CAP_DENY=9/);
-    assert.match(reasonOf(output), /SPAWN_CAP_ALLOW=true/);
+    assert.match(reasonOf(output), /^⚠️ \[spawn-cap\] Subagent spawn #1 in this session \(ask threshold SPAWN_CAP_ASK=1, next check at #4, hard cap SPAWN_CAP_DENY=9\)/);
+    assert.match(reasonOf(output), /the next 2 spawns then pass without asking/);
+    assert.match(reasonOf(output), /deleting ~\/\.claude\/subagent-spawn-cap\/sess-1\.jsonl/);
     assert.strictEqual(output.hookSpecificOutput.hookEventName, 'PreToolUse');
   });
 
@@ -168,8 +236,9 @@ describe('Thresholds', () => {
     assert.deepStrictEqual(decisions, ['allow', 'deny']);
     const { output } = await runHook(home, spawnPayload(), { SPAWN_CAP_ASK: '2', SPAWN_CAP_DENY: '2' });
     assert.strictEqual(decisionOf(output), 'deny');
-    assert.match(reasonOf(output), /^🚨 \[spawn-cap\] Subagent spawn #2 in this session reached the hard cap \(SPAWN_CAP_DENY=2\)/);
-    assert.match(reasonOf(output), /SPAWN_CAP_ALLOW=true/);
+    assert.match(reasonOf(output), /^🚨 \[spawn-cap\] Subagent spawn #2 in this session hit the hard cap \(SPAWN_CAP_DENY=2\)\. Do not retry/);
+    assert.match(reasonOf(output), /deleting ~\/\.claude\/subagent-spawn-cap\/sess-1\.jsonl/);
+    assert.match(reasonOf(output), /raise SPAWN_CAP_DENY/);
   });
 
   it('denied calls are not counted: the ledger stops growing at deny', async () => {
@@ -189,8 +258,8 @@ describe('Thresholds', () => {
   it('invalid env values fall back to the defaults', async () => {
     const home = freshHome();
     const decisions = await spawnN(home, 3, 'sess-1', { SPAWN_CAP_ASK: '1', SPAWN_CAP_DENY: 'lots' });
-    // deny "lots" -> 60, ask 1 -> ask from the first call, never deny
-    assert.deepStrictEqual(decisions, ['ask', 'ask', 'ask']);
+    // deny "lots" -> 60, step unset -> 10: ask on #1, then silent until #11
+    assert.deepStrictEqual(decisions, ['ask', 'allow', 'allow']);
     const garbage = await spawnN(freshHome(), 2, 'sess-1', { SPAWN_CAP_ASK: '0', SPAWN_CAP_DENY: '-5' });
     assert.deepStrictEqual(garbage, ['allow', 'allow']);
   });
@@ -224,6 +293,19 @@ describe('SPAWN_CAP_ALLOW', () => {
     await runHook(home, spawnPayload(), { ...env, SPAWN_CAP_ALLOW: 'true' });
     const { output } = await runHook(home, spawnPayload(), env);
     assert.strictEqual(decisionOf(output), 'deny');
+  });
+
+  it('a bypass writes an ALLOW_OVERRIDE line to hooks-logs with the count', async () => {
+    const home = freshHome();
+    const env = { SPAWN_CAP_ASK: '1', SPAWN_CAP_DENY: '1', SPAWN_CAP_ALLOW: 'true' };
+    await runHook(home, spawnPayload('sess-log', { agent_id: 'agent-9', agent_type: 'Explore' }), env);
+    const lines = logLines(home).filter((l) => l.level === 'ALLOW_OVERRIDE');
+    assert.strictEqual(lines.length, 1);
+    assert.strictEqual(lines[0].hook, 'subagent-spawn-cap');
+    assert.strictEqual(lines[0].count, 1);
+    assert.strictEqual(lines[0].session_id, 'sess-log');
+    assert.strictEqual(lines[0].agent_id, 'agent-9');
+    assert.strictEqual(lines[0].deny, 1);
   });
 
   it('anything but the literal "true" does not bypass', async () => {
@@ -275,12 +357,36 @@ describe('Session scoping', () => {
     assert.strictEqual(line.description.length, 80);
   });
 
-  it('a missing session_id fails open and writes nothing', async () => {
+  it('a missing session_id fails open, writes no ledger, and leaves a WARN in hooks-logs', async () => {
     const home = freshHome();
     const { code, output } = await runHook(home, spawnPayload(undefined, { session_id: undefined }), { SPAWN_CAP_ASK: '1', SPAWN_CAP_DENY: '1' });
     assert.strictEqual(code, 0);
     assert.deepStrictEqual(output, {});
     assert.ok(!fs.existsSync(stateDir(home)));
+    const warns = logLines(home).filter((l) => l.level === 'WARN');
+    assert.strictEqual(warns.length, 1);
+    assert.match(warns[0].msg, /without session_id/);
+  });
+
+  it('a clamped SPAWN_CAP_DENY leaves a WARN in hooks-logs', async () => {
+    const home = freshHome();
+    await runHook(home, spawnPayload('sess-clamp'), { SPAWN_CAP_ASK: '5', SPAWN_CAP_DENY: '2' });
+    const warns = logLines(home).filter((l) => l.level === 'WARN');
+    assert.strictEqual(warns.length, 1);
+    assert.match(warns[0].msg, /clamped/);
+    assert.strictEqual(warns[0].deny, 5);
+  });
+
+  it('ASK and BLOCKED log lines carry count, thresholds, and subagent_type', async () => {
+    const home = freshHome();
+    const env = { SPAWN_CAP_ASK: '1', SPAWN_CAP_DENY: '2' };
+    await runHook(home, spawnPayload('sess-l2'), env);
+    await runHook(home, spawnPayload('sess-l2'), env);
+    const [ask, blocked] = logLines(home).filter((l) => l.level === 'ASK' || l.level === 'BLOCKED');
+    assert.strictEqual(ask.level, 'ASK');
+    assert.deepStrictEqual([ask.count, ask.ask, ask.step, ask.deny, ask.subagent_type], [1, 1, 10, 2, 'Explore']);
+    assert.strictEqual(blocked.level, 'BLOCKED');
+    assert.strictEqual(blocked.count, 2);
   });
 });
 
