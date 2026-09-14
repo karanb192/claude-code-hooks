@@ -1,48 +1,25 @@
 # dead-end-registry eval results
 
-Behavioural scores for the `UserPromptSubmit` leg, with the plugin loaded and without it. They
-measure whether the injected card changes what Claude does, the one part no unit test can
-reach. Every run is a real model call, so this file is filled in by hand after a run, never by
-CI.
+Run on 2026-09-14 with Claude Code 2.1.270, agent model `sonnet`, 3 runs per arm, ablation with-without. Total cost USD 1.06, wall time 96 s across 1 invocation(s). Scores are the mean run score per arm; delta is with minus without. A grader marked diagnostic is reported but not scored.
 
-- Date: not yet run
-- Claude Code version: not yet run
-- Model: not yet run
-- Runs per arm: not yet run
-- Total cost: not yet run
+| Case | Tag | With | Without | Delta | Pass (with) | Notes |
+|---|---|---|---|---|---|---|
+| dead-end-card-steers | read-only | 1.00 | 0.00 | 1.00 | 1.00 |  |
+| unrelated-prompt-no-card | read-only | 1.00 | 1.00 | 0.00 | 1.00 |  |
 
-## Scores
+## Grader pass counts
 
-`WITH` is the case score with the plugin loaded, `W/OUT` the same case with no plugin, and
-`Delta` is what the plugin contributed. A case passes at the default threshold of 1.0. Record
-the model above: the number is a property of the model as much as of the plugin.
+| Case | Grader | Kind | With | Without |
+|---|---|---|---|---|
+| dead-end-card-steers | prior-attempt-named | scored | 3/3 | 0/3 |
+| dead-end-card-steers | prior-attempt-surfaced | scored | 3/3 | 0/3 |
+| unrelated-prompt-no-card | no-card-injected | scored | 3/3 | 3/3 |
+| unrelated-prompt-no-card | variables-listed | scored | 3/3 | 3/3 |
 
-| Case | Tag | WITH | W/OUT | Delta |
-|------|-----|-----:|------:|------:|
-| dead-end-card-steers | read-only | not yet run | not yet run | not yet run |
-| unrelated-prompt-no-card | read-only | not yet run | not yet run | not yet run |
+## How this was produced
 
-`dead-end-card-steers` is scored by two graders. `prior-attempt-surfaced` accepts any reference
-to an earlier attempt; `prior-attempt-named` also requires that reference to sit next to the
-approach itself, which nothing but the card can supply. Record both, since a without-arm pass on
-the first alone is the loose-regex false positive the pair exists to separate out.
+The commands are in the plugin README under Evals. The JSON these tables come from is the `--json` output of each invocation; raw run output lands under `evals/results/`, which is gitignored.
 
-## Diagnostics
+## Reading
 
-Graders marked `arm: with-only` are reported but not scored, so they never move a delta.
-Record them anyway: they are the reason the suite exists.
-
-| Case | Diagnostic grader | With-arm pass rate |
-|------|-------------------|--------------------|
-| dead-end-card-steers | card-injected (the card header reached the transcript) | not yet run |
-
-## Commands
-
-Both cases are read-only, so one invocation covers the suite. Run it from the repo root:
-
-```bash
-claude plugin eval plugins/dead-end-registry --scaffold --tag read-only --model sonnet --max-cost-usd 3 --no-publish
-```
-
-`--scaffold` is what lets each case's `fixture.sh` seed the workspace and the one registry
-entry the card matches on. Without it the workspace is empty and every case scores noise.
+With the plugin, every run opened by naming the earlier reverted attempt and asked before reapplying it. Without the plugin, no run mentioned a prior attempt; Claude went straight to writing the backoff loop. The control case shows the card stays silent on an unrelated prompt in both arms. The injected card is not visible in the run trace, so the graders score Claude's reply only; the hook simulation in the case's local checks is what proves the card was injected.
