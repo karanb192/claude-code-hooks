@@ -28,6 +28,13 @@ function usageLine({ ts, model = 'claude-fable-5-1', write = 0, read = 0, input 
   });
 }
 
+function compactLine({ ts, pre = 562631, post = 16996, trigger = 'manual' }) {
+  return JSON.stringify({
+    type: 'system', subtype: 'compact_boundary', timestamp: new Date(ts).toISOString(), content: 'Conversation compacted', level: 'info',
+    compactMetadata: { trigger, preTokens: pre, postTokens: post, durationMs: 137149 },
+  });
+}
+
 function writeTranscript(dir, lines) {
   const p = path.join(dir, 'session.jsonl');
   fs.writeFileSync(p, lines.map(l => (typeof l === 'string' ? l : usageLine(l))).join('\n') + '\n');
@@ -219,6 +226,57 @@ describe('card (--render)', () => {
     const r = run({}, {}, ['--render', '--transcript', p]);
     assert.strictEqual(r.code, 0);
     assert.match(r.out, /cache-tax ·/);
+  });
+});
+
+describe('compaction', () => {
+  it('reads the boundary and keeps the older block for pricing', () => {
+    const now = Date.now();
+    const p = writeTranscript(tmp, [{ ts: now - 6 * HOUR, write: 1000, read: 561000 }, compactLine({ ts: now - 60000 })]);
+    const u = readLastUsage(p);
+    assert.strictEqual(u.model, 'claude-fable-5-1');
+    assert.deepStrictEqual(u.compacted, { ts: u.compacted.ts, trigger: 'manual', preTokens: 562631, postTokens: 16996 });
+    const st = stateFrom(u, now);
+    assert.strictEqual(st.lapsed, false);
+    assert.strictEqual(st.ctx, 16996);
+    assert.ok(Math.abs(st.rewriteUsd - 0.33992) < 1e-6);
+  });
+  it('a newer turn after the boundary wins, so the state heals itself', () => {
+    const now = Date.now();
+    const p = writeTranscript(tmp, [{ ts: now - 6 * HOUR, write: 1000, read: 561000 }, compactLine({ ts: now - 120000 }), { ts: now - 60000, write: 39967, read: 30516 }]);
+    const u = readLastUsage(p);
+    assert.strictEqual(u.compacted, undefined);
+    assert.strictEqual(u.ctx, 70485);
+  });
+  it('status line shows the carried size and a floor, never the old context', () => {
+    const now = Date.now();
+    const p = writeTranscript(tmp, [{ ts: now - 6 * HOUR, write: 1000, read: 561000 }, compactLine({ ts: now - 60000 })]);
+    assert.strictEqual(statusLine({ transcript_path: p }, now), 'cache reset by /compact · 17k carried · next msg writes ≥ $0.34');
+    const q = writeTranscript(tmp, [{ ts: now - 6 * HOUR, write: 1000, read: 561000 }, compactLine({ ts: now - 60000, trigger: 'auto' })]);
+    assert.match(statusLine({ transcript_path: q }, now), /^cache reset by auto-compact · 17k carried/);
+  });
+  it('guard and resume stay silent after a compaction even when the old context was big and cold', () => {
+    const now = Date.now();
+    const p = writeTranscript(tmp, [{ ts: now - 6 * HOUR, write: 1000, read: 561000 }, compactLine({ ts: now - 60000 })]);
+    assert.deepStrictEqual(guard({ transcript_path: p, session_id: 's-compact', prompt: 'hi' }, now), { exit: 0 });
+    const r = run({ hook_event_name: 'UserPromptSubmit', transcript_path: p, session_id: 's-compact-block', prompt: 'hi' }, { CACHE_TAX_BLOCK: '1' });
+    assert.strictEqual(r.code, 0);
+    assert.strictEqual(r.out, '');
+    assert.deepStrictEqual(resume({ source: 'resume', transcript_path: p }, now), { exit: 0 });
+  });
+  it('card explains the reset', () => {
+    const now = Date.now();
+    const p = writeTranscript(tmp, [{ ts: now - 6 * HOUR, write: 1000, read: 561000, id: 'a' }, compactLine({ ts: now - 60000 })]);
+    const card = renderCard(p, now);
+    assert.match(card, /state       reset by \/compact 1m ago; the 563k-token context it replaced no longer applies/);
+    assert.match(card, /context     16,996 tokens carried/);
+    assert.match(card, /cold cost   at least \$0\.34/);
+    assert.doesNotMatch(card, /COLD, lapsed/);
+  });
+  it('a boundary with no usage before it still renders', () => {
+    const now = Date.now();
+    const p = writeTranscript(tmp, [compactLine({ ts: now - 60000, post: 0 })]);
+    assert.strictEqual(statusLine({ transcript_path: p }, now), 'cache reset by /compact · next msg writes the summary fresh');
   });
 });
 

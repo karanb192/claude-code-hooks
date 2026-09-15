@@ -22,7 +22,7 @@ Restart Claude Code, done. (Or from a shell: `claude plugin install cache-tax@cl
 
 `/cache-tax:status` renders the full card on demand: tier, warm or cold, context size, cold-comeback price, and this session's cache writes, reads and full re-writes so far. From a shell, `node cache-tax.js --render --transcript <path>` renders the same card for any transcript; without `--transcript` it picks the newest transcript for the current directory.
 
-The guard ignores slash commands, so `/clear` and `/compact` never trigger it.
+The guard ignores slash commands, so `/clear` and `/compact` never trigger it. After a compaction (manual or auto) the old context no longer applies, so until the first new turn lands the status line reads `cache reset by /compact · 17k carried · next msg writes ≥ $0.34`, the card says the same, and the guard stays quiet: the summary has never been cached, so that first write is unavoidable and small.
 
 ### The warning, verbatim
 
@@ -80,7 +80,9 @@ Hooks receive no token counts, so nothing here comes from the hook input except 
 - Needs node on PATH, like every plugin in this marketplace.
 - The status line row is wired by hand (plugins cannot ship one), so the countdown is only as live as your `refreshInterval`; the cold flip itself is event-driven and needs no timer.
 - Dollars are API list prices. On a subscription they are the yardstick, not the bill, and how a cache write weighs against the 5-hour and weekly limits is not documented anywhere I could find.
-- The guard reads the newest real turn in the transcript. A session whose last request was a subagent's or a compaction is priced from that request, which can be smaller than the context you are about to send.
+- The guard reads the newest real turn in the transcript. A session whose last request was a subagent's is priced from that request, which can be smaller than the context you are about to send.
+- After a compaction the figure is a floor. The transcript records the tokens carried into the summary (`compactMetadata.postTokens`) but not the system prompt and tools that go in front of them; on one 562k session the row said `≥ $0.34` and the first message wrote 40k tokens, $0.80.
+- `/compact` is not a free exit from a cold cache. The compaction request sends the whole context to the model once more, and Claude Code does not write that request's usage to the transcript, so neither the guard nor the card's session totals see it. If the cache has lapsed and most of the context is stale, `/clear` plus a handoff note is the cheap way out.
 - Two tests pin the false-positive side (warm session, small context) so the guard stays quiet where it should; there is no corpus beyond the test file.
 
 ## Related tools
