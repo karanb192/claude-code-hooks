@@ -1,5 +1,9 @@
 import sharp from 'sharp'
 import { writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const here = dirname(fileURLToPath(import.meta.url))
 
 const C = {
   void: '#0A0B0D', panel: '#101216', line: '#23272E', text: '#E7EAEE', dim: '#9BA2AC', faint: '#5C636D',
@@ -66,8 +70,8 @@ function card(w, h) {
 
 const out = async (name, svg, opts = {}) => {
   svg = svg.replace(/[ \t]+$/gm, '')
-  writeFileSync(`${name}.svg`, svg)
-  await sharp(Buffer.from(svg), { density: 192 }).resize(opts.w, opts.h).png().toFile(`${name}.png`)
+  writeFileSync(join(here, `${name}.svg`), svg)
+  await sharp(Buffer.from(svg), { density: 192 }).resize(opts.w, opts.h).png().toFile(join(here, `${name}.png`))
   console.log('wrote', name + '.png')
 }
 await out('cache-tax-icon-512', icon(512), { w: 512, h: 512 })
