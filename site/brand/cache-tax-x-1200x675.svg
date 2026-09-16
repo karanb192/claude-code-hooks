@@ -3,7 +3,7 @@
     <radialGradient id="g" cx="0.18" cy="0.5" r="0.7"><stop offset="0" stop-color="#17303F"/><stop offset="1" stop-color="#0A0B0D"/></radialGradient>
   </defs>
   <rect width="1200" height="675" fill="url(#g)"/>
-  
+
   <g>
     <polygon points="231.75,191.43 350.82,259.47 231.75,327.51 112.68,259.47" fill="#BFEFFF"/>
     <polygon points="112.68,259.47 231.75,327.51 231.75,452.25 112.68,384.21" fill="#5FC6F2"/>

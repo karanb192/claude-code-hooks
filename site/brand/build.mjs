@@ -65,6 +65,7 @@ function card(w, h) {
 }
 
 const out = async (name, svg, opts = {}) => {
+  svg = svg.replace(/[ \t]+$/gm, '')
   writeFileSync(`${name}.svg`, svg)
   await sharp(Buffer.from(svg), { density: 192 }).resize(opts.w, opts.h).png().toFile(`${name}.png`)
   console.log('wrote', name + '.png')
