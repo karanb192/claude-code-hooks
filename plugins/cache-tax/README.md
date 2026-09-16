@@ -31,6 +31,10 @@ cache-tax: the 1h prompt cache lapsed 3h00m ago. This message re-writes 300,002 
 (a warm turn would have cost $0.08). If most of that context is stale, /clear and start from a handoff note instead.
 ```
 
+## The Mod form
+
+The same tool exists as a Claude Mod, [cache-tax@claude-code-mods](https://github.com/karanb192/claude-code-mods/tree/main/plugins/cache-tax), for anyone who has turned on function hooks (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, early access). It runs inside Claude Code instead of reading the transcript, refuses a cold send once by default, and adds what a hook cannot do: `/keepwarm 6h` sends one cache-shared ping after 50 idle minutes so the cache is read, not re-written, when you come back. Install one form, not both; two guards fire twice. The status line segment below stays with this hook's files either way, because a mod cannot draw into the status line.
+
 ## What Claude Code already does, and where this adds
 
 On `--resume` of a session older than its cache TTL, recent Claude Code versions (seen on 2.1.261) show their own dialog, "this session is N old and M tokens, we recommend resuming from a summary". That covers the resume path in tokens. cache-tax adds the dollar figure there, and covers the case that dialog cannot see: a session you left open, came back to after an hour, and typed into. Nothing native intervenes at that keystroke.
