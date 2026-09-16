@@ -1,5 +1,7 @@
 # cache-tax
 
+![cache-tax: the comeback price of a cold prompt cache, before you pay it](../../site/brand/cache-tax-social-1280x640.png)
+
 > The comeback price of a cold prompt cache, shown before you pay it.
 
 Claude Code's main conversation rides a 1-hour prompt cache. Come back at minute 59 and the next message costs cents. Come back at minute 61 and the whole context is re-written at the cache-write rate, which on Fable 5.1 is 80x a cache read ($20 against $0.25 per million tokens). A 500k-token session re-cached cold is $10 at list price, and the message that triggers it is usually "good morning". Claude Code computes all of this and shows none of it at the moment you press Enter. This plugin does.
