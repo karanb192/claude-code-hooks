@@ -55,6 +55,7 @@ const DEFAULT_PRICES = {
   'fable-5': [1.0, 12.5, 20],
   'opus-5': [0.5, 6.25, 10],
   'opus-4': [0.5, 6.25, 10],
+  'sonnet-5': [0.2, 2.5, 4],
   'sonnet': [0.3, 3.75, 6],
   'haiku': [0.1, 1.25, 2],
 };
@@ -64,7 +65,7 @@ function prices() {
   return Object.assign({}, DEFAULT_PRICES, extra);
 }
 
-// Longest key first so fable-5-1 wins over fable-5 and opus-5 over opus.
+// Longest key first so fable-5-1 wins over fable-5 and sonnet-5 over sonnet.
 function family(model) {
   const m = String(model || '').toLowerCase();
   const keys = Object.keys(prices()).sort((a, b) => b.length - a.length);
@@ -208,7 +209,7 @@ function stateFrom(u, nowMs) {
     const c = u.compacted;
     const pr = priceFor(u.model);
     return {
-      compacted: c, ttl, ageSec: Math.max(0, (nowMs - c.ts) / 1000), leftSec: 0, lapsed: false,
+      compacted: c, ttl, ageSec: Math.max(0, (nowMs - c.ts) / 1000), leftSec: 0, lapsedSec: 0, lapsed: false,
       ctx: c.postTokens, model: u.model, family: pr ? pr.family : null,
       rewriteUsd: pr && c.postTokens ? c.postTokens * pr.write1h / 1e6 : null,
       warmUsd: null, writeRate: pr ? pr.write1h : null,
@@ -219,7 +220,7 @@ function stateFrom(u, nowMs) {
   const pr = priceFor(u.model);
   const writeRate = pr ? (ttl === '5m' ? pr.write5m : pr.write1h) : null;
   return {
-    ttl, ageSec, leftSec, lapsed: leftSec <= 0, ctx: u.ctx, model: u.model, family: pr ? pr.family : null,
+    ttl, ageSec, leftSec, lapsedSec: Math.max(0, -leftSec), lapsed: leftSec <= 0, ctx: u.ctx, model: u.model, family: pr ? pr.family : null,
     rewriteUsd: writeRate == null ? null : u.ctx * writeRate / 1e6,
     warmUsd: pr ? u.ctx * pr.read / 1e6 : null,
     writeRate,
@@ -259,7 +260,7 @@ function statusLine(payload, nowMs) {
   if (!st) return 'cache ?';
   if (st.compacted) return `cache reset by ${compactName(st.compacted)}` + (st.ctx ? ` · ${fmtTok(st.ctx)} carried · next msg writes ≥ ${fmtUsd(st.rewriteUsd)}` : ' · next msg writes the summary fresh');
   if (!st.lapsed) return `cache ${fmtDur(st.leftSec)} left · ${fmtTok(st.ctx)} · cold costs ${fmtUsd(st.rewriteUsd)}`;
-  return `cache LAPSED ${fmtDur(st.ageSec)} ago · next msg re-writes ${fmtTok(st.ctx)} = ${fmtUsd(st.rewriteUsd)}`;
+  return `cache LAPSED ${fmtDur(st.lapsedSec)} ago · next msg re-writes ${fmtTok(st.ctx)} = ${fmtUsd(st.rewriteUsd)}`;
 }
 
 function compactName(c) { return c.trigger === 'auto' ? 'auto-compact' : '/compact'; }
@@ -267,7 +268,7 @@ function compactName(c) { return c.trigger === 'auto' ? 'auto-compact' : '/compa
 function guardMessage(st) {
   const rate = st.writeRate == null ? 'the cache-write rate' : '$' + st.writeRate + '/MTok';
   const warm = st.warmUsd == null ? '' : ` (a warm turn would have cost ${fmtUsd(st.warmUsd)})`;
-  return `cache-tax: the ${st.ttl} prompt cache lapsed ${fmtDur(st.ageSec)} ago. This message re-writes ` +
+  return `cache-tax: the ${st.ttl} prompt cache lapsed ${fmtDur(st.lapsedSec)} ago. This message re-writes ` +
     `${st.ctx.toLocaleString('en-US')} tokens at ${rate} = ${fmtUsd(st.rewriteUsd)}${warm}. ` +
     `If most of that context is stale, /clear and start from a handoff note instead.`;
 }
@@ -329,7 +330,7 @@ function renderCard(transcriptPath, nowMs) {
     lines.push(`context     ${st.ctx ? st.ctx.toLocaleString('en-US') + ' tokens carried' : 'size unknown'} (summary and kept turns; system prompt and tools are not in the transcript)`);
     lines.push(`cold cost   ${st.rewriteUsd == null ? 'n/a' : 'at least ' + fmtUsd(st.rewriteUsd)}, the first message writes the carried tokens fresh`);
   } else lines.push(st.lapsed
-    ? `state       COLD, lapsed ${fmtDur(st.ageSec)} ago`
+    ? `state       COLD, lapsed ${fmtDur(st.lapsedSec)} ago`
     : `state       warm, ${fmtDur(st.leftSec)} left`);
   if (!st.compacted) {
     lines.push(`context     ${st.ctx.toLocaleString('en-US')} tokens`);

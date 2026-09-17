@@ -56,8 +56,13 @@ describe('pricing', () => {
     assert.strictEqual(family('claude-fable-5'), 'fable-5');
     assert.strictEqual(family('claude-opus-5'), 'opus-5');
     assert.strictEqual(family('claude-opus-4-8'), 'opus-4');
-    assert.strictEqual(family('claude-sonnet-5'), 'sonnet');
+    assert.strictEqual(family('claude-sonnet-5'), 'sonnet-5');
+    assert.strictEqual(family('claude-sonnet-4-6'), 'sonnet');
     assert.strictEqual(family('something-else'), null);
+  });
+  it('prices Sonnet 5 below Sonnet 4.x', () => {
+    assert.deepStrictEqual([priceFor('claude-sonnet-5').read, priceFor('claude-sonnet-5').write5m, priceFor('claude-sonnet-5').write1h], [0.2, 2.5, 4]);
+    assert.deepStrictEqual([priceFor('claude-sonnet-4-6').read, priceFor('claude-sonnet-4-6').write5m, priceFor('claude-sonnet-4-6').write1h], [0.3, 3.75, 6]);
   });
   it('prices the 1h write at 80x the read on Fable 5.1', () => {
     const p = priceFor('claude-fable-5-1');
@@ -113,6 +118,7 @@ describe('state', () => {
     assert.ok(warm.leftSec > 49 * 60 && warm.leftSec <= 50 * 60);
     const cold = stateFrom(parseUsageLine(usageLine({ ts: now - 2 * HOUR, write: 1000, read: 200000 })), now);
     assert.strictEqual(cold.lapsed, true);
+    assert.ok(cold.lapsedSec > 3599 && cold.lapsedSec <= 3600, 'lapsed counts from expiry, not from the last turn');
     assert.ok(Math.abs(cold.rewriteUsd - 201002 * 20 / 1e6) < 1e-6);
   });
   it('uses the 5m TTL when the last write was on the 5m tier', () => {
@@ -144,7 +150,7 @@ describe('status line', () => {
     const now = Date.now();
     const p = writeTranscript(tmp, [{ ts: now - 2 * HOUR, write: 1000, read: 299000 }]);
     const line = statusLine({ transcript_path: p }, now);
-    assert.match(line, /^cache LAPSED 2h00m ago · next msg re-writes 300k = \$6\.00$/);
+    assert.match(line, /^cache LAPSED 1h00m ago · next msg re-writes 300k = \$6\.00$/);
   });
   it('falls back to the transcript when the native object is incomplete (right after compaction)', () => {
     const now = Date.now();
@@ -179,7 +185,7 @@ describe('guard (UserPromptSubmit)', () => {
     const r = run({ hook_event_name: 'UserPromptSubmit', transcript_path: p, session_id: 's-warn' }, { CACHE_TAX_BLOCK: '' });
     assert.strictEqual(r.code, 0);
     const o = JSON.parse(r.out);
-    assert.match(o.systemMessage, /lapsed 3h00m ago/);
+    assert.match(o.systemMessage, /the 1h prompt cache lapsed 2h00m ago/);
     assert.match(o.systemMessage, /300,002 tokens at \$20\/MTok = \$6\.00/);
   });
   it('blocks once, then lets the resend through (integration, exit 2 then 0)', () => {
@@ -217,7 +223,7 @@ describe('resume (SessionStart)', () => {
 describe('card (--render)', () => {
   it('renders state, cost and session totals', () => {
     const now = Date.now();
-    const p = writeTranscript(tmp, [{ ts: now - 3 * HOUR, write: 100000, read: 0, id: 'a' }, { ts: now - 2 * HOUR, write: 500, read: 100000, id: 'b' }]);
+    const p = writeTranscript(tmp, [{ ts: now - 4 * HOUR, write: 100000, read: 0, id: 'a' }, { ts: now - 3 * HOUR, write: 500, read: 100000, id: 'b' }]);
     const card = renderCard(p, now);
     assert.match(card, /cache-tax · claude-fable-5-1 · 1h tier/);
     assert.match(card, /COLD, lapsed 2h00m ago/);
