@@ -29,7 +29,7 @@ The guard ignores slash commands, so `/clear` and `/compact` never trigger it. A
 ### The warning, verbatim
 
 ```
-cache-tax: the 1h prompt cache lapsed 3h00m ago. This message re-writes 300,002 tokens at $20/MTok = $6.00
+cache-tax: the 1h prompt cache lapsed 2h00m ago. This message re-writes 300,002 tokens at $20/MTok = $6.00
 (a warm turn would have cost $0.08). If most of that context is stale, /clear and start from a handoff note instead.
 ```
 
@@ -72,11 +72,11 @@ All optional, set via environment variables:
 | `CACHE_TAX_TTL` | auto | Force `5m` or `1h` when the transcript has no cache-write tier to infer from. |
 | `CACHE_TAX_PRICES` | list rates | JSON overriding per-family prices as `[cache read, 5m write, 1h write]` in $/MTok, e.g. `{"fable-5-1":[0.25,12.5,20]}`. |
 
-Built-in list rates (September 2026): Fable 5.1 `[0.25, 12.5, 20]`, Fable 5 `[1, 12.5, 20]`, Opus 5 and 4.x `[0.5, 6.25, 10]`, Sonnet `[0.3, 3.75, 6]`, Haiku `[0.1, 1.25, 2]`. Unknown models get token counts and no dollar figure. If you are on a subscription the dollars are what the same traffic would cost at API list price, which is the only public yardstick; how a cache write weighs against your plan limits is not documented.
+Built-in list rates (September 2026): Fable 5.1 `[0.25, 12.5, 20]`, Fable 5 `[1, 12.5, 20]`, Opus 5 and 4.x `[0.5, 6.25, 10]`, Sonnet 5 `[0.2, 2.5, 4]`, Sonnet 4.x `[0.3, 3.75, 6]`, Haiku `[0.1, 1.25, 2]`. Unknown models get token counts and no dollar figure. If you are on a subscription the dollars are what the same traffic would cost at API list price, which is the only public yardstick; how a cache write weighs against your plan limits is not documented.
 
 ## How it decides
 
-The tier comes from the newest assistant usage block in the transcript: `cache_creation.ephemeral_1h_input_tokens` means the 1h tier, `ephemeral_5m_input_tokens` the 5m tier. Age is wall-clock time since that block's timestamp. Lapsed means age past the tier's TTL. The re-write cost is the block's full context (input plus cache read plus cache write) at the tier's write rate. A "full miss" on the card is a request whose cache read covered under half of the previous request's context while its write covered over half of it.
+The tier comes from the newest assistant usage block in the transcript: `cache_creation.ephemeral_1h_input_tokens` means the 1h tier, `ephemeral_5m_input_tokens` the 5m tier. Age is wall-clock time since that block's timestamp. Lapsed means age past the tier's TTL; the "lapsed N ago" figure is the time since that expiry, not since the block. The re-write cost is the block's full context (input plus cache read plus cache write) at the tier's write rate. A "full miss" on the card is a request whose cache read covered under half of the previous request's context while its write covered over half of it.
 
 Hooks receive no token counts, so nothing here comes from the hook input except the resume fields Claude Code added in v2.1.251. Everything else is read from `transcript_path`, the file Claude Code is already writing.
 
