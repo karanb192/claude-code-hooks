@@ -6,6 +6,28 @@
 
 Claude Code's main conversation rides a 1-hour prompt cache. Come back at minute 59 and the next message costs cents. Come back at minute 61 and the whole context is re-written at the cache-write rate, which on Fable 5.1 is 80x a cache read ($20 against $0.25 per million tokens). A 500k-token session re-cached cold is $10 at list price, and the message that triggers it is usually "good morning". Claude Code computes all of this and shows none of it at the moment you press Enter. This plugin does.
 
+## A cache countdown row in a status line you already have
+
+No plugin install needed. `cache-tax.js` is one file with no dependencies. Copy it, then call it from your own status line script with the same stdin Claude Code sends you, and print its line as one more row:
+
+```
+curl -fsSL https://raw.githubusercontent.com/karanb192/claude-code-hooks/main/plugins/cache-tax/cache-tax.js -o ~/.claude/cache-tax.js
+```
+
+```sh
+# inside your status line script, where $input holds the JSON Claude Code piped in
+printf '%s' "$input" | node ~/.claude/cache-tax.js --statusline
+```
+
+It prints one line, while warm and then after the cache lapses:
+
+```
+cache 47m left · 218k · cold costs $4.37 · last miss ttl_expired_1h
+cache COLD · next msg re-writes 218k = $4.37 · last miss ttl_expired_1h
+```
+
+It reads the native `prompt_cache` object Claude Code sends to status lines (v2.1.251+), so Claude Code re-runs it the moment the cache goes cold; on older versions it falls back to the transcript named in the same payload. The guard and the resume price below are the plugin; the row works without it.
+
 ## Install
 
 ```
