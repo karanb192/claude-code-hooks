@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Guard Pack - PreToolUse Hook for Bash|Read|Edit|MultiEdit|Write|Agent|Task
+ * Guard Pack - PreToolUse Hook for Bash|Read|Edit|MultiEdit|Write|Agent|Task|Grep
  * All seven guard hooks in ONE Node process. Installing the guards
  * individually costs seven Node startups per matching tool call (about
  * 35 ms each, see bench/RESULTS.md); this pack pays one.
@@ -49,6 +49,10 @@ const LOCK_EMOJIS = { critical: '🔒', high: '🛡️', strict: '⚠️' };
 // hatches, same reason template. run(mod, tool, input, cwd, event) returns
 // null (pass) or { id, level, ask, reason, log? }; reason lacks only the
 // emoji prefix, log adds fields to the audit line, event is the full payload.
+// Union of the tools the six guards inspect; the pack's hooks/hooks.json
+// matcher must list exactly these, and a repo test pins the two together.
+const PACK_TOOLS = ['Bash', 'Read', 'Edit', 'MultiEdit', 'Write', 'Agent', 'Task', 'Grep'];
+
 const GUARDS = [
   {
     // One string compare for other tools; the only guard that applies on a spawn.
@@ -89,11 +93,13 @@ const GUARDS = [
     name: 'protect-secrets',
     emojis: STD_EMOJIS,
     run(mod, tool, input) {
-      if (!['Read', 'Edit', 'Write', 'Bash'].includes(tool)) return null;
+      // Taken from the guard itself so a tool it learns to inspect (Grep,
+      // #55) reaches it here without a second list to keep in step.
+      if (!mod.HANDLED_TOOLS.includes(tool)) return null;
       const r = mod.check(tool, input);
       if (!r.blocked) return null;
       const p = r.pattern;
-      const action = { Read: 'read', Edit: 'modify', Write: 'write to', Bash: 'execute' }[tool];
+      const action = { Read: 'read', Edit: 'modify', Write: 'write to', Bash: 'execute', Grep: 'search' }[tool];
       return { id: p.id, level: p.level, ask: mod.ASK[p.level] === true, reason: `[${p.id}] Cannot ${action}: ${p.reason}` };
     },
   },
@@ -166,7 +172,7 @@ async function main() {
   try {
     const data = JSON.parse(input);
     const { tool_name, tool_input, session_id, cwd, permission_mode } = data;
-    if (!['Bash', 'Read', 'Edit', 'MultiEdit', 'Write', 'Agent', 'Task'].includes(tool_name)) return console.log('{}');
+    if (!PACK_TOOLS.includes(tool_name)) return console.log('{}');
 
     const v = evaluate(tool_name, tool_input, cwd, data);
     if (!v) return console.log('{}');
@@ -189,5 +195,5 @@ async function main() {
 if (require.main === module) {
   main();
 } else {
-  module.exports = { GUARDS, evaluate };
+  module.exports = { GUARDS, PACK_TOOLS, evaluate };
 }
