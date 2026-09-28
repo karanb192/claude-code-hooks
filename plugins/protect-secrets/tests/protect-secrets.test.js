@@ -798,6 +798,12 @@ describe('grep-env bash pattern (demo-take bypass 1)', () => {
   it('blocks a single-quoted .env.local filename', () => bashBlocked("rg KEY '.env.local'", 'grep-env'));
   it('blocks awk with a quoted program against .env.local', () => bashBlocked('awk -F= "/KEY/{print}" .env.local', 'grep-env'));
   it('blocks grep of .env after another command', () => bashBlocked('cat foo && grep X .env', 'grep-env'));
+  it('blocks awk with a quote glued to a flag', () => bashBlocked("awk -F'=' '{print $2}' .env", 'grep-env'));
+  it('blocks grep with a quoted --include value', () => bashBlocked('grep --include="*.txt" KEY .env', 'grep-env'));
+  it('blocks grep with a quote glued to -e', () => bashBlocked('grep -e"API_KEY" .env', 'grep-env'));
+  it('blocks grep with an escaped quote in its pattern', () => bashBlocked('grep "a\\"b" .env', 'grep-env'));
+  it('blocks a .env filename with a quoted tail', () => bashBlocked('grep KEY ./".env"', 'grep-env'));
+  it('blocks rg with a quoted .env glob', () => bashBlocked("rg -g'.env' KEY", 'grep-env'));
   it('does not treat .env after a separator as grep\'s target', () => bashAllowed('grep foo && echo .env'));
   it('allows a quoted grep that never names .env', () => bashAllowed('grep -c "some text" notes/diagram.svg'));
   it('allows awk over an ordinary file', () => bashAllowed('awk "{print $1}" notes.txt'));
