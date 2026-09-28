@@ -9,6 +9,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -34,26 +35,42 @@ function rulesOf(mod) {
   return rules;
 }
 
-// ~2KB, many quotes, no ".env". The old grep-env rule did not finish this.
+// Same segment as grep, many quotes, no ".env". A `&&` before the quotes
+// hides them from grep-env, which is how the first version of this test passed
+// on the exponential regex.
 function quoteHeavy() {
-  return `grep -c 'needle' out.txt && ` +
-    Array.from({ length: 40 }, (_, i) => `s = s.replace('old-${i}', "new-${i}")`).join(' && ');
+  return 'grep -c ' + Array.from({ length: 40 }, (_, i) => `'a${i}' "b${i}"`).join(' ');
 }
 
 test('every exported guard regex finishes a quote-heavy non-target in under 50ms', () => {
   const input = quoteHeavy();
-  const seen = [];
+  const rules = [];
   for (const name of MODULES) {
     const mod = require(path.join(ROOT, 'plugins', name, `${name}.js`));
     for (const rule of rulesOf(mod)) {
-      seen.push(`${name}:${rule.id}`);
-      const re = new RegExp(rule.regex.source, rule.regex.flags);
+      rules.push({ name, id: rule.id, source: rule.regex.source, flags: rule.regex.flags });
+    }
+  }
+  assert.ok(rules.some((r) => r.name === 'protect-secrets' && r.id === 'grep-env'));
+  assert.ok(rules.length > 20, `expected the guard rule set, scanned ${rules.length}`);
+  // A child so an exponential rule is killed. The child prints each id first.
+  const script = `
+    const rules = ${JSON.stringify(rules)};
+    const input = ${JSON.stringify(input)};
+    for (const rule of rules) {
+      process.stdout.write(rule.name + ':' + rule.id + '\\n');
+      const re = new RegExp(rule.source, rule.flags);
       const start = process.hrtime.bigint();
       re.test(input);
       const ms = Number(process.hrtime.bigint() - start) / 1e6;
-      assert.ok(ms < 50, `${name}:${rule.id} took ${ms.toFixed(1)}ms`);
+      if (!(ms < 50)) {
+        process.stdout.write('SLOW ' + ms + '\\n');
+        process.exit(2);
+      }
     }
-  }
-  assert.ok(seen.includes('protect-secrets:grep-env'), 'grep-env was not in the scanned rules');
-  assert.ok(seen.length > 20, `expected the guard rule set, scanned ${seen.length}`);
+    process.stdout.write('OK\\n');
+  `;
+  const child = spawnSync(process.execPath, ['-e', script], { timeout: 5000, encoding: 'utf8' });
+  if (child.error) assert.fail(`${child.error.code}. Last output:\\n${child.stdout}`);
+  assert.strictEqual(child.status, 0, child.stdout + child.stderr);
 });

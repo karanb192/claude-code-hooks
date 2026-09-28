@@ -8,7 +8,7 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -792,19 +792,32 @@ describe('grep-env bash pattern (demo-take bypass 1)', () => {
   it('allows grep for the word env in code', () => bashAllowed('grep -n environment src/config.js'));
   it('blocks a single-quoted grep of .env', () => bashBlocked("grep 'API_KEY' .env", 'grep-env'));
   it('blocks a double-quoted grep of .env', () => bashBlocked('grep "API_KEY" .env', 'grep-env'));
+  it('blocks a double-quoted .env filename', () => bashBlocked('grep KEY ".env"', 'grep-env'));
+  it('blocks a single-quoted .env filename', () => bashBlocked("grep KEY '.env'", 'grep-env'));
+  it('blocks a quoted path to .env', () => bashBlocked('grep "/tmp/.env"', 'grep-env'));
+  it('blocks a single-quoted .env.local filename', () => bashBlocked("rg KEY '.env.local'", 'grep-env'));
   it('blocks awk with a quoted program against .env.local', () => bashBlocked('awk -F= "/KEY/{print}" .env.local', 'grep-env'));
   it('blocks grep of .env after another command', () => bashBlocked('cat foo && grep X .env', 'grep-env'));
+  it('does not treat .env after a separator as grep\'s target', () => bashAllowed('grep foo && echo .env'));
   it('allows a quoted grep that never names .env', () => bashAllowed('grep -c "some text" notes/diagram.svg'));
   it('allows awk over an ordinary file', () => bashAllowed('awk "{print $1}" notes.txt'));
   it('allows a quote-heavy command that never names .env, quickly', () => {
-    const cmd = `grep -c 'needle' out.txt && ` +
-      Array.from({ length: 40 }, (_, i) => `s = s.replace('old-${i}', "new-${i}")`).join(' && ');
+    // Same shell segment as grep. A `&&` before the quotes hides them from this rule.
+    const cmd = 'grep -c ' + Array.from({ length: 40 }, (_, i) => `'a${i}' "b${i}"`).join(' ');
     const rule = BASH_PATTERNS.find((p) => p.id === 'grep-env');
-    const start = process.hrtime.bigint();
-    const matched = rule.regex.test(cmd);
-    const ms = Number(process.hrtime.bigint() - start) / 1e6;
-    assert.strictEqual(matched, false);
-    assert.ok(ms < 50, `grep-env took ${ms.toFixed(1)}ms on a non-matching quote-heavy command`);
+    const script = `
+      const re = new RegExp(${JSON.stringify(rule.regex.source)}, ${JSON.stringify(rule.regex.flags)});
+      const start = process.hrtime.bigint();
+      const matched = re.test(${JSON.stringify(cmd)});
+      const ms = Number(process.hrtime.bigint() - start) / 1e6;
+      process.stdout.write(JSON.stringify({ matched, ms }));
+    `;
+    const child = spawnSync(process.execPath, ['-e', script], { timeout: 1000, encoding: 'utf8' });
+    assert.ok(!(child.error && child.error.code === 'ETIMEDOUT'), 'grep-env hung');
+    assert.strictEqual(child.status, 0, child.stderr);
+    const out = JSON.parse(child.stdout);
+    assert.strictEqual(out.matched, false);
+    assert.ok(out.ms < 50, `grep-env took ${out.ms.toFixed(1)}ms on a non-matching quote-heavy command`);
     bashAllowed(cmd);
   });
 });
