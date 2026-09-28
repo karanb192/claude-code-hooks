@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/guard-pack.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/guard-pack.js\"",
+            "timeout": 10
           }
         ]
       }

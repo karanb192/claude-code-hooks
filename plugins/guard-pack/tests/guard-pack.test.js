@@ -329,4 +329,5 @@ test('meta: the pack advertises exactly one PreToolUse registration', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(PACK_DIR, 'hooks', 'hooks.json'), 'utf8'));
   assert.deepStrictEqual(Object.keys(manifest.hooks), ['PreToolUse']);
   assert.strictEqual(manifest.hooks.PreToolUse[0].matcher, 'Bash|Read|Edit|MultiEdit|Write|Agent|Task');
+  assert.strictEqual(manifest.hooks.PreToolUse[0].hooks[0].timeout, 10);
 });

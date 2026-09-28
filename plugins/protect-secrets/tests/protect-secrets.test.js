@@ -9,6 +9,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 
 const {
@@ -789,6 +790,23 @@ describe('grep-env bash pattern (demo-take bypass 1)', () => {
   it('allows grep on source files', () => bashAllowed('grep -rn TODO src/'));
   it('allows grep on .env.example', () => bashAllowed('grep STRIPE .env.example'));
   it('allows grep for the word env in code', () => bashAllowed('grep -n environment src/config.js'));
+  it('blocks a single-quoted grep of .env', () => bashBlocked("grep 'API_KEY' .env", 'grep-env'));
+  it('blocks a double-quoted grep of .env', () => bashBlocked('grep "API_KEY" .env', 'grep-env'));
+  it('blocks awk with a quoted program against .env.local', () => bashBlocked('awk -F= "/KEY/{print}" .env.local', 'grep-env'));
+  it('blocks grep of .env after another command', () => bashBlocked('cat foo && grep X .env', 'grep-env'));
+  it('allows a quoted grep that never names .env', () => bashAllowed('grep -c "some text" notes/diagram.svg'));
+  it('allows awk over an ordinary file', () => bashAllowed('awk "{print $1}" notes.txt'));
+  it('allows a quote-heavy command that never names .env, quickly', () => {
+    const cmd = `grep -c 'needle' out.txt && ` +
+      Array.from({ length: 40 }, (_, i) => `s = s.replace('old-${i}', "new-${i}")`).join(' && ');
+    const rule = BASH_PATTERNS.find((p) => p.id === 'grep-env');
+    const start = process.hrtime.bigint();
+    const matched = rule.regex.test(cmd);
+    const ms = Number(process.hrtime.bigint() - start) / 1e6;
+    assert.strictEqual(matched, false);
+    assert.ok(ms < 50, `grep-env took ${ms.toFixed(1)}ms on a non-matching quote-heavy command`);
+    bashAllowed(cmd);
+  });
 });
 
 describe('Grep tool coverage (demo-take bypass 2)', () => {
@@ -824,5 +842,12 @@ describe('Grep tool coverage (demo-take bypass 2)', () => {
     const { output } = await runHook('Grep', { pattern: 'STRIPE', path: '/app/.env' });
     assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
     assert.match(output.hookSpecificOutput?.permissionDecisionReason || '', /search/i);
+  });
+});
+
+describe('hook manifest', () => {
+  it('caps the PreToolUse command at 10 seconds', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../hooks/hooks.json'), 'utf8'));
+    assert.strictEqual(manifest.hooks.PreToolUse[0].hooks[0].timeout, 10);
   });
 });
