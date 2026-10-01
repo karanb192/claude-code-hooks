@@ -211,6 +211,14 @@ env -u CCH_SLA_WEBHOOK npm test              # whole suite (must be green before
 node --test plugins/<name>/tests/<name>.test.js   # a single plugin's file
 ```
 
+Most plugins need tests only. Add an eval when the plugin's value depends on how Claude
+reacts to it: a deny reason it has to accept, context injected before it answers. A guard
+whose regex is the whole product has nothing left to measure once the matcher is tested.
+Eval cases live in `plugins/<name>/evals/<case>/`, one directory per case, and each case
+runs a real Claude session with and without the plugin, so evals cost money and stay out
+of CI. [`plugins/protect-secrets/evals/`](plugins/protect-secrets/evals) is the reference
+suite; the format is documented in [plugin evals](https://code.claude.com/docs/en/plugin-evals).
+
 ## Versioning
 
 Plugin versions are independent of the repo `package.json` version and independent of each other. Bump a plugin's `version` in its `.claude-plugin/plugin.json` whenever that plugin's shipped files change: the install cache is keyed by version, so a bump is what forces installed copies to refresh. Versions only ever move forward: never reset or downgrade one for cosmetic consistency (a re-published old version can collide with a stale cached copy of that same version on users' machines). Describe the bump in the PR so it is intentional rather than drift.
