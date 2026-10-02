@@ -2,7 +2,7 @@
 
 > Secrets firewall: stops Claude from reading, modifying, or exfiltrating sensitive files (.env, SSH keys, cloud credentials) before the tool call runs.
 
-A `PreToolUse` hook fires before every `Read`, `Edit`, `Write`, and `Bash` call. File tools are checked against sensitive-path patterns (.env and .envrc, SSH private keys and authorized_keys, AWS/kube/gcloud/azure/docker credentials, .netrc/.npmrc/.pypirc, PEM/key/PKCS12 files, keystores, vault tokens); Bash commands are checked against secret-exposing patterns (cat/less/head on secrets, `printenv` and bare `env` dumps, `echo $SECRET_KEY`-style variable prints, sourcing .env, `/proc/*/environ`) and exfiltration patterns (curl/wget uploads, scp/rsync/nc of secrets, plus cp/mv/rm/truncate on them). A match returns `permissionDecision: "deny"` (or `"ask"`, see below) with the pattern id and reason, so you always know exactly which rule fired. Template files like `.env.example`, `.env.sample`, and `.env.template` are explicitly allowlisted.
+A `PreToolUse` hook fires before every `Read`, `Edit`, `Write`, `Bash`, and `Grep` call. File tools and searches are checked against sensitive-path patterns (.env and .envrc, SSH private keys and authorized_keys, AWS/kube/gcloud/azure/docker credentials, .netrc/.npmrc/.pypirc, PEM/key/PKCS12 files, keystores, vault tokens); Bash commands are checked against secret-exposing patterns (cat/less/head on secrets, `printenv` and bare `env` dumps, `echo $SECRET_KEY`-style variable prints, sourcing .env, `/proc/*/environ`) and exfiltration patterns (curl/wget uploads, scp/rsync/nc of secrets, plus cp/mv/rm/truncate on them). A match returns `permissionDecision: "deny"` (or `"ask"`, see below) with the pattern id and reason, so you always know exactly which rule fired. Template files like `.env.example`, `.env.sample`, and `.env.template` are explicitly allowlisted. Path matching is separator-agnostic, so a Windows `C:\Users\me\project\.env` is treated exactly like `/home/me/project/.env`.
 
 ## Install
 
@@ -17,7 +17,15 @@ Restart Claude Code, done. (Or from a shell: `claude plugin install protect-secr
 
 | Event | Runs | What happens |
 |-------|------|--------------|
-| PreToolUse (`Read\|Edit\|Write\|Bash`) | sync (must decide before the tool runs) | Matches the file path (Read/Edit/Write) or command (Bash) against tiered sensitive patterns; on a hit, denies or asks with the pattern id and reason. Everything else passes through untouched. |
+| PreToolUse (`Read\|Edit\|Write\|Bash\|Grep`) | sync (must decide before the tool runs) | Matches the file path (Read/Edit/Write), the search target (Grep) or the command (Bash) against tiered sensitive patterns; on a hit, denies or asks with the pattern id and reason. Everything else passes through untouched. |
+
+## Search and Windows coverage
+
+`Grep` checks `path`, `glob`, and the legacy `include` field, plus each filter joined to the search directory. For example, `path: C:\Users\me\.aws` with `glob: credentials` is blocked. Every candidate is checked at the configured safety level; an allowed template or an inactive rule cannot hide another sensitive target. When several targets match, the most severe rule wins.
+
+The guard normalizes backslashes in file and search targets, including relative paths, UNC paths, and mixed separators. It does not resolve symlinks, expand globs, or change filename case rules. Bash command strings keep their existing checks because backslashes there can be shell escapes. `PowerShell` calls are outside this plugin's matcher.
+
+**Broad searches can still expose secrets.** A directory-only search, a pattern-only search, or a glob such as `*` need not name a sensitive file. This hook does not enumerate the files a search will read or filter its output. Use the [native permissions and sandbox controls](#native-pairing) alongside it.
 
 ## Safety levels
 
@@ -73,7 +81,7 @@ This hook sees the command string only, so a script that opens files itself is o
 
 ## Data & privacy
 
-Logs each deny/ask decision to `~/.claude/hooks-logs/<date>.jsonl`: pattern id, level, tool, target (file path or the command's first 100 chars), session id, and cwd. It makes no network calls (the script only uses `fs` and `path`), so everything stays on your local machine.
+Logs each deny/ask decision to `~/.claude/hooks-logs/<date>.jsonl`: pattern id, level, tool, target (file path or the command's first 100 chars), session id, and cwd. Grep decisions record the rule and tool, without a target field. The home directory comes from `HOME`, then `USERPROFILE`, then the operating system. It makes no network calls, so everything stays on your local machine.
 
 ## Uninstall
 
