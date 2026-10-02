@@ -19,6 +19,14 @@ Restart Claude Code, done. (Or from a shell: `claude plugin install protect-secr
 |-------|------|--------------|
 | PreToolUse (`Read\|Edit\|Write\|Bash\|Grep`) | sync (must decide before the tool runs) | Matches the file path (Read/Edit/Write), the search target (Grep) or the command (Bash) against tiered sensitive patterns; on a hit, denies or asks with the pattern id and reason. Everything else passes through untouched. |
 
+## Search and Windows coverage
+
+`Grep` checks `path`, `glob`, and the legacy `include` field, plus each filter joined to the search directory. For example, `path: C:\Users\me\.aws` with `glob: credentials` is blocked. Every candidate is checked at the configured safety level; an allowed template or an inactive rule cannot hide another sensitive target. When several targets match, the most severe rule wins.
+
+The guard normalizes backslashes in file and search targets, including relative paths, UNC paths, and mixed separators. It does not resolve symlinks, expand globs, or change filename case rules. Bash command strings keep their existing checks because backslashes there can be shell escapes. `PowerShell` calls are outside this plugin's matcher.
+
+**Broad searches can still expose secrets.** A directory-only search, a pattern-only search, or a glob such as `*` need not name a sensitive file. This hook does not enumerate the files a search will read or filter its output. Use the [native permissions and sandbox controls](#native-pairing) alongside it.
+
 ## Safety levels
 
 Patterns are tiered; each level includes everything below it:
@@ -73,7 +81,7 @@ This hook sees the command string only, so a script that opens files itself is o
 
 ## Data & privacy
 
-Logs each deny/ask decision to `~/.claude/hooks-logs/<date>.jsonl`: pattern id, level, tool, target (file path or the command's first 100 chars), session id, and cwd. It makes no network calls (the script only uses `fs` and `path`), so everything stays on your local machine.
+Logs each deny/ask decision to `~/.claude/hooks-logs/<date>.jsonl`: pattern id, level, tool, target (file path or the command's first 100 chars), session id, and cwd. Grep decisions record the rule and tool, without a target field. The home directory comes from `HOME`, then `USERPROFILE`, then the operating system. It makes no network calls, so everything stays on your local machine.
 
 ## Uninstall
 

@@ -35,11 +35,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
-// Tools this hook inspects. The plugin's hooks/hooks.json matcher must list
-// exactly these: a tool that reaches check() but is missing from the matcher
-// is never sent to the hook, so its handling here is dead code (#55). A repo
-// test pins the two together.
+// A handled tool missing from hooks.json never reaches this guard.
 const HANDLED_TOOLS = ['Read', 'Edit', 'Write', 'Bash', 'Grep'];
 
 // Safety level: override via HOOK_SAFETY_LEVEL ('critical' | 'high' | 'strict').
@@ -236,7 +234,7 @@ const BASH_PATTERNS = [
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
 const EMOJIS = { critical: '🔐', high: '🛡️', strict: '⚠️' };
-const LOG_DIR = path.join(process.env.HOME, '.claude', 'hooks-logs');
+const LOG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || os.homedir(), '.claude', 'hooks-logs');
 
 function log(data) {
   try {
@@ -246,11 +244,7 @@ function log(data) {
   } catch {}
 }
 
-// Tool-provided paths carry the host separator, so on Windows `file_path` is
-// `C:\\Users\\me\\project\\.env`. Every pattern above anchors its path boundary
-// on `/`, so a backslash path matched none of them and walked straight past
-// the guard (#55). Match on a separator-normalized copy: the hook only ever
-// reads the path, never opens it, so the rewrite is local to matching.
+// Normalize tool paths only; backslashes in Bash commands can be shell escapes.
 function toPosixPath(filePath) {
   return typeof filePath === 'string' ? filePath.replace(/\\/g, '/') : filePath;
 }
@@ -289,10 +283,16 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
 
 function check(toolName, toolInput, safetyLevel = SAFETY_LEVEL) {
   if (toolName === 'Grep') {
-    const candidates = [toolInput.path, toolInput.glob, toolInput.include].filter(Boolean);
-    const target = candidates.find(c => SENSITIVE_FILES.some(s => s.regex.test(toPosixPath(c)))) || candidates[0] || '';
-    toolInput = { file_path: target };
-    toolName = 'Read';
+    const searchPath = typeof toolInput?.path === 'string' ? toPosixPath(toolInput.path) : '';
+    const filters = [toolInput?.glob, toolInput?.include]
+      .filter(value => typeof value === 'string' && value.length > 0)
+      .map(toPosixPath);
+    // A directory and filter can form a sensitive path, such as .aws + credentials.
+    const candidates = [searchPath, ...filters, ...filters.map(filter => searchPath.replace(/\/+$/, '') + '/' + filter)];
+    const matches = candidates.map(candidate => checkFilePath(candidate, safetyLevel))
+      .filter(result => result.blocked);
+    matches.sort((a, b) => LEVELS[a.pattern.level] - LEVELS[b.pattern.level]);
+    return matches[0] || { blocked: false, pattern: null };
   }
   if (['Read', 'Edit', 'Write'].includes(toolName)) {
     return checkFilePath(toolInput?.file_path, safetyLevel);

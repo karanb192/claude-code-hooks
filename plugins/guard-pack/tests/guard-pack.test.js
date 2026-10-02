@@ -6,7 +6,7 @@
  * Or:  npm test
  */
 
-const { test, describe, it } = require('node:test');
+const { test, describe, it, after } = require('node:test');
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
@@ -18,6 +18,7 @@ const SCRIPT_PATH = path.join(PACK_DIR, 'guard-pack.js');
 const { GUARDS, PACK_TOOLS } = require(SCRIPT_PATH);
 
 const TMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-pack-test-'));
+after(() => fs.rmSync(TMP_HOME, { recursive: true, force: true }));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test helpers
@@ -25,7 +26,7 @@ const TMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-pack-test-'));
 
 function runHook(payload, envOverrides = {}) {
   return new Promise((resolve, reject) => {
-    const env = { ...process.env, HOME: TMP_HOME, ...envOverrides };
+    const env = { ...process.env, HOME: TMP_HOME, USERPROFILE: TMP_HOME, ...envOverrides };
     for (const key of Object.keys(env)) {
       if ((key.startsWith('HOOK_ASK_') || key.startsWith('HOOK_SAFETY') || key.startsWith('CONFIG_GUARD_') || key.startsWith('SPAWN_CAP_')) && !(key in envOverrides)) {
         delete env[key];
@@ -101,7 +102,7 @@ describe('Integration: verdicts through the pack', () => {
   });
 
   it('unmatched tools pass untouched', async () => {
-    const { output } = await runHook(payload('Grep', { pattern: 'x' }));
+    const { output } = await runHook(payload('Glob', { pattern: '*.js' }));
     assert.deepStrictEqual(output, {});
   });
 
@@ -133,7 +134,7 @@ describe('Integration: verdicts through the pack', () => {
   });
 
   it('protect-secrets: a backslash .env read is denied', async () => {
-    const { output } = await runHook(payload('Read', { file_path: 'C:\\\\Users\\\\me\\\\project\\\\.env' }));
+    const { output } = await runHook(payload('Read', { file_path: 'C:\\Users\\me\\project\\.env' }));
     assert.strictEqual(decisionOf(output), 'deny');
     assert.match(reasonOf(output), /\[env-file\] Cannot read:/);
   });
@@ -342,6 +343,7 @@ describe('Integration: robustness', () => {
 test('meta: the pack advertises exactly one PreToolUse registration', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(PACK_DIR, 'hooks', 'hooks.json'), 'utf8'));
   assert.deepStrictEqual(Object.keys(manifest.hooks), ['PreToolUse']);
+  assert.strictEqual(manifest.hooks.PreToolUse.length, 1);
   // Derived, not spelled out: a tool the pack learns to inspect has to reach
   // it through the matcher, or its handling is dead code (#55).
   assert.deepStrictEqual(manifest.hooks.PreToolUse[0].matcher.split('|'), PACK_TOOLS);

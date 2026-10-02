@@ -6,11 +6,12 @@
  * Or:  npm test
  */
 
-const { describe, it } = require('node:test');
+const { describe, it, after } = require('node:test');
 const assert = require('node:assert');
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 
 const {
   SENSITIVE_FILES,
@@ -27,6 +28,8 @@ const {
 } = require('../protect-secrets.js');
 
 const SCRIPT_PATH = path.join(__dirname, '../protect-secrets.js');
+const TMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'protect-secrets-test-'));
+after(() => fs.rmSync(TMP_HOME, { recursive: true, force: true }));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test helpers
@@ -62,7 +65,7 @@ function bashAllowed(cmd, level = undefined) {
 // from the runner's shell - tests opt in explicitly via envOverrides.
 function runHook(toolName, toolInput, envOverrides = {}) {
   return new Promise((resolve, reject) => {
-    const env = { ...process.env, ...envOverrides };
+    const env = { ...process.env, HOME: TMP_HOME, USERPROFILE: TMP_HOME, ...envOverrides };
     for (const key of Object.keys(env)) {
       if ((key.startsWith('HOOK_ASK_') || key === 'HOOK_SAFETY_LEVEL') && !(key in envOverrides)) delete env[key];
     }

@@ -6,6 +6,8 @@ One PreToolUse registration on `Bash|Read|Edit|MultiEdit|Write|Agent|Task|Grep` 
 
 The guard scripts in `lib/` are byte-identical copies of the individual plugin scripts, pinned by a test, so the pack can never drift from the standalone guards.
 
+`Grep` reaches protect-secrets through the same checks as the standalone plugin, including Windows paths and directory/filter combinations. Its [search limitations](../protect-secrets#search-and-windows-coverage) also apply here; broad searches can still expose secrets.
+
 ## Install
 
 ```
