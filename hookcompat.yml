@@ -1,0 +1,7 @@
+harness: claude-code
+plugin: plugins/block-dangerous-commands
+cases:
+  - scenario: pretooluse-shell-git-reset-hard
+    expect: deny
+  - scenario: pretooluse-shell-write
+    expect: no-opinion

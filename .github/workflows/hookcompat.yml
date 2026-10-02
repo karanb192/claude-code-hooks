@@ -1,0 +1,22 @@
+name: Hook compatibility
+
+on:
+  pull_request:
+    paths:
+      - "plugins/block-dangerous-commands/**"
+      - "hookcompat.yml"
+      - ".github/workflows/hookcompat.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hookcompat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: k21993/hookcompat@be1cd5d3b90fd8e98a42cf7ff97a0f4c11616861 # v0.2.0
+        with:
+          config: hookcompat.yml
