@@ -345,4 +345,5 @@ test('meta: the pack advertises exactly one PreToolUse registration', () => {
   // Derived, not spelled out: a tool the pack learns to inspect has to reach
   // it through the matcher, or its handling is dead code (#55).
   assert.deepStrictEqual(manifest.hooks.PreToolUse[0].matcher.split('|'), PACK_TOOLS);
+  assert.strictEqual(manifest.hooks.PreToolUse[0].hooks[0].timeout, 10);
 });

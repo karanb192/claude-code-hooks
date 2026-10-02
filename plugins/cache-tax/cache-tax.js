@@ -55,6 +55,7 @@ const DEFAULT_PRICES = {
   'fable-5': [1.0, 12.5, 20],
   'opus-5': [0.5, 6.25, 10],
   'opus-4': [0.5, 6.25, 10],
+  'sonnet-5': [0.2, 2.5, 4],
   'sonnet': [0.3, 3.75, 6],
   'haiku': [0.1, 1.25, 2],
 };
@@ -64,7 +65,7 @@ function prices() {
   return Object.assign({}, DEFAULT_PRICES, extra);
 }
 
-// Longest key first so fable-5-1 wins over fable-5 and opus-5 over opus.
+// Longest key first so fable-5-1 wins over fable-5 and sonnet-5 over sonnet.
 function family(model) {
   const m = String(model || '').toLowerCase();
   const keys = Object.keys(prices()).sort((a, b) => b.length - a.length);
@@ -106,12 +107,30 @@ function parseUsageLine(line) {
   };
 }
 
-/** Newest assistant usage block in a transcript. Reads only the tail. */
+// /compact and auto-compaction write a system row, never a usage row, so the
+// newest usage block after one describes a context that no longer exists.
+function parseBoundaryLine(line) {
+  if (!line.includes('"compact_boundary"')) return null;
+  let o;
+  try { o = JSON.parse(line); } catch (_) { return null; }
+  if (!o || o.type !== 'system' || o.subtype !== 'compact_boundary') return null;
+  const ts = Date.parse(o.timestamp || '');
+  if (!Number.isFinite(ts)) return null;
+  const cm = o.compactMetadata || {};
+  return { ts, trigger: cm.trigger === 'auto' ? 'auto' : 'manual', preTokens: Number(cm.preTokens) || 0, postTokens: Number(cm.postTokens) || 0 };
+}
+
+/**
+ * Newest assistant usage block in a transcript. Reads only the tail. When a
+ * compaction is newer than that block, the result carries it as `compacted`
+ * and the block only supplies the model for pricing.
+ */
 function readLastUsage(transcriptPath) {
   if (!transcriptPath) return null;
   const p = transcriptPath.replace(/^~(?=$|\/)/, HOME);
   let fd; let size;
   try { size = fs.statSync(p).size; fd = fs.openSync(p, 'r'); } catch (_) { return null; }
+  let boundary = null;
   try {
     const start = Math.max(0, size - TAIL_BYTES);
     const buf = Buffer.alloc(size - start);
@@ -119,10 +138,11 @@ function readLastUsage(transcriptPath) {
     const lines = buf.toString('utf8').split('\n');
     for (let i = lines.length - 1; i >= 0; i--) {
       const u = parseUsageLine(lines[i]);
-      if (u) return u;
+      if (u) return boundary ? Object.assign(u, { compacted: boundary }) : u;
+      if (!boundary) boundary = parseBoundaryLine(lines[i]);
     }
   } finally { fs.closeSync(fd); }
-  return null;
+  return boundary ? { ts: boundary.ts, model: null, requestId: null, write: 0, w5: 0, w1: 0, read: 0, input: 0, ctx: 0, compacted: boundary } : null;
 }
 
 /** Whole-transcript totals for the card: writes, reads, dollars, full misses. */
@@ -181,12 +201,26 @@ function tierOf(u) {
 function stateFrom(u, nowMs) {
   if (!u) return null;
   const ttl = tierOf(u) || (process.env.CACHE_TAX_TTL === '5m' ? '5m' : '1h');
+  if (u.compacted) {
+    // The summary has never been cached, so the first message writes it whatever
+    // the clock says; the system prompt and tools in front of it are not in the
+    // transcript, which makes the figure a floor. Nothing here is avoidable, so
+    // the guard has nothing to say.
+    const c = u.compacted;
+    const pr = priceFor(u.model);
+    return {
+      compacted: c, ttl, ageSec: Math.max(0, (nowMs - c.ts) / 1000), leftSec: 0, lapsedSec: 0, lapsed: false,
+      ctx: c.postTokens, model: u.model, family: pr ? pr.family : null,
+      rewriteUsd: pr && c.postTokens ? c.postTokens * pr.write1h / 1e6 : null,
+      warmUsd: null, writeRate: pr ? pr.write1h : null,
+    };
+  }
   const ageSec = Math.max(0, (nowMs - u.ts) / 1000);
   const leftSec = TTL_SEC[ttl] - ageSec;
   const pr = priceFor(u.model);
   const writeRate = pr ? (ttl === '5m' ? pr.write5m : pr.write1h) : null;
   return {
-    ttl, ageSec, leftSec, lapsed: leftSec <= 0, ctx: u.ctx, model: u.model, family: pr ? pr.family : null,
+    ttl, ageSec, leftSec, lapsedSec: Math.max(0, -leftSec), lapsed: leftSec <= 0, ctx: u.ctx, model: u.model, family: pr ? pr.family : null,
     rewriteUsd: writeRate == null ? null : u.ctx * writeRate / 1e6,
     warmUsd: pr ? u.ctx * pr.read / 1e6 : null,
     writeRate,
@@ -224,14 +258,17 @@ function statusLine(payload, nowMs) {
   const u = readLastUsage(payload && payload.transcript_path);
   const st = stateFrom(u, nowMs);
   if (!st) return 'cache ?';
+  if (st.compacted) return `cache reset by ${compactName(st.compacted)}` + (st.ctx ? ` · ${fmtTok(st.ctx)} carried · next msg writes ≥ ${fmtUsd(st.rewriteUsd)}` : ' · next msg writes the summary fresh');
   if (!st.lapsed) return `cache ${fmtDur(st.leftSec)} left · ${fmtTok(st.ctx)} · cold costs ${fmtUsd(st.rewriteUsd)}`;
-  return `cache LAPSED ${fmtDur(st.ageSec)} ago · next msg re-writes ${fmtTok(st.ctx)} = ${fmtUsd(st.rewriteUsd)}`;
+  return `cache LAPSED ${fmtDur(st.lapsedSec)} ago · next msg re-writes ${fmtTok(st.ctx)} = ${fmtUsd(st.rewriteUsd)}`;
 }
+
+function compactName(c) { return c.trigger === 'auto' ? 'auto-compact' : '/compact'; }
 
 function guardMessage(st) {
   const rate = st.writeRate == null ? 'the cache-write rate' : '$' + st.writeRate + '/MTok';
   const warm = st.warmUsd == null ? '' : ` (a warm turn would have cost ${fmtUsd(st.warmUsd)})`;
-  return `cache-tax: the ${st.ttl} prompt cache lapsed ${fmtDur(st.ageSec)} ago. This message re-writes ` +
+  return `cache-tax: the ${st.ttl} prompt cache lapsed ${fmtDur(st.lapsedSec)} ago. This message re-writes ` +
     `${st.ctx.toLocaleString('en-US')} tokens at ${rate} = ${fmtUsd(st.rewriteUsd)}${warm}. ` +
     `If most of that context is stale, /clear and start from a handoff note instead.`;
 }
@@ -242,7 +279,7 @@ function guard(payload, nowMs) {
   if (payload && typeof payload.prompt === 'string' && payload.prompt.trimStart().startsWith('/')) return { exit: 0 };
   const u = readLastUsage(payload && payload.transcript_path);
   const st = stateFrom(u, nowMs);
-  if (!st || !st.lapsed || st.ctx < BIG_TOKENS) return { exit: 0 };
+  if (!st || st.compacted || !st.lapsed || st.ctx < BIG_TOKENS) return { exit: 0 };
   const msg = guardMessage(st);
   const sid = (payload && payload.session_id) || 'unknown';
   if (BLOCK) {
@@ -275,7 +312,7 @@ function resume(payload, nowMs) {
   if (payload.prompt_cache_likely_expired === false) return { exit: 0 };
   // Older Claude Code without the resume fields: derive from the transcript.
   const st = stateFrom(readLastUsage(payload.transcript_path), nowMs);
-  if (!st || !st.lapsed || st.ctx < BIG_TOKENS) return { exit: 0 };
+  if (!st || st.compacted || !st.lapsed || st.ctx < BIG_TOKENS) return { exit: 0 };
   return { exit: 0, stdout: JSON.stringify({ systemMessage: guardMessage(st).replace('This message', 'The first message') }), event: 'cache-tax.resume.cold' };
 }
 
@@ -287,18 +324,27 @@ function renderCard(transcriptPath, nowMs) {
   const t = scanTranscript(transcriptPath) || {};
   const lines = [];
   lines.push(`cache-tax · ${st.model || 'unknown model'} · ${st.ttl} tier`);
-  lines.push(st.lapsed
-    ? `state       COLD, lapsed ${fmtDur(st.ageSec)} ago`
+  if (st.compacted) {
+    const c = st.compacted;
+    lines.push(`state       reset by ${compactName(c)} ${fmtDur(st.ageSec)} ago; the ${c.preTokens ? fmtTok(c.preTokens) + '-token ' : ''}context it replaced no longer applies`);
+    lines.push(`context     ${st.ctx ? st.ctx.toLocaleString('en-US') + ' tokens carried' : 'size unknown'} (summary and kept turns; system prompt and tools are not in the transcript)`);
+    lines.push(`cold cost   ${st.rewriteUsd == null ? 'n/a' : 'at least ' + fmtUsd(st.rewriteUsd)}, the first message writes the carried tokens fresh`);
+  } else lines.push(st.lapsed
+    ? `state       COLD, lapsed ${fmtDur(st.lapsedSec)} ago`
     : `state       warm, ${fmtDur(st.leftSec)} left`);
-  lines.push(`context     ${st.ctx.toLocaleString('en-US')} tokens`);
-  lines.push(`cold cost   ${fmtUsd(st.rewriteUsd)} to re-write it (warm turn ${fmtUsd(st.warmUsd)})`);
+  if (!st.compacted) {
+    lines.push(`context     ${st.ctx.toLocaleString('en-US')} tokens`);
+    lines.push(`cold cost   ${fmtUsd(st.rewriteUsd)} to re-write it (warm turn ${fmtUsd(st.warmUsd)})`);
+  }
   if (t.requests) {
     lines.push(`session     ${t.requests} requests · writes ${fmtTok(t.write)} tok ${fmtUsd(t.writeUsd)} · reads ${fmtTok(t.read)} tok ${fmtUsd(t.readUsd)}`);
     lines.push(`full misses ${t.fullMisses} (${fmtUsd(t.fullMissUsd)}), each one a re-write of the whole prefix`);
   }
-  lines.push(st.lapsed
-    ? 'advice      the next message pays the cold cost. /clear plus a handoff note is cheaper if most context is stale.'
-    : 'advice      a message before the timer runs out refreshes the cache at the read rate.');
+  lines.push(st.compacted
+    ? 'advice      nothing to avoid here. The compaction request already sent the old context once more; from now on only the summary is in play.'
+    : st.lapsed
+      ? 'advice      the next message pays the cold cost. /clear plus a handoff note is cheaper if most context is stale.'
+      : 'advice      a message before the timer runs out refreshes the cache at the read rate.');
   return lines.join('\n');
 }
 
@@ -348,7 +394,7 @@ if (require.main === module) {
   process.exitCode = main();
 } else {
   module.exports = {
-    family, priceFor, parseUsageLine, readLastUsage, scanTranscript, guessTranscript,
+    family, priceFor, parseUsageLine, parseBoundaryLine, readLastUsage, scanTranscript, guessTranscript,
     tierOf, stateFrom, statusLine, guard, guardMessage, resume, renderCard,
     fmtUsd, fmtTok, fmtDur, BIG_TOKENS, TTL_SEC,
   };

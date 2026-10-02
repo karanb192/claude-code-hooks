@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/protect-secrets.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/protect-secrets.js\"",
+            "timeout": 10
           }
         ]
       }

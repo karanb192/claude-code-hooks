@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <defs>
+    <radialGradient id="g" cx="0.18" cy="0.5" r="0.7"><stop offset="0" stop-color="#17303F"/><stop offset="1" stop-color="#0A0B0D"/></radialGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#g)"/>
+
+  <g>
+    <polygon points="230.40,181.50 343.30,246.02 230.40,310.53 117.50,246.02" fill="#BFEFFF"/>
+    <polygon points="117.50,246.02 230.40,310.53 230.40,428.80 117.50,364.29" fill="#5FC6F2"/>
+    <polygon points="230.40,310.53 343.30,246.02 343.30,364.29 230.40,428.80" fill="#2E8FC4"/>
+    <polyline points="117.50,246.02 230.40,310.53 343.30,246.02" fill="none" stroke="#E9FBFF" stroke-width="5.91" stroke-linejoin="round"/>
+    <line x1="230.40" y1="310.53" x2="230.40" y2="428.80" stroke="#E9FBFF" stroke-width="5.91" opacity="0.7"/>
+    <polyline points="149.76,229.89 230.40,192.26 311.04,229.89" fill="none" stroke="#FFFFFF" stroke-width="4.30" opacity="0.55" stroke-linecap="round"/>
+  </g>
+  <text x="441.6" y="256" font-family="'JetBrains Mono', Menlo, monospace" font-size="96" font-weight="700" fill="#E7EAEE">cache-tax</text>
+  <text x="441.6" y="316.8" font-family="'Inter', 'Helvetica Neue', Arial, sans-serif" font-size="29.439999999999998" fill="#9BA2AC">The comeback price of a cold prompt cache,</text>
+  <text x="441.6" y="355.2" font-family="'Inter', 'Helvetica Neue', Arial, sans-serif" font-size="29.439999999999998" fill="#9BA2AC">before you pay it.</text>
+  <rect x="441.6" y="412.8" width="232" height="40" rx="8" fill="#0A0B0D" stroke="#5FC6F2" stroke-opacity="0.55"/>
+  <text x="458.6" y="439.8" font-family="'JetBrains Mono', Menlo, monospace" font-size="21" fill="#5FC6F2">read $0.25/MTok</text><rect x="687.6" y="412.8" width="218.79999999999998" height="40" rx="8" fill="#0A0B0D" stroke="#FF5C46" stroke-opacity="0.55"/>
+  <text x="704.6" y="439.8" font-family="'JetBrains Mono', Menlo, monospace" font-size="21" fill="#FF5C46">write $20/MTok</text><rect x="920.4" y="412.8" width="73.6" height="40" rx="8" fill="#0A0B0D" stroke="#E3B341" stroke-opacity="0.55"/>
+  <text x="937.4" y="439.8" font-family="'JetBrains Mono', Menlo, monospace" font-size="21" fill="#E3B341">80x</text>
+  <text x="441.6" y="592" font-family="'JetBrains Mono', Menlo, monospace" font-size="19.2" fill="#5C636D">a Claude Code hook and a Claude Mod  ·  hooks.karanbansal.in</text>
+</svg>

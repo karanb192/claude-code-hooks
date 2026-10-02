@@ -1,8 +1,32 @@
 # cache-tax
 
+![cache-tax: the comeback price of a cold prompt cache, before you pay it](../../site/brand/cache-tax-social-1280x640.png)
+
 > The comeback price of a cold prompt cache, shown before you pay it.
 
 Claude Code's main conversation rides a 1-hour prompt cache. Come back at minute 59 and the next message costs cents. Come back at minute 61 and the whole context is re-written at the cache-write rate, which on Fable 5.1 is 80x a cache read ($20 against $0.25 per million tokens). A 500k-token session re-cached cold is $10 at list price, and the message that triggers it is usually "good morning". Claude Code computes all of this and shows none of it at the moment you press Enter. This plugin does.
+
+## A cache countdown row in a status line you already have
+
+No plugin install needed. `cache-tax.js` is one file with no dependencies. Copy it, then call it from your own status line script with the same stdin Claude Code sends you, and print its line as one more row:
+
+```
+curl -fsSL https://raw.githubusercontent.com/karanb192/claude-code-hooks/main/plugins/cache-tax/cache-tax.js -o ~/.claude/cache-tax.js
+```
+
+```sh
+# inside your status line script, where $input holds the JSON Claude Code piped in
+printf '%s' "$input" | node ~/.claude/cache-tax.js --statusline
+```
+
+It prints one line, while warm and then after the cache lapses:
+
+```
+cache 47m left · 218k · cold costs $4.37 · last miss ttl_expired_1h
+cache COLD · next msg re-writes 218k = $4.37 · last miss ttl_expired_1h
+```
+
+It reads the native `prompt_cache` object Claude Code sends to status lines (v2.1.251+), so Claude Code re-runs it the moment the cache goes cold; on older versions it falls back to the transcript named in the same payload. The guard and the resume price below are the plugin; the row works without it.
 
 ## Install
 
@@ -22,14 +46,18 @@ Restart Claude Code, done. (Or from a shell: `claude plugin install cache-tax@cl
 
 `/cache-tax:status` renders the full card on demand: tier, warm or cold, context size, cold-comeback price, and this session's cache writes, reads and full re-writes so far. From a shell, `node cache-tax.js --render --transcript <path>` renders the same card for any transcript; without `--transcript` it picks the newest transcript for the current directory.
 
-The guard ignores slash commands, so `/clear` and `/compact` never trigger it.
+The guard ignores slash commands, so `/clear` and `/compact` never trigger it. After a compaction (manual or auto) the old context no longer applies, so until the first new turn lands the status line reads `cache reset by /compact · 17k carried · next msg writes ≥ $0.34`, the card says the same, and the guard stays quiet: the summary has never been cached, so that first write is unavoidable and small.
 
 ### The warning, verbatim
 
 ```
-cache-tax: the 1h prompt cache lapsed 3h00m ago. This message re-writes 300,002 tokens at $20/MTok = $6.00
+cache-tax: the 1h prompt cache lapsed 2h00m ago. This message re-writes 300,002 tokens at $20/MTok = $6.00
 (a warm turn would have cost $0.08). If most of that context is stale, /clear and start from a handoff note instead.
 ```
+
+## The Mod form
+
+The same tool exists as a Claude Mod, [cache-tax@claude-code-mods](https://github.com/karanb192/claude-code-mods/tree/main/plugins/cache-tax), for anyone who has turned on function hooks (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, early access). It runs inside Claude Code instead of reading the transcript, refuses a cold send once by default, and adds what a hook cannot do: `/keepwarm 6h` sends one cache-shared ping after 50 idle minutes so the cache is read, not re-written, when you come back. Install one form, not both; two guards fire twice. The status line segment below stays with this hook's files either way, because a mod cannot draw into the status line.
 
 ## What Claude Code already does, and where this adds
 
@@ -66,11 +94,11 @@ All optional, set via environment variables:
 | `CACHE_TAX_TTL` | auto | Force `5m` or `1h` when the transcript has no cache-write tier to infer from. |
 | `CACHE_TAX_PRICES` | list rates | JSON overriding per-family prices as `[cache read, 5m write, 1h write]` in $/MTok, e.g. `{"fable-5-1":[0.25,12.5,20]}`. |
 
-Built-in list rates (September 2026): Fable 5.1 `[0.25, 12.5, 20]`, Fable 5 `[1, 12.5, 20]`, Opus 5 and 4.x `[0.5, 6.25, 10]`, Sonnet `[0.3, 3.75, 6]`, Haiku `[0.1, 1.25, 2]`. Unknown models get token counts and no dollar figure. If you are on a subscription the dollars are what the same traffic would cost at API list price, which is the only public yardstick; how a cache write weighs against your plan limits is not documented.
+Built-in list rates (September 2026): Fable 5.1 `[0.25, 12.5, 20]`, Fable 5 `[1, 12.5, 20]`, Opus 5 and 4.x `[0.5, 6.25, 10]`, Sonnet 5 `[0.2, 2.5, 4]`, Sonnet 4.x `[0.3, 3.75, 6]`, Haiku `[0.1, 1.25, 2]`. Unknown models get token counts and no dollar figure. If you are on a subscription the dollars are what the same traffic would cost at API list price, which is the only public yardstick; how a cache write weighs against your plan limits is not documented.
 
 ## How it decides
 
-The tier comes from the newest assistant usage block in the transcript: `cache_creation.ephemeral_1h_input_tokens` means the 1h tier, `ephemeral_5m_input_tokens` the 5m tier. Age is wall-clock time since that block's timestamp. Lapsed means age past the tier's TTL. The re-write cost is the block's full context (input plus cache read plus cache write) at the tier's write rate. A "full miss" on the card is a request whose cache read covered under half of the previous request's context while its write covered over half of it.
+The tier comes from the newest assistant usage block in the transcript: `cache_creation.ephemeral_1h_input_tokens` means the 1h tier, `ephemeral_5m_input_tokens` the 5m tier. Age is wall-clock time since that block's timestamp. Lapsed means age past the tier's TTL; the "lapsed N ago" figure is the time since that expiry, not since the block. The re-write cost is the block's full context (input plus cache read plus cache write) at the tier's write rate. A "full miss" on the card is a request whose cache read covered under half of the previous request's context while its write covered over half of it.
 
 Hooks receive no token counts, so nothing here comes from the hook input except the resume fields Claude Code added in v2.1.251. Everything else is read from `transcript_path`, the file Claude Code is already writing.
 
@@ -80,7 +108,9 @@ Hooks receive no token counts, so nothing here comes from the hook input except 
 - Needs node on PATH, like every plugin in this marketplace.
 - The status line row is wired by hand (plugins cannot ship one), so the countdown is only as live as your `refreshInterval`; the cold flip itself is event-driven and needs no timer.
 - Dollars are API list prices. On a subscription they are the yardstick, not the bill, and how a cache write weighs against the 5-hour and weekly limits is not documented anywhere I could find.
-- The guard reads the newest real turn in the transcript. A session whose last request was a subagent's or a compaction is priced from that request, which can be smaller than the context you are about to send.
+- The guard reads the newest real turn in the transcript. A session whose last request was a subagent's is priced from that request, which can be smaller than the context you are about to send.
+- After a compaction the figure is a floor. The transcript records the tokens carried into the summary (`compactMetadata.postTokens`) but not the system prompt and tools that go in front of them; on one 562k session the row said `≥ $0.34` and the first message wrote 40k tokens, $0.80.
+- `/compact` is not a free exit from a cold cache. The compaction request sends the whole context to the model once more, and Claude Code does not write that request's usage to the transcript, so neither the guard nor the card's session totals see it. If the cache has lapsed and most of the context is stale, `/clear` plus a handoff note is the cheap way out.
 - Two tests pin the false-positive side (warm session, small context) so the guard stays quiet where it should; there is no corpus beyond the test file.
 
 ## Related tools

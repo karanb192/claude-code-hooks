@@ -28,6 +28,13 @@ function usageLine({ ts, model = 'claude-fable-5-1', write = 0, read = 0, input 
   });
 }
 
+function compactLine({ ts, pre = 562631, post = 16996, trigger = 'manual' }) {
+  return JSON.stringify({
+    type: 'system', subtype: 'compact_boundary', timestamp: new Date(ts).toISOString(), content: 'Conversation compacted', level: 'info',
+    compactMetadata: { trigger, preTokens: pre, postTokens: post, durationMs: 137149 },
+  });
+}
+
 function writeTranscript(dir, lines) {
   const p = path.join(dir, 'session.jsonl');
   fs.writeFileSync(p, lines.map(l => (typeof l === 'string' ? l : usageLine(l))).join('\n') + '\n');
@@ -49,8 +56,13 @@ describe('pricing', () => {
     assert.strictEqual(family('claude-fable-5'), 'fable-5');
     assert.strictEqual(family('claude-opus-5'), 'opus-5');
     assert.strictEqual(family('claude-opus-4-8'), 'opus-4');
-    assert.strictEqual(family('claude-sonnet-5'), 'sonnet');
+    assert.strictEqual(family('claude-sonnet-5'), 'sonnet-5');
+    assert.strictEqual(family('claude-sonnet-4-6'), 'sonnet');
     assert.strictEqual(family('something-else'), null);
+  });
+  it('prices Sonnet 5 below Sonnet 4.x', () => {
+    assert.deepStrictEqual([priceFor('claude-sonnet-5').read, priceFor('claude-sonnet-5').write5m, priceFor('claude-sonnet-5').write1h], [0.2, 2.5, 4]);
+    assert.deepStrictEqual([priceFor('claude-sonnet-4-6').read, priceFor('claude-sonnet-4-6').write5m, priceFor('claude-sonnet-4-6').write1h], [0.3, 3.75, 6]);
   });
   it('prices the 1h write at 80x the read on Fable 5.1', () => {
     const p = priceFor('claude-fable-5-1');
@@ -106,6 +118,7 @@ describe('state', () => {
     assert.ok(warm.leftSec > 49 * 60 && warm.leftSec <= 50 * 60);
     const cold = stateFrom(parseUsageLine(usageLine({ ts: now - 2 * HOUR, write: 1000, read: 200000 })), now);
     assert.strictEqual(cold.lapsed, true);
+    assert.ok(cold.lapsedSec > 3599 && cold.lapsedSec <= 3600, 'lapsed counts from expiry, not from the last turn');
     assert.ok(Math.abs(cold.rewriteUsd - 201002 * 20 / 1e6) < 1e-6);
   });
   it('uses the 5m TTL when the last write was on the 5m tier', () => {
@@ -137,7 +150,7 @@ describe('status line', () => {
     const now = Date.now();
     const p = writeTranscript(tmp, [{ ts: now - 2 * HOUR, write: 1000, read: 299000 }]);
     const line = statusLine({ transcript_path: p }, now);
-    assert.match(line, /^cache LAPSED 2h00m ago · next msg re-writes 300k = \$6\.00$/);
+    assert.match(line, /^cache LAPSED 1h00m ago · next msg re-writes 300k = \$6\.00$/);
   });
   it('falls back to the transcript when the native object is incomplete (right after compaction)', () => {
     const now = Date.now();
@@ -172,7 +185,7 @@ describe('guard (UserPromptSubmit)', () => {
     const r = run({ hook_event_name: 'UserPromptSubmit', transcript_path: p, session_id: 's-warn' }, { CACHE_TAX_BLOCK: '' });
     assert.strictEqual(r.code, 0);
     const o = JSON.parse(r.out);
-    assert.match(o.systemMessage, /lapsed 3h00m ago/);
+    assert.match(o.systemMessage, /the 1h prompt cache lapsed 2h00m ago/);
     assert.match(o.systemMessage, /300,002 tokens at \$20\/MTok = \$6\.00/);
   });
   it('blocks once, then lets the resend through (integration, exit 2 then 0)', () => {
@@ -210,7 +223,7 @@ describe('resume (SessionStart)', () => {
 describe('card (--render)', () => {
   it('renders state, cost and session totals', () => {
     const now = Date.now();
-    const p = writeTranscript(tmp, [{ ts: now - 3 * HOUR, write: 100000, read: 0, id: 'a' }, { ts: now - 2 * HOUR, write: 500, read: 100000, id: 'b' }]);
+    const p = writeTranscript(tmp, [{ ts: now - 4 * HOUR, write: 100000, read: 0, id: 'a' }, { ts: now - 3 * HOUR, write: 500, read: 100000, id: 'b' }]);
     const card = renderCard(p, now);
     assert.match(card, /cache-tax · claude-fable-5-1 · 1h tier/);
     assert.match(card, /COLD, lapsed 2h00m ago/);
@@ -219,6 +232,57 @@ describe('card (--render)', () => {
     const r = run({}, {}, ['--render', '--transcript', p]);
     assert.strictEqual(r.code, 0);
     assert.match(r.out, /cache-tax ·/);
+  });
+});
+
+describe('compaction', () => {
+  it('reads the boundary and keeps the older block for pricing', () => {
+    const now = Date.now();
+    const p = writeTranscript(tmp, [{ ts: now - 6 * HOUR, write: 1000, read: 561000 }, compactLine({ ts: now - 60000 })]);
+    const u = readLastUsage(p);
+    assert.strictEqual(u.model, 'claude-fable-5-1');
+    assert.deepStrictEqual(u.compacted, { ts: u.compacted.ts, trigger: 'manual', preTokens: 562631, postTokens: 16996 });
+    const st = stateFrom(u, now);
+    assert.strictEqual(st.lapsed, false);
+    assert.strictEqual(st.ctx, 16996);
+    assert.ok(Math.abs(st.rewriteUsd - 0.33992) < 1e-6);
+  });
+  it('a newer turn after the boundary wins, so the state heals itself', () => {
+    const now = Date.now();
+    const p = writeTranscript(tmp, [{ ts: now - 6 * HOUR, write: 1000, read: 561000 }, compactLine({ ts: now - 120000 }), { ts: now - 60000, write: 39967, read: 30516 }]);
+    const u = readLastUsage(p);
+    assert.strictEqual(u.compacted, undefined);
+    assert.strictEqual(u.ctx, 70485);
+  });
+  it('status line shows the carried size and a floor, never the old context', () => {
+    const now = Date.now();
+    const p = writeTranscript(tmp, [{ ts: now - 6 * HOUR, write: 1000, read: 561000 }, compactLine({ ts: now - 60000 })]);
+    assert.strictEqual(statusLine({ transcript_path: p }, now), 'cache reset by /compact · 17k carried · next msg writes ≥ $0.34');
+    const q = writeTranscript(tmp, [{ ts: now - 6 * HOUR, write: 1000, read: 561000 }, compactLine({ ts: now - 60000, trigger: 'auto' })]);
+    assert.match(statusLine({ transcript_path: q }, now), /^cache reset by auto-compact · 17k carried/);
+  });
+  it('guard and resume stay silent after a compaction even when the old context was big and cold', () => {
+    const now = Date.now();
+    const p = writeTranscript(tmp, [{ ts: now - 6 * HOUR, write: 1000, read: 561000 }, compactLine({ ts: now - 60000 })]);
+    assert.deepStrictEqual(guard({ transcript_path: p, session_id: 's-compact', prompt: 'hi' }, now), { exit: 0 });
+    const r = run({ hook_event_name: 'UserPromptSubmit', transcript_path: p, session_id: 's-compact-block', prompt: 'hi' }, { CACHE_TAX_BLOCK: '1' });
+    assert.strictEqual(r.code, 0);
+    assert.strictEqual(r.out, '');
+    assert.deepStrictEqual(resume({ source: 'resume', transcript_path: p }, now), { exit: 0 });
+  });
+  it('card explains the reset', () => {
+    const now = Date.now();
+    const p = writeTranscript(tmp, [{ ts: now - 6 * HOUR, write: 1000, read: 561000, id: 'a' }, compactLine({ ts: now - 60000 })]);
+    const card = renderCard(p, now);
+    assert.match(card, /state       reset by \/compact 1m ago; the 563k-token context it replaced no longer applies/);
+    assert.match(card, /context     16,996 tokens carried/);
+    assert.match(card, /cold cost   at least \$0\.34/);
+    assert.doesNotMatch(card, /COLD, lapsed/);
+  });
+  it('a boundary with no usage before it still renders', () => {
+    const now = Date.now();
+    const p = writeTranscript(tmp, [compactLine({ ts: now - 60000, post: 0 })]);
+    assert.strictEqual(statusLine({ transcript_path: p }, now), 'cache reset by /compact · next msg writes the summary fresh');
   });
 });
 

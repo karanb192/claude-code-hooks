@@ -8,7 +8,7 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -791,6 +791,42 @@ describe('grep-env bash pattern (demo-take bypass 1)', () => {
   it('allows grep on source files', () => bashAllowed('grep -rn TODO src/'));
   it('allows grep on .env.example', () => bashAllowed('grep STRIPE .env.example'));
   it('allows grep for the word env in code', () => bashAllowed('grep -n environment src/config.js'));
+  it('blocks a single-quoted grep of .env', () => bashBlocked("grep 'API_KEY' .env", 'grep-env'));
+  it('blocks a double-quoted grep of .env', () => bashBlocked('grep "API_KEY" .env', 'grep-env'));
+  it('blocks a double-quoted .env filename', () => bashBlocked('grep KEY ".env"', 'grep-env'));
+  it('blocks a single-quoted .env filename', () => bashBlocked("grep KEY '.env'", 'grep-env'));
+  it('blocks a quoted path to .env', () => bashBlocked('grep "/tmp/.env"', 'grep-env'));
+  it('blocks a single-quoted .env.local filename', () => bashBlocked("rg KEY '.env.local'", 'grep-env'));
+  it('blocks awk with a quoted program against .env.local', () => bashBlocked('awk -F= "/KEY/{print}" .env.local', 'grep-env'));
+  it('blocks grep of .env after another command', () => bashBlocked('cat foo && grep X .env', 'grep-env'));
+  it('blocks awk with a quote glued to a flag', () => bashBlocked("awk -F'=' '{print $2}' .env", 'grep-env'));
+  it('blocks grep with a quoted --include value', () => bashBlocked('grep --include="*.txt" KEY .env', 'grep-env'));
+  it('blocks grep with a quote glued to -e', () => bashBlocked('grep -e"API_KEY" .env', 'grep-env'));
+  it('blocks grep with an escaped quote in its pattern', () => bashBlocked('grep "a\\"b" .env', 'grep-env'));
+  it('blocks a .env filename with a quoted tail', () => bashBlocked('grep KEY ./".env"', 'grep-env'));
+  it('blocks rg with a quoted .env glob', () => bashBlocked("rg -g'.env' KEY", 'grep-env'));
+  it('does not treat .env after a separator as grep\'s target', () => bashAllowed('grep foo && echo .env'));
+  it('allows a quoted grep that never names .env', () => bashAllowed('grep -c "some text" notes/diagram.svg'));
+  it('allows awk over an ordinary file', () => bashAllowed('awk "{print $1}" notes.txt'));
+  it('allows a quote-heavy command that never names .env, quickly', () => {
+    // Same shell segment as grep. A `&&` before the quotes hides them from this rule.
+    const cmd = 'grep -c ' + Array.from({ length: 40 }, (_, i) => `'a${i}' "b${i}"`).join(' ');
+    const rule = BASH_PATTERNS.find((p) => p.id === 'grep-env');
+    const script = `
+      const re = new RegExp(${JSON.stringify(rule.regex.source)}, ${JSON.stringify(rule.regex.flags)});
+      const start = process.hrtime.bigint();
+      const matched = re.test(${JSON.stringify(cmd)});
+      const ms = Number(process.hrtime.bigint() - start) / 1e6;
+      process.stdout.write(JSON.stringify({ matched, ms }));
+    `;
+    const child = spawnSync(process.execPath, ['-e', script], { timeout: 1000, encoding: 'utf8' });
+    assert.ok(!(child.error && child.error.code === 'ETIMEDOUT'), 'grep-env hung');
+    assert.strictEqual(child.status, 0, child.stderr);
+    const out = JSON.parse(child.stdout);
+    assert.strictEqual(out.matched, false);
+    assert.ok(out.ms < 50, `grep-env took ${out.ms.toFixed(1)}ms on a non-matching quote-heavy command`);
+    bashAllowed(cmd);
+  });
 });
 
 describe('Grep tool coverage (demo-take bypass 2)', () => {
@@ -883,5 +919,12 @@ describe('hook registration (#55)', () => {
       'a tool handled in check() but missing from the matcher never reaches the hook, ' +
         'and a tool in the matcher that check() ignores costs a node start per call'
     );
+  });
+});
+
+describe('hook manifest', () => {
+  it('caps the PreToolUse command at 10 seconds', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../hooks/hooks.json'), 'utf8'));
+    assert.strictEqual(manifest.hooks.PreToolUse[0].hooks[0].timeout, 10);
   });
 });
