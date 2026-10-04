@@ -57,7 +57,7 @@ cache-tax: the 1h prompt cache lapsed 2h00m ago. This message re-writes 300,002 
 
 ## The Mod form
 
-The same tool exists as a Claude Mod, [cache-tax@claude-code-mods](https://github.com/karanb192/claude-code-mods/tree/main/plugins/cache-tax), for anyone who has turned on function hooks (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, early access). It runs inside Claude Code instead of reading the transcript, refuses a cold send once by default, and adds what a hook cannot do: `/keepwarm 6h` sends one cache-shared ping after 50 idle minutes so the cache is read, not re-written, when you come back. Install one form, not both; two guards fire twice. The status line segment below stays with this hook's files either way, because a mod cannot draw into the status line.
+The same tool exists as a Claude Mod, [cache-tax@claude-code-mods](https://github.com/karanb192/claude-code-mods/tree/main/plugins/cache-tax), for [Claude Code 2.1.287 or later](https://code.claude.com/docs/en/plugins/mods/overview#turn-mods-on-or-off), where mods are on by default. It runs inside Claude Code instead of reading the transcript, refuses a cold send once by default, and adds what a hook cannot do: `/keepwarm 6h` sends one cache-shared ping after 50 idle minutes so the cache is read, not re-written, when you come back. Install one form, not both; two guards fire twice. The status line segment below stays with this hook's files either way, because a mod cannot draw into the status line.
 
 ## What Claude Code already does, and where this adds
 
