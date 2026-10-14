@@ -15,7 +15,7 @@ const path = require('node:path');
 
 const SCRIPT = path.join(__dirname, '..', 'cache-tax.js');
 const mod = require(SCRIPT);
-const { family, priceFor, parseUsageLine, readLastUsage, scanTranscript, tierOf, stateFrom, statusLine, guard, resume, renderCard, fmtDur } = mod;
+const { family, priceFor, normalizeEntry, loadPriceTable, PRICES_FILE, parseUsageLine, readLastUsage, scanTranscript, tierOf, stateFrom, statusLine, guard, resume, renderCard, fmtDur } = mod;
 
 const HOUR = 3600 * 1000;
 
@@ -42,7 +42,9 @@ function writeTranscript(dir, lines) {
 }
 
 function run(payload, env = {}, args = []) {
-  const r = spawnSync('node', [SCRIPT, ...args], { input: JSON.stringify(payload), env: Object.assign({}, process.env, env), encoding: 'utf8' });
+  // Strip ambient CACHE_TAX_* so a developer's shell never changes the result.
+  const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('CACHE_TAX_')));
+  const r = spawnSync('node', [SCRIPT, ...args], { input: JSON.stringify(payload), env: Object.assign(base, env), encoding: 'utf8' });
   return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
 }
 
@@ -68,6 +70,101 @@ describe('pricing', () => {
     const p = priceFor('claude-fable-5-1');
     assert.strictEqual(p.write1h / p.read, 80);
     assert.strictEqual(p.write5m, 12.5);
+  });
+  it('maps the 5.5 models ahead of their 5 and 4.x namesakes', () => {
+    assert.strictEqual(family('claude-opus-5-5'), 'opus-5-5');
+    assert.strictEqual(family('claude-sonnet-5-5'), 'sonnet-5-5');
+    assert.strictEqual(family('claude-haiku-5-5'), 'haiku-5-5');
+    assert.strictEqual(family('claude-haiku-4-5'), 'haiku');
+  });
+  it('prices Opus 4 and 4.1 at their own rates, not the Opus 4.5 - 4.8 rates', () => {
+    for (const id of ['claude-opus-4-1-20250805', 'claude-opus-4-1', 'claude-opus-4-20250514', 'claude-opus-4-0', 'anthropic.claude-opus-4-20250514-v1:0']) {
+      const p = priceFor(id, 100000);
+      assert.deepStrictEqual([p.read, p.write5m, p.write1h], [1.5, 18.75, 30], id);
+    }
+    for (const id of ['claude-opus-4-5-20251101', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8']) {
+      const p = priceFor(id, 100000);
+      assert.deepStrictEqual([p.family, p.read, p.write5m, p.write1h], ['opus-4', 0.5, 6.25, 10], id);
+    }
+  });
+  it('prices Opus 5.5 and Sonnet 5.5 at the 2026-10-07 list rates', () => {
+    const o = priceFor('claude-opus-5-5', 300000);
+    assert.deepStrictEqual([o.read, o.write5m, o.write1h], [0.2, 5, 8]);
+    const s = priceFor('claude-sonnet-5-5', 300000);
+    assert.deepStrictEqual([s.read, s.write5m, s.write1h], [0.1, 2.5, 4]);
+  });
+  it('steps Haiku 5.5 up a tier past 100k tokens of context', () => {
+    const lo = priceFor('claude-haiku-5-5', 100000);
+    assert.deepStrictEqual([lo.read, lo.write5m, lo.write1h], [0.01, 0.125, 0.2]);
+    const hi = priceFor('claude-haiku-5-5', 100001);
+    assert.deepStrictEqual([hi.read, hi.write5m, hi.write1h], [0.05, 0.625, 1]);
+  });
+  it('prices a cold Haiku 5.5 comeback at the tier its context lands in', () => {
+    const now = Date.now();
+    const st = stateFrom(parseUsageLine(usageLine({ model: 'claude-haiku-5-5', ts: now - 2 * HOUR, write: 1000, read: 199000 })), now);
+    assert.ok(Math.abs(st.rewriteUsd - 200002 * 1 / 1e6) < 1e-9);
+    assert.ok(Math.abs(st.warmUsd - 200002 * 0.05 / 1e6) < 1e-9);
+  });
+});
+
+describe('prices.json', () => {
+  const raw = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'prices.json'), 'utf8'));
+  it('is the file the script loads, and it loads cleanly', () => {
+    assert.strictEqual(PRICES_FILE, path.join(__dirname, '..', 'prices.json'));
+    const t = loadPriceTable();
+    assert.strictEqual(t.error, null);
+    assert.deepStrictEqual(Object.keys(t.families).sort(), Object.keys(raw.families).sort(), 'every family parses; none silently dropped');
+  });
+  it('records an ISO effective date and an https source', () => {
+    assert.match(raw.effective, /^\d{4}-\d{2}-\d{2}$/);
+    assert.ok(Number.isFinite(Date.parse(raw.effective)));
+    assert.match(raw.source, /^https:\/\//);
+  });
+  it('has sane rates: lowercase keys, read <= 5m write <= 1h write, ascending tiers ending unbounded', () => {
+    for (const [k, v] of Object.entries(raw.families)) {
+      assert.strictEqual(k, k.toLowerCase(), k);
+      assert.ok(typeof v.name === 'string' && v.name, `${k} has a display name`);
+      const tiers = normalizeEntry(v);
+      assert.ok(tiers, `${k} parses`);
+      for (const t of tiers) assert.ok(t.read <= t.write5m && t.write5m <= t.write1h, `${k} rate order`);
+      assert.strictEqual(tiers[tiers.length - 1].maxContext, null, `${k} last tier is unbounded`);
+      for (let i = 1; i < tiers.length; i++) assert.ok(tiers[i - 1].maxContext < (tiers[i].maxContext == null ? Infinity : tiers[i].maxContext), `${k} tiers ascend`);
+    }
+  });
+});
+
+describe('price overrides and a missing table', () => {
+  const now = Date.now();
+  const pc = { warm: true, ttl: '1h', expires_at: now / 1000 + 1800, recache_tokens_if_cold: 400000 };
+  it('accepts the legacy array form in CACHE_TAX_PRICES', () => {
+    const r = run({ model: { id: 'claude-fable-5-1' }, prompt_cache: pc }, { CACHE_TAX_PRICES: '{"fable-5-1":[0.5,25,40]}' }, ['--statusline']);
+    assert.match(r.out, /cold costs \$16\.00$/);
+  });
+  it('accepts a tiered object in CACHE_TAX_PRICES', () => {
+    const r = run({ model: { id: 'claude-opus-5-5' }, prompt_cache: pc }, { CACHE_TAX_PRICES: '{"opus-5-5":{"tiers":[{"maxContext":200000,"read":0.2,"write5m":5,"write1h":8},{"read":0.4,"write5m":10,"write1h":16}]}}' }, ['--statusline']);
+    assert.match(r.out, /cold costs \$6\.40$/);
+  });
+  it('reads CACHE_TAX_PRICES_FILE instead of the bundled table', () => {
+    const f = path.join(tmp, 'my-prices.json');
+    fs.writeFileSync(f, JSON.stringify({ effective: '2027-01-01', source: 'https://example.com', families: { 'opus-5-5': { name: 'x', read: 1, write5m: 2, write1h: 3 } } }));
+    const r = run({ model: { id: 'claude-opus-5-5' }, prompt_cache: pc }, { CACHE_TAX_PRICES_FILE: f }, ['--statusline']);
+    assert.match(r.out, /cold costs \$1\.20$/);
+  });
+  it('degrades to token counts and n/a when the table is missing or broken, never crashing', () => {
+    const missing = path.join(tmp, 'nope.json');
+    const r = run({ model: { id: 'claude-opus-5-5' }, prompt_cache: pc }, { CACHE_TAX_PRICES_FILE: missing }, ['--statusline']);
+    assert.strictEqual(r.code, 0);
+    assert.match(r.out, /^cache 30m left · 400k · cold costs n\/a$/);
+    const bad = path.join(tmp, 'bad.json');
+    fs.writeFileSync(bad, '{ not json');
+    assert.strictEqual(run({ model: { id: 'claude-opus-5-5' }, prompt_cache: pc }, { CACHE_TAX_PRICES_FILE: bad }, ['--statusline']).code, 0);
+  });
+  it('says on the card where its prices came from, or why there are none', () => {
+    const p = writeTranscript(tmp, [{ ts: now - 3 * HOUR, write: 1000, read: 299000 }]);
+    assert.match(run({}, {}, ['--render', '--transcript', p]).out, /prices      list rates effective \d{4}-\d{2}-\d{2}, from prices\.json/);
+    const r = run({}, { CACHE_TAX_PRICES_FILE: path.join(tmp, 'nope.json') }, ['--render', '--transcript', p]);
+    assert.match(r.out, /prices      none loaded \(.*nope\.json: ENOENT\)/);
+    assert.match(r.out, /cold cost   n\/a/);
   });
 });
 

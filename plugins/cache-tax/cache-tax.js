@@ -23,8 +23,8 @@
  * Plus /cache-tax:status (--render) for the full card on demand.
  *
  * Everything is derived from the session transcript's own usage blocks or from
- * fields Claude Code sends. Prices are list rates and can be overridden.
- * No network calls. Nothing leaves the machine.
+ * fields Claude Code sends. Prices are list rates read from prices.json next to
+ * this script, and can be overridden. No network calls. Nothing leaves the machine.
  *
  * Setup as a plugin: /plugin install cache-tax@claude-code-hooks
  *
@@ -48,33 +48,81 @@ const BIG_TOKENS = Number(process.env.CACHE_TAX_BIG) || 50000;
 const BLOCK = /^(1|true|yes)$/i.test(String(process.env.CACHE_TAX_BLOCK || ''));
 const TAIL_BYTES = 4 * 1024 * 1024;
 
-// List prices, $ per million tokens: [cache read, 5m cache write, 1h cache write].
-// Override any family with CACHE_TAX_PRICES='{"fable-5-1":[0.25,12.5,20]}'.
-const DEFAULT_PRICES = {
-  'fable-5-1': [0.25, 12.5, 20],
-  'fable-5': [1.0, 12.5, 20],
-  'opus-5': [0.5, 6.25, 10],
-  'opus-4': [0.5, 6.25, 10],
-  'sonnet-5': [0.2, 2.5, 4],
-  'sonnet': [0.3, 3.75, 6],
-  'haiku': [0.1, 1.25, 2],
-};
-function prices() {
-  let extra = {};
-  try { extra = JSON.parse(process.env.CACHE_TAX_PRICES || '{}'); } catch (_) { extra = {}; }
-  return Object.assign({}, DEFAULT_PRICES, extra);
+// List prices live in prices.json next to this script ($ per million tokens,
+// with the effective date and source). CACHE_TAX_PRICES_FILE points at another
+// copy; CACHE_TAX_PRICES='{"fable-5-1":[0.25,12.5,20]}' overrides single families.
+const PRICES_FILE = process.env.CACHE_TAX_PRICES_FILE || path.join(__dirname, 'prices.json');
+
+function num(x) { return typeof x === 'number' && Number.isFinite(x) && x >= 0; }
+
+/**
+ * One family entry to a list of tiers, cheapest context first. Accepts the
+ * legacy [read, 5m write, 1h write] array, a flat {read, write5m, write1h}
+ * object, or {tiers: [{maxContext, read, write5m, write1h}, ...]} for models
+ * whose rate steps up past a context size. Returns null when malformed.
+ */
+function normalizeEntry(e) {
+  let tiers;
+  if (Array.isArray(e)) tiers = [{ read: e[0], write5m: e[1], write1h: e[2] }];
+  else if (e && Array.isArray(e.tiers)) tiers = e.tiers;
+  else if (e && typeof e === 'object') tiers = [e];
+  else return null;
+  const out = [];
+  for (const t of tiers) {
+    if (!t || !num(t.read) || !num(t.write5m) || !num(t.write1h)) return null;
+    const max = t.maxContext == null ? null : Number(t.maxContext);
+    if (max != null && !(max > 0)) return null;
+    out.push({ maxContext: max, read: t.read, write5m: t.write5m, write1h: t.write1h });
+  }
+  if (!out.length) return null;
+  out.sort((a, b) => (a.maxContext == null ? Infinity : a.maxContext) - (b.maxContext == null ? Infinity : b.maxContext));
+  return out;
 }
 
-// Longest key first so fable-5-1 wins over fable-5 and sonnet-5 over sonnet.
+let tableCache = null;
+/** The price table from prices.json: {effective, source, families, file, error}. */
+function loadPriceTable() {
+  if (tableCache) return tableCache;
+  const t = { file: PRICES_FILE, effective: null, source: null, families: {}, error: null };
+  try {
+    const raw = JSON.parse(fs.readFileSync(PRICES_FILE, 'utf8'));
+    t.effective = typeof raw.effective === 'string' ? raw.effective : null;
+    t.source = typeof raw.source === 'string' ? raw.source : null;
+    for (const [k, v] of Object.entries((raw && raw.families) || {})) {
+      const tiers = normalizeEntry(v);
+      if (tiers) t.families[k.toLowerCase()] = tiers;
+    }
+  } catch (e) { t.error = e.code || e.message; }
+  tableCache = t;
+  return t;
+}
+
+function prices() {
+  const out = Object.assign({}, loadPriceTable().families);
+  let extra = {};
+  try { extra = JSON.parse(process.env.CACHE_TAX_PRICES || '{}'); } catch (_) { extra = {}; }
+  for (const [k, v] of Object.entries(extra || {})) {
+    const tiers = normalizeEntry(v);
+    if (tiers) out[k.toLowerCase()] = tiers;
+  }
+  return out;
+}
+
+// Longest key first so fable-5-1 wins over fable-5 and sonnet-5-5 over sonnet-5.
 function family(model) {
   const m = String(model || '').toLowerCase();
   const keys = Object.keys(prices()).sort((a, b) => b.length - a.length);
   for (const k of keys) if (m.includes(k)) return k;
   return null;
 }
-function priceFor(model) {
+/** Rates for a model at a context size (tokens sent, cached or not). */
+function priceFor(model, ctx) {
   const f = family(model);
-  return f ? { family: f, read: prices()[f][0], write5m: prices()[f][1], write1h: prices()[f][2] } : null;
+  if (!f) return null;
+  const tiers = prices()[f];
+  const n = Number(ctx) || 0;
+  const t = tiers.find(x => x.maxContext == null || n <= x.maxContext) || tiers[tiers.length - 1];
+  return { family: f, read: t.read, write5m: t.write5m, write1h: t.write1h };
 }
 
 // ---------- transcript ----------
@@ -158,7 +206,7 @@ function scanTranscript(transcriptPath) {
     if (!u) continue;
     if (u.requestId && seen.has(u.requestId)) continue;
     if (u.requestId) seen.add(u.requestId);
-    const pr = priceFor(u.model);
+    const pr = priceFor(u.model, u.ctx);
     t.requests++; t.write += u.write; t.read += u.read; t.model = u.model || t.model;
     let wUsd = 0;
     if (pr) {
@@ -207,7 +255,7 @@ function stateFrom(u, nowMs) {
     // transcript, which makes the figure a floor. Nothing here is avoidable, so
     // the guard has nothing to say.
     const c = u.compacted;
-    const pr = priceFor(u.model);
+    const pr = priceFor(u.model, c.postTokens);
     return {
       compacted: c, ttl, ageSec: Math.max(0, (nowMs - c.ts) / 1000), leftSec: 0, lapsedSec: 0, lapsed: false,
       ctx: c.postTokens, model: u.model, family: pr ? pr.family : null,
@@ -217,7 +265,7 @@ function stateFrom(u, nowMs) {
   }
   const ageSec = Math.max(0, (nowMs - u.ts) / 1000);
   const leftSec = TTL_SEC[ttl] - ageSec;
-  const pr = priceFor(u.model);
+  const pr = priceFor(u.model, u.ctx);
   const writeRate = pr ? (ttl === '5m' ? pr.write5m : pr.write1h) : null;
   return {
     ttl, ageSec, leftSec, lapsedSec: Math.max(0, -leftSec), lapsed: leftSec <= 0, ctx: u.ctx, model: u.model, family: pr ? pr.family : null,
@@ -243,9 +291,9 @@ function statusLine(payload, nowMs) {
   const pc = payload && payload.prompt_cache;
   const modelId = payload && payload.model && (payload.model.id || payload.model.display_name);
   if (pc && typeof pc === 'object' && pc.expires_at != null && pc.recache_tokens_if_cold != null) {
-    const pr = priceFor(modelId);
     const ttl = pc.ttl || '1h';
     const tokens = Number(pc.recache_tokens_if_cold) || 0;
+    const pr = priceFor(modelId, tokens);
     const rate = pr ? (ttl === '5m' ? pr.write5m : pr.write1h) : null;
     const cold = rate == null ? null : tokens * rate / 1e6;
     const leftSec = Number(pc.expires_at) - nowMs / 1000;
@@ -340,6 +388,10 @@ function renderCard(transcriptPath, nowMs) {
     lines.push(`session     ${t.requests} requests · writes ${fmtTok(t.write)} tok ${fmtUsd(t.writeUsd)} · reads ${fmtTok(t.read)} tok ${fmtUsd(t.readUsd)}`);
     lines.push(`full misses ${t.fullMisses} (${fmtUsd(t.fullMissUsd)}), each one a re-write of the whole prefix`);
   }
+  const pt = loadPriceTable();
+  lines.push(pt.error
+    ? `prices      none loaded (${pt.file}: ${pt.error}), so dollar figures show n/a`
+    : `prices      list rates effective ${pt.effective || 'unknown'}, from ${path.basename(pt.file)}${process.env.CACHE_TAX_PRICES ? ' + CACHE_TAX_PRICES' : ''}`);
   lines.push(st.compacted
     ? 'advice      nothing to avoid here. The compaction request already sent the old context once more; from now on only the summary is in play.'
     : st.lapsed
@@ -394,7 +446,8 @@ if (require.main === module) {
   process.exitCode = main();
 } else {
   module.exports = {
-    family, priceFor, parseUsageLine, parseBoundaryLine, readLastUsage, scanTranscript, guessTranscript,
+    family, priceFor, prices, normalizeEntry, loadPriceTable, PRICES_FILE,
+    parseUsageLine, parseBoundaryLine, readLastUsage, scanTranscript, guessTranscript,
     tierOf, stateFrom, statusLine, guard, guardMessage, resume, renderCard,
     fmtUsd, fmtTok, fmtDur, BIG_TOKENS, TTL_SEC,
   };
