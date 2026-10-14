@@ -104,6 +104,7 @@ List rates live in [`prices.json`](prices.json), next to the script, with the da
 
 - Fable 5.1 `0.25 / 12.5 / 20`, Fable 5 `1 / 12.5 / 20`
 - Opus 5.5 `0.20 / 5 / 8`, Opus 5 and 4.5-4.8 `0.50 / 6.25 / 10`
+- Opus 4 and 4.1 `1.50 / 18.75 / 30`. These two are retired on the Claude API and are not on the 2026-10-07 rate card. Their rates come from the pricing page, and their entries carry that page as their own `source`.
 - Sonnet 5.5 `0.10 / 2.5 / 4`, Sonnet 5 `0.20 / 2.5 / 4`, Sonnet 4.x `0.30 / 3.75 / 6`
 - Haiku 5.5 `0.01 / 0.125 / 0.20` up to 100k tokens of context and `0.05 / 0.625 / 1` past it; Haiku 4.5 `0.10 / 1.25 / 2`
 
@@ -113,7 +114,7 @@ List rates live in [`prices.json`](prices.json), next to the script, with the da
 
 1. Get the current rate card. Anthropic publishes it as a dated PDF ("Claude Model Pricing — List Prices by Platform") linked from the [pricing page](https://platform.claude.com/docs/en/about-claude/pricing). Use the **Claude API**, **Standard**, **Global** row of each model. The three columns cache-tax needs are **Cache hits & refreshes** (`read`), **5m cache writes** (`write5m`) and **1h cache writes** (`write1h`).
 2. Edit `prices.json`: set `effective` to the rate card's effective date (`YYYY-MM-DD`) and `source` to its URL, then change or add entries under `families`.
-3. A family key is a lowercase substring of the model id Claude Code writes to the transcript (`claude-opus-5-5` → `opus-5-5`). The longest matching key wins, so a new `opus-6` needs its own key and a point release like `sonnet-5-5` sits next to `sonnet-5` without disturbing it. Give each entry a `name` for humans.
+3. A family key is a lowercase substring of the model id Claude Code writes to the transcript (`claude-opus-5-5` → `opus-5-5`). The longest matching key wins, so a new `opus-6` needs its own key and a point release like `sonnet-5-5` sits next to `sonnet-5` without disturbing it. Give each entry a `name` for humans. If an entry's rates come from somewhere other than the top-level `source`, give the entry its own `source`.
 4. A model whose rate steps up with context size gets `tiers` instead of flat rates: each tier has the three rates plus `maxContext`, the largest context in tokens it covers, and the last tier has no `maxContext`. Context means everything the request sends (input plus cache read plus cache write), the same figure the re-write is priced on. See `haiku-5-5`.
 5. Run `node --test plugins/cache-tax/tests/cache-tax.test.js`. It checks that every family parses, rates are ordered read ≤ 5m write ≤ 1h write, tiers ascend and end unbounded, and the date and source are filled in. Add a `priceFor` assertion for any family you added.
 6. Bump `version` in `.claude-plugin/plugin.json` so installed copies pick up the new table.

@@ -77,6 +77,16 @@ describe('pricing', () => {
     assert.strictEqual(family('claude-haiku-5-5'), 'haiku-5-5');
     assert.strictEqual(family('claude-haiku-4-5'), 'haiku');
   });
+  it('prices Opus 4 and 4.1 at their own rates, not the Opus 4.5 - 4.8 rates', () => {
+    for (const id of ['claude-opus-4-1-20250805', 'claude-opus-4-1', 'claude-opus-4-20250514', 'claude-opus-4-0', 'anthropic.claude-opus-4-20250514-v1:0']) {
+      const p = priceFor(id, 100000);
+      assert.deepStrictEqual([p.read, p.write5m, p.write1h], [1.5, 18.75, 30], id);
+    }
+    for (const id of ['claude-opus-4-5-20251101', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8']) {
+      const p = priceFor(id, 100000);
+      assert.deepStrictEqual([p.family, p.read, p.write5m, p.write1h], ['opus-4', 0.5, 6.25, 10], id);
+    }
+  });
   it('prices Opus 5.5 and Sonnet 5.5 at the 2026-10-07 list rates', () => {
     const o = priceFor('claude-opus-5-5', 300000);
     assert.deepStrictEqual([o.read, o.write5m, o.write1h], [0.2, 5, 8]);
