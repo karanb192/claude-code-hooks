@@ -64,6 +64,27 @@ describe('pricing', () => {
     assert.deepStrictEqual([priceFor('claude-sonnet-5').read, priceFor('claude-sonnet-5').write5m, priceFor('claude-sonnet-5').write1h], [0.2, 2.5, 4]);
     assert.deepStrictEqual([priceFor('claude-sonnet-4-6').read, priceFor('claude-sonnet-4-6').write5m, priceFor('claude-sonnet-4-6').write1h], [0.3, 3.75, 6]);
   });
+  it('prices every listed model from its own row', () => {
+    const rate = (m, tokens) => { const p = priceFor(m, tokens); return [p.read, p.write5m, p.write1h]; };
+    const old = [1.5, 18.75, 30], current = [0.5, 6.25, 10];
+    assert.deepStrictEqual(rate('claude-opus-5-5'), [0.2, 5, 8]);
+    assert.deepStrictEqual(rate('claude-sonnet-5-5'), [0.1, 2.5, 4]);
+    assert.deepStrictEqual(rate('claude-mythos-5-1'), [0.25, 12.5, 20]);
+    assert.deepStrictEqual(rate('claude-3-5-haiku-20241022'), [0.08, 1, 1.6]);
+    for (const m of ['claude-opus-4-1-20250805', 'claude-opus-4-20250514', 'claude-opus-4@20250514', 'claude-opus-4-1@20250805',
+      'anthropic.claude-opus-4-1-20250805-v1:0', 'anthropic.claude-opus-4-20250514-v1:0', 'claude-opus-4-1', 'claude-opus-4-0']) {
+      assert.deepStrictEqual(rate(m), old, m);
+    }
+    for (const m of ['claude-opus-4-5-20251101', 'claude-opus-4-5@20251101', 'anthropic.claude-opus-4-5-20251101-v1:0', 'claude-opus-4-6', 'claude-opus-4-8', 'claude-opus-5']) {
+      assert.deepStrictEqual(rate(m), current, m);
+    }
+  });
+  it('prices Haiku 5.5 by prompt length, and an override wins over the long row', () => {
+    assert.deepStrictEqual([priceFor('claude-haiku-5-5', 100000).read, priceFor('claude-haiku-5-5', 100000).write1h], [0.01, 0.2]);
+    assert.deepStrictEqual([priceFor('claude-haiku-5-5', 100001).read, priceFor('claude-haiku-5-5', 100001).write1h], [0.05, 1]);
+    process.env.CACHE_TAX_PRICES = '{"haiku-5-5":[0.02,0.2,0.4]}';
+    try { assert.strictEqual(priceFor('claude-haiku-5-5', 200000).write1h, 0.4); } finally { delete process.env.CACHE_TAX_PRICES; }
+  });
   it('prices the 1h write at 80x the read on Fable 5.1', () => {
     const p = priceFor('claude-fable-5-1');
     assert.strictEqual(p.write1h / p.read, 80);

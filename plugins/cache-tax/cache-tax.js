@@ -50,19 +50,37 @@ const TAIL_BYTES = 4 * 1024 * 1024;
 
 // List prices, $ per million tokens: [cache read, 5m cache write, 1h cache write].
 // Override any family with CACHE_TAX_PRICES='{"fable-5-1":[0.25,12.5,20]}'.
+// Opus 4 and 4.1 list at three times Opus 4.5 and later; their keys cover the
+// dated, Bedrock, Google Cloud (@) and alias spellings and never match Opus 4.5+.
 const DEFAULT_PRICES = {
   'fable-5-1': [0.25, 12.5, 20],
+  'mythos-5-1': [0.25, 12.5, 20],
   'fable-5': [1.0, 12.5, 20],
+  'mythos-5': [1.0, 12.5, 20],
+  'opus-5-5': [0.2, 5, 8],
   'opus-5': [0.5, 6.25, 10],
+  'opus-4-1': [1.5, 18.75, 30],
+  'opus-4-0': [1.5, 18.75, 30],
+  'opus-4-2025': [1.5, 18.75, 30],
+  'opus-4@': [1.5, 18.75, 30],
   'opus-4': [0.5, 6.25, 10],
+  'sonnet-5-5': [0.1, 2.5, 4],
   'sonnet-5': [0.2, 2.5, 4],
   'sonnet': [0.3, 3.75, 6],
+  'haiku-5-5': [0.01, 0.125, 0.2],
+  '3-5-haiku': [0.08, 1, 1.6],
   'haiku': [0.1, 1.25, 2],
 };
+// A request whose prompt, cache reads and writes included, is over 100k tokens pays these instead.
+const LONG_PROMPT_TOKENS = 100000;
+const LONG_PRICES = {
+  'haiku-5-5': [0.05, 0.625, 1],
+};
+function userPrices() {
+  try { return JSON.parse(process.env.CACHE_TAX_PRICES || '{}'); } catch (_) { return {}; }
+}
 function prices() {
-  let extra = {};
-  try { extra = JSON.parse(process.env.CACHE_TAX_PRICES || '{}'); } catch (_) { extra = {}; }
-  return Object.assign({}, DEFAULT_PRICES, extra);
+  return Object.assign({}, DEFAULT_PRICES, userPrices());
 }
 
 // Longest key first so fable-5-1 wins over fable-5 and sonnet-5 over sonnet.
@@ -72,9 +90,12 @@ function family(model) {
   for (const k of keys) if (m.includes(k)) return k;
   return null;
 }
-function priceFor(model) {
+function priceFor(model, promptTokens = 0) {
   const f = family(model);
-  return f ? { family: f, read: prices()[f][0], write5m: prices()[f][1], write1h: prices()[f][2] } : null;
+  if (!f) return null;
+  // An override of the family wins over its long-prompt row.
+  const p = promptTokens > LONG_PROMPT_TOKENS && LONG_PRICES[f] && !(f in userPrices()) ? LONG_PRICES[f] : prices()[f];
+  return { family: f, read: p[0], write5m: p[1], write1h: p[2] };
 }
 
 // ---------- transcript ----------
@@ -158,7 +179,7 @@ function scanTranscript(transcriptPath) {
     if (!u) continue;
     if (u.requestId && seen.has(u.requestId)) continue;
     if (u.requestId) seen.add(u.requestId);
-    const pr = priceFor(u.model);
+    const pr = priceFor(u.model, u.ctx);
     t.requests++; t.write += u.write; t.read += u.read; t.model = u.model || t.model;
     let wUsd = 0;
     if (pr) {
@@ -207,7 +228,7 @@ function stateFrom(u, nowMs) {
     // transcript, which makes the figure a floor. Nothing here is avoidable, so
     // the guard has nothing to say.
     const c = u.compacted;
-    const pr = priceFor(u.model);
+    const pr = priceFor(u.model, c.postTokens);
     return {
       compacted: c, ttl, ageSec: Math.max(0, (nowMs - c.ts) / 1000), leftSec: 0, lapsedSec: 0, lapsed: false,
       ctx: c.postTokens, model: u.model, family: pr ? pr.family : null,
@@ -217,7 +238,7 @@ function stateFrom(u, nowMs) {
   }
   const ageSec = Math.max(0, (nowMs - u.ts) / 1000);
   const leftSec = TTL_SEC[ttl] - ageSec;
-  const pr = priceFor(u.model);
+  const pr = priceFor(u.model, u.ctx);
   const writeRate = pr ? (ttl === '5m' ? pr.write5m : pr.write1h) : null;
   return {
     ttl, ageSec, leftSec, lapsedSec: Math.max(0, -leftSec), lapsed: leftSec <= 0, ctx: u.ctx, model: u.model, family: pr ? pr.family : null,
@@ -243,9 +264,9 @@ function statusLine(payload, nowMs) {
   const pc = payload && payload.prompt_cache;
   const modelId = payload && payload.model && (payload.model.id || payload.model.display_name);
   if (pc && typeof pc === 'object' && pc.expires_at != null && pc.recache_tokens_if_cold != null) {
-    const pr = priceFor(modelId);
     const ttl = pc.ttl || '1h';
     const tokens = Number(pc.recache_tokens_if_cold) || 0;
+    const pr = priceFor(modelId, tokens);
     const rate = pr ? (ttl === '5m' ? pr.write5m : pr.write1h) : null;
     const cold = rate == null ? null : tokens * rate / 1e6;
     const leftSec = Number(pc.expires_at) - nowMs / 1000;

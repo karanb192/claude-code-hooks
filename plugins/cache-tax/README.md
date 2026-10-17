@@ -94,7 +94,7 @@ All optional, set via environment variables:
 | `CACHE_TAX_TTL` | auto | Force `5m` or `1h` when the transcript has no cache-write tier to infer from. |
 | `CACHE_TAX_PRICES` | list rates | JSON overriding per-family prices as `[cache read, 5m write, 1h write]` in $/MTok, e.g. `{"fable-5-1":[0.25,12.5,20]}`. |
 
-Built-in list rates (September 2026): Fable 5.1 `[0.25, 12.5, 20]`, Fable 5 `[1, 12.5, 20]`, Opus 5 and 4.x `[0.5, 6.25, 10]`, Sonnet 5 `[0.2, 2.5, 4]`, Sonnet 4.x `[0.3, 3.75, 6]`, Haiku `[0.1, 1.25, 2]`. Unknown models get token counts and no dollar figure. If you are on a subscription the dollars are what the same traffic would cost at API list price, which is the only public yardstick; how a cache write weighs against your plan limits is not documented.
+Built-in list rates (October 2026): Fable 5.1 and Mythos 5.1 `[0.25, 12.5, 20]`, Fable 5 and Mythos 5 `[1, 12.5, 20]`, Opus 5.5 `[0.2, 5, 8]`, Opus 5 and 4.5 to 4.8 `[0.5, 6.25, 10]`, Opus 4 and 4.1 `[1.5, 18.75, 30]`, Sonnet 5.5 `[0.1, 2.5, 4]`, Sonnet 5 `[0.2, 2.5, 4]`, Sonnet 4.x `[0.3, 3.75, 6]`, Haiku 5.5 `[0.01, 0.125, 0.2]` up to 100k prompt tokens and `[0.05, 0.625, 1]` above, Haiku 4.5 `[0.1, 1.25, 2]`, Haiku 3.5 `[0.08, 1, 1.6]`. Unknown models get token counts and no dollar figure. If you are on a subscription the dollars are what the same traffic would cost at API list price, which is the only public yardstick; how a cache write weighs against your plan limits is not documented.
 
 ## How it decides
 
