@@ -1,0 +1,9 @@
+harness: claude-code
+plugin: plugins/block-dangerous-commands
+cases:
+  - scenario: pretooluse-shell-git-reset-hard
+    expect: deny
+    versions: ["2.1.62", "2.1.63", "2.1.286"]
+  - scenario: pretooluse-shell-write
+    expect: no-opinion
+    versions: ["2.1.62", "2.1.63", "2.1.286"]
