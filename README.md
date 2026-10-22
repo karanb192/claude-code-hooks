@@ -35,6 +35,7 @@ A growing collection of tested, documented hooks. Every one installs as a one-co
 - [Quick Start](#-quick-start)
 - [Safety Levels](#-safety-levels)
 - [Testing](#-testing)
+- [Tests vs evals](#-tests-vs-evals)
 - [Token Diet](#-token-diet)
 - [Configuration Reference](#-configuration-reference)
 - [Contributing](#-contributing)
@@ -321,6 +322,14 @@ node --test plugins/block-dangerous-commands/tests/block-dangerous-commands.test
 - ✅ Unit tests for core functions
 - ✅ Integration tests for stdin/stdout flow
 - ✅ Config validation tests
+
+---
+
+## 🔬 Tests vs evals
+
+A test proves a hook's matcher fires: it feeds hand-written JSON to the script, asserts on the verdict, and runs in CI on every change. An eval asks the question a test cannot, whether the guard changes what Claude does. It loads the plugin into a real Claude session, runs each case three times with the plugin and three times without it, and scores the difference: does a denied model accept the deny reason, or reach for another route?
+
+Evals are real model calls, so they cost money and stay out of CI. Each plugin keeps its score table in `evals/RESULTS.md`, for example [protect-secrets](plugins/protect-secrets/evals/RESULTS.md); the cells read `not yet run` until someone runs the suite and fills them in. The case format is documented in [plugin evals](https://code.claude.com/docs/en/plugin-evals).
 
 ---
 
