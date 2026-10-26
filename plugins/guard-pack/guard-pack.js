@@ -105,8 +105,8 @@ const GUARDS = [
   {
     name: 'protect-tests',
     emojis: STD_EMOJIS,
-    run(mod, tool, input) {
-      const r = mod.checkTool(tool, input || {});
+    run(mod, tool, input, cwd) {
+      const r = mod.checkTool(tool, input || {}, undefined, cwd);
       if (!r.blocked) return null;
       return {
         id: r.id, level: r.level, ask: false,

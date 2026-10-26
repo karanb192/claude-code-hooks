@@ -8,8 +8,10 @@
  * SAFETY_LEVEL: 'critical' | 'high' | 'strict' (default: 'high')
  *   critical - deleting test files or whole test directories (rm / git rm)
  *   high     - + renaming a test file to a disabled name, + introducing a
- *              skip/xfail/ignore marker into an existing test (Edit/MultiEdit)
- *   strict   - + writing a whole test file that is already skipped (Write)
+ *              skip/xfail/ignore marker into an existing test (Edit/MultiEdit,
+ *              a Write over an existing test file, or a shell in-place edit or
+ *              redirect into one: sed -i, perl -pi, >, >>, tee)
+ *   strict   - + writing a whole new test file that is already skipped (Write)
  * Override via the HOOK_SAFETY_LEVEL env var; invalid values fall back to
  * 'high'. Tune via env, not by editing this file: plugin updates overwrite it.
  *
@@ -115,16 +117,59 @@ function log(data) {
   } catch {}
 }
 
+// Counts, not presence: a file that already has one it.skip( must still trip
+// when a second one is added.
 function addedMarker(oldStr, newStr) {
   const before = oldStr || '';
+  const after = newStr || '';
   for (const m of SKIP_MARKERS) {
-    if (m.test(newStr) && !m.test(before)) return true;
+    const g = new RegExp(m.source, 'g');
+    if ((after.match(g) || []).length > (before.match(g) || []).length) return true;
   }
   return false;
 }
 
-// Returns { blocked, id, level, reason }: pure, so it is unit-testable.
-function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL) {
+// Large files are left to the other checks rather than read on every call.
+const MAX_READ_BYTES = 2 * 1024 * 1024;
+
+function readExisting(filePath, cwd) {
+  try {
+    const abs = path.resolve(cwd || process.cwd(), filePath);
+    const st = fs.statSync(abs);
+    if (!st.isFile() || st.size > MAX_READ_BYTES) return null;
+    return fs.readFileSync(abs, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+// sed -i / perl -pi / ruby -pi edit files in place; their s/// replacement is
+// what lands in the file, so only the replacement side is compared.
+const IN_PLACE = /\b(sed\b[^|;&]*\s(-[a-zA-Z]*i|--in-place)|(perl|ruby)\b[^|;&]*\s-[a-zA-Z]*i)/;
+const SUBST = /\bs([/|#,:@!])((?:\\.|(?!\1).)*)\1((?:\\.|(?!\1).)*)\1/g;
+// > file, >> file, tee [-a] file: the command text is what gets written.
+const REDIRECT = /(>>?|\btee(?:\s+-a)?)\s*["']?([^\s"'|;&<>]+)/g;
+
+function shellAddsMarker(cmd, cwd) {
+  const plain = cmd.replace(/\\(.)/g, '$1');
+  if (IN_PLACE.test(cmd)) {
+    for (const [, , pat, rep] of cmd.matchAll(SUBST)) {
+      const unesc = (s) => s.replace(/\\(.)/g, '$1');
+      if (addedMarker(unesc(pat), unesc(rep))) return true;
+    }
+  }
+  for (const [, op, target] of cmd.matchAll(REDIRECT)) {
+    if (!TEST_PATH.test(target)) continue;
+    const existing = op.startsWith('>>') || op.includes('-a') ? '' : readExisting(target, cwd);
+    if (existing !== null && addedMarker(existing, plain)) return true;
+  }
+  return false;
+}
+
+// Returns { blocked, id, level, reason }: pure apart from reading the target
+// test file for Write and shell redirects, so it is unit-testable. cwd
+// resolves relative paths; it defaults to the process's working directory.
+function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL, cwd = undefined) {
   const threshold = LEVELS[safetyLevel] || 2;
   const allow = () => ({ blocked: false });
   const deny = (level, id, reason) =>
@@ -137,6 +182,8 @@ function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL) {
     if (DELETE_VERB.test(cmd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
     if (RENAME_VERB.test(cmd) && DISABLED_DEST.test(cmd))
       return deny('high', 'rename-test', 'renaming a test file to a disabled name');
+    if (shellAddsMarker(cmd, cwd))
+      return deny('high', 'skip-test', 'adding a skip/xfail/ignore marker to a test file from the shell');
     return allow();
   }
 
@@ -157,7 +204,12 @@ function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL) {
   }
 
   if (toolName === 'Write') {
-    if (TEST_PATH.test(toolInput.file_path || '') && addedMarker('', toolInput.content || ''))
+    const file = toolInput.file_path || '';
+    if (!TEST_PATH.test(file)) return allow();
+    const existing = readExisting(file, cwd);
+    if (existing !== null && addedMarker(existing, toolInput.content))
+      return deny('high', 'skip-test', 'rewriting an existing test file with a new skip/xfail/ignore marker');
+    if (addedMarker('', toolInput.content))
       return deny('strict', 'write-skipped-test', 'writing a test file that is already skipped/ignored');
     return allow();
   }
@@ -172,7 +224,7 @@ async function main() {
   try {
     const data = JSON.parse(input);
     const { tool_name, tool_input, session_id, cwd, permission_mode } = data;
-    const result = checkTool(tool_name, tool_input || {});
+    const result = checkTool(tool_name, tool_input || {}, SAFETY_LEVEL, cwd);
 
     if (result.blocked) {
       log({ level: 'BLOCKED', id: result.id, priority: result.level, tool: tool_name, session_id, cwd, permission_mode });

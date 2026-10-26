@@ -146,6 +146,16 @@ describe('Integration: verdicts through the pack', () => {
     assert.match(reasonOf(output), /Fix the code/);
   });
 
+  it('protect-tests: a Write that skips an existing test is denied, path resolved from the payload cwd', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-pack-tests-'));
+    fs.writeFileSync(path.join(dir, 'math.test.js'), "test('add', () => { expect(1).toBe(1); });\n");
+    const { output } = await runHook(payload('Write',
+      { file_path: 'math.test.js', content: "test.skip('add', () => { expect(1).toBe(1); });\n" },
+      { cwd: dir }));
+    assert.strictEqual(decisionOf(output), 'deny');
+    assert.match(reasonOf(output), /\[skip-test\]/);
+  });
+
   it('git-safety: push to main denied', async () => {
     const { output } = await runHook(payload('Bash', { command: 'git push origin main' }));
     assert.strictEqual(decisionOf(output), 'deny');

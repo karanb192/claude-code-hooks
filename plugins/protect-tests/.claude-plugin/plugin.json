@@ -1,7 +1,7 @@
 {
   "name": "protect-tests",
-  "description": "Stops the \"fake green\" failure mode for Claude Code. A PreToolUse guard on Bash|Edit|MultiEdit|Write that denies making a suite pass by deleting test files or directories (rm / git rm), renaming a test to a disabled name (.bak, .disabled, ...), or adding a skip/xfail/ignore marker to an existing test, across pytest, unittest, jest/mocha/vitest, Go, JUnit/TestNG, NUnit/MSTest, RSpec, and Rust. Never blocks writing new, real tests or editing test bodies. Three safety levels (critical/high/strict), tunable via HOOK_SAFETY_LEVEL.",
-  "version": "1.0.1",
+  "description": "Stops the \"fake green\" failure mode for Claude Code. A PreToolUse guard on Bash|Edit|MultiEdit|Write that denies making a suite pass by deleting test files or directories (rm / git rm), renaming a test to a disabled name (.bak, .disabled, ...), or adding a skip/xfail/ignore marker to an existing test (by Edit, a whole-file Write, or a sed -i / perl -pi / redirect from the shell), across pytest, unittest, jest/mocha/vitest, Go, JUnit/TestNG, NUnit/MSTest, RSpec, and Rust. Never blocks writing new, real tests or editing test bodies. Three safety levels (critical/high/strict), tunable via HOOK_SAFETY_LEVEL.",
+  "version": "1.1.0",
   "author": {
     "name": "Karan Bansal",
     "url": "https://github.com/karanb192"
