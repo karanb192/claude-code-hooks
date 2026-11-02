@@ -51,33 +51,44 @@ const ASK = {
   strict:   envBool('HOOK_ASK_STRICT', false),
 };
 
+// git with global options before the subcommand (git -C repo push, git -c k=v push).
+const GIT = '\\bgit(?:\\s+(?:-[Cc]\\s+\\S+|--[\\w-]+(?:=\\S+)?|-[A-Za-z]))*\\s+';
+const MAIN_REF = '(?:[\\s:"\']|refs\\/heads\\/)(?:main|master)(?=$|[\\s;&|"\'])';
+// A shell word, not the "sh" in a *.sh file name; optional path (/bin/bash).
+const SHELL = '(?<![\\w.\\/-])(?:[^\\s|;&]*\\/)?(?:ba|z|da|k)?sh(?![\\w.-])';
+const FETCH = '(?:[^\\s|;&(]*\\/)?(?:curl|wget)\\b';
+// Wrappers between the pipe and the shell: sudo -u root bash, env FOO=1 bash.
+const WRAP = '(?:(?:sudo|doas|env|command|exec|nohup)(?:\\s+(?:-{1,2}\\S+(?:\\s+(?!' + SHELL + ')[^\\s|;&-]\\S*)?|\\w+=\\S*))*\\s+)*';
+
 const PATTERNS = [
   // CRITICAL - Catastrophic, unrecoverable
-  { level: 'critical', id: 'rm-home',          regex: /\brm\s+(-.+\s+)*["']?~\/?["']?(\s|$|[;&|])/,                        reason: 'rm targeting home directory' },
-  { level: 'critical', id: 'rm-home-var',      regex: /\brm\s+(-.+\s+)*["']?\$(HOME|\{HOME\})\/?["']?(\s|$|[;&|])/,          reason: 'rm targeting $HOME' },
-  { level: 'critical', id: 'rm-home-trailing', regex: /\brm\s+.+\s+["']?(~\/?|\$(HOME|\{HOME\})\/?)["']?(\s*$|[;&|])/,    reason: 'rm with trailing ~/ or $HOME' },
-  { level: 'critical', id: 'rm-home-abs',      regex: /\brm\s+(-.+\s+)*["']?\/(home|Users)(\/[^\/\s"';&|]+)?\/?["']?(\s|$|[;&|])/, reason: 'rm targeting a home directory by absolute path' },
+  // A trailing /. or /.. (~/., /Users/alice/..) still names the home directory or above.
+  { level: 'critical', id: 'rm-home',          regex: /\brm\s+(-.+\s+)*["']?~(\/\.{1,2})*\/?["']?(\s|$|[;&|])/,             reason: 'rm targeting home directory' },
+  { level: 'critical', id: 'rm-home-var',      regex: /\brm\s+(-.+\s+)*["']?\$(HOME|\{HOME\})(\/\.{1,2})*\/?["']?(\s|$|[;&|])/, reason: 'rm targeting $HOME' },
+  { level: 'critical', id: 'rm-home-trailing', regex: /\brm\s+.+\s+["']?(~|\$(HOME|\{HOME\}))(\/\.{1,2})*\/?["']?(\s*$|[;&|])/, reason: 'rm with trailing ~/ or $HOME' },
+  { level: 'critical', id: 'rm-home-abs',      regex: /\brm\s+(-.+\s+)*["']?\/(home|Users)(\/[^\/\s"';&|]+)?(\/\.{1,2})*\/?["']?(\s|$|[;&|])/, reason: 'rm targeting a home directory by absolute path' },
   { level: 'critical', id: 'rm-root',          regex: /\brm\s+(-.+\s+)*\/(\*|\s|$|[;&|])/,                                 reason: 'rm targeting root filesystem' },
   { level: 'critical', id: 'rm-system',        regex: /\brm\s+(-.+\s+)*\/(etc|usr|var|bin|sbin|lib|boot|dev|proc|sys)(\/|\s|$)/, reason: 'rm targeting system directory' },
   { level: 'critical', id: 'rm-cwd',           regex: /\brm\s+(-.+\s+)*(\.\/?|\*|\.\/\*)(\s|$|[;&|])/,                     reason: 'rm deleting current directory contents' },
-  { level: 'critical', id: 'rm-parent',        regex: /\brm\s+(-.+\s+)*["']?\.\.\/?(\*)?["']?(\s|$|[;&|])/,                   reason: 'rm deleting the parent directory' },
+  { level: 'critical', id: 'rm-parent',        regex: /\brm\s+(-.+\s+)*["']?(\.\/)?\.\.(\/\.{1,2})*\/?(\*)?["']?(\s|$|[;&|])/, reason: 'rm deleting the parent directory' },
   { level: 'critical', id: 'dd-disk',          regex: /\bdd\b.+of=\/dev\/(sd[a-z]|nvme|hd[a-z]|vd[a-z]|xvd[a-z]|r?disk\d)/,         reason: 'dd writing to disk device' },
   { level: 'critical', id: 'mkfs',             regex: /\bmkfs(\.\w+)?\s+\/dev\/(sd[a-z]|nvme|hd[a-z]|vd[a-z]|r?disk\d)/,    reason: 'mkfs formatting disk' },
   { level: 'critical', id: 'fork-bomb',        regex: /:\(\)\s*\{.*:\s*\|\s*:.*&/,                                         reason: 'fork bomb detected' },
 
   // HIGH - Significant risk, data loss, security
-  { level: 'high', id: 'curl-pipe-sh',   regex: /\b(curl|wget)\b.+\|\s*(sudo\s+(-\S+\s+)*)?(\S*\/)?(ba|z|da|k)?sh\b/,         reason: 'piping URL to shell (RCE risk)' },
-  { level: 'high', id: 'curl-subst-sh',  regex: /(\b(ba|z|da|k)?sh|\bsource|(^|[;&|(]\s*)\.)\s+<\(\s*(curl|wget)\b|\b(ba|z|da|k)?sh\s+-c\s+["']?\$\(\s*(curl|wget)\b/, reason: 'running a downloaded script through process or command substitution (RCE risk)' },
+  { level: 'high', id: 'curl-pipe-sh',   regex: new RegExp(FETCH + '.+\\|\\s*' + WRAP + SHELL),                          reason: 'piping URL to shell (RCE risk)' },
+  { level: 'high', id: 'curl-subst-sh',  regex: new RegExp('(?:' + SHELL + '|(?<![\\w.\\/-])source|(?:^|[;&|(]\\s*)\\.)\\s+<\\(\\s*' + FETCH + '|(?:' + SHELL + '\\s+-c|(?<![\\w.\\/-])eval)\\s+["\']?\\$\\(\\s*' + FETCH), reason: 'running a downloaded script through process or command substitution (RCE risk)' },
   // Flag and branch in either order, within one command segment; +main is a force refspec.
-  { level: 'high', id: 'git-force-main', segment: true, regex: /\bgit\s+push\b(?![^;&|\n]*--force-with-lease)(?=[^;&|\n]*\s(--force|-f)(?=\s|$|[;&|"']))(?=[^;&|\n]*(?:[\s:"']|refs\/heads\/)(main|master)(?=$|[\s;&|"']))|\bgit\s+push\b[^;&|\n]*\s["']?\+([^\s:]*:)?(refs\/heads\/)?(main|master)(?=$|[\s;&|"'])/, reason: 'force push to main/master' },
-  { level: 'high', id: 'git-reset-hard', regex: /\bgit\s+reset\s+--hard/,                                                 reason: 'git reset --hard loses uncommitted work' },
-  { level: 'high', id: 'git-clean-f',    regex: /\bgit\s+clean\s+(-\w*f|-f)/,                                             reason: 'git clean -f deletes untracked files' },
+  // A bare --force-with-lease never matches the (?=\s|...) after --force, so it needs no exception.
+  { level: 'high', id: 'git-force-main', segment: true, regex: new RegExp(GIT + 'push\\b(?=[^;&|\\n]*\\s(?:--force|-f)(?=\\s|$|[;&|"\']))(?=[^;&|\\n]*' + MAIN_REF + ')|' + GIT + 'push\\b[^;&|\\n]*\\s["\']?\\+(?:[^\\s:]*:)?(?:refs\\/heads\\/)?(?:main|master)(?=$|[\\s;&|"\'])'), reason: 'force push to main/master' },
+  { level: 'high', id: 'git-reset-hard', regex: new RegExp(GIT + 'reset\\b[^;&|\\n]*\\s--hard\\b'),                       reason: 'git reset --hard loses uncommitted work' },
+  { level: 'high', id: 'git-clean-f',    regex: new RegExp(GIT + 'clean\\s+(-\\w*f|-f)'),                                 reason: 'git clean -f deletes untracked files' },
   { level: 'high', id: 'chmod-777',      regex: /\bchmod\b.+\b777\b/,                                                     reason: 'chmod 777 is a security risk' },
   { level: 'high', id: 'docker-vol-rm',  regex: /\bdocker\s+volume\s+(rm|prune)/,                                         reason: 'docker volume deletion loses data' },
 
   // STRICT - Cautionary, context-dependent
-  { level: 'strict', id: 'git-force-any',    regex: /\bgit\s+push\b(?!.+--force-with-lease).+(--force|-f)\b/,              reason: 'force push (use --force-with-lease)' },
-  { level: 'strict', id: 'git-checkout-dot', regex: /\bgit\s+checkout\s+\./,                                               reason: 'git checkout . discards changes' },
+  { level: 'strict', id: 'git-force-any',    regex: new RegExp(GIT + 'push\\b(?!.+--force-with-lease).+(--force|-f)\\b'),     reason: 'force push (use --force-with-lease)' },
+  { level: 'strict', id: 'git-checkout-dot', regex: new RegExp(GIT + 'checkout\\s+\\.'),                                     reason: 'git checkout . discards changes' },
   { level: 'strict', id: 'sudo-rm',          regex: /\bsudo\s+rm\b/,                                                       reason: 'sudo rm has elevated privileges' },
   { level: 'strict', id: 'docker-prune',     regex: /\bdocker\s+(system|image)\s+prune/,                                   reason: 'docker prune removes images' },
   { level: 'strict', id: 'crontab-r',        regex: /\bcrontab\s+-r/,                                                      reason: 'removes all cron jobs' },
@@ -95,8 +106,9 @@ function log(data) {
   } catch {}
 }
 
-// Separators inside quotes are argument text, not command boundaries, so
-// segment-scoped patterns run on a copy with those separators blanked.
+// Separators inside quotes are argument text, not command boundaries, and an
+// unquoted # starts a comment, so segment-scoped patterns run on a copy with
+// quoted separators blanked and comments dropped.
 function maskQuotedSeparators(cmd) {
   let out = '';
   let q = '';
@@ -107,6 +119,10 @@ function maskQuotedSeparators(cmd) {
       if (ch === q) q = '';
       else if (/[;&|\n]/.test(ch)) { out += ' '; continue; }
     } else if (ch === '"' || ch === "'") q = ch;
+    else if (ch === '#' && (i === 0 || /\s/.test(cmd[i - 1]))) {
+      while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++;
+      continue;
+    }
     out += ch;
   }
   return out;
@@ -114,6 +130,7 @@ function maskQuotedSeparators(cmd) {
 
 function checkCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   const threshold = LEVELS[safetyLevel] || 2;
+  cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
   const masked = maskQuotedSeparators(cmd);
   for (const p of PATTERNS) {
     if (LEVELS[p.level] <= threshold && p.regex.test(p.segment ? masked : cmd)) {

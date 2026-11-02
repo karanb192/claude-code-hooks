@@ -46,27 +46,30 @@ const SAFETY_LEVEL = ['critical', 'high', 'strict'].includes(process.env.HOOK_SA
 
 const PROTECTED_BRANCHES = ['main', 'master'];
 
+// git with global options before the subcommand (git -C repo push, git -c k=v push).
+const GIT = '\\bgit(?:\\s+(?:-[Cc]\\s+\\S+|--[\\w-]+(?:=\\S+)?|-[A-Za-z]))*\\s+';
+
 const PATTERNS = [
   // STRICT - force-push is normally handled by block-dangerous-commands.js.
   // Only enforced here at 'strict' so git-safety is self-sufficient standalone.
-  { level: 'strict', id: 'force-push',              regex: /\bgit\s+push\b.*(?:--force(?!-with-lease)|-f)\b/, reason: 'Force-pushing is not allowed' },
+  { level: 'strict', id: 'force-push',              regex: new RegExp(GIT + 'push\\b.*(?:--force(?!-with-lease)|-f)\\b'), reason: 'Force-pushing is not allowed' },
 
   // HIGH - complementary coverage the sibling hook does not provide
 
   // Block pushing directly to a protected branch by name
   // The branch as a whole ref (origin main, HEAD:main, +main, refs/heads/main), so my-main-feature is not main.
-  { level: 'high', id: 'push-main',                 segment: true, regex: /\bgit\s+push\b[^;&|\n]*(?:[\s:+"']|refs\/heads\/)main(?=$|[\s;&|:"'])/,   reason: 'Pushing to main is not allowed' },
-  { level: 'high', id: 'push-master',               segment: true, regex: /\bgit\s+push\b[^;&|\n]*(?:[\s:+"']|refs\/heads\/)master(?=$|[\s;&|:"'])/, reason: 'Pushing to master is not allowed' },
+  { level: 'high', id: 'push-main',                 segment: true, regex: new RegExp(GIT + 'push\\b[^;&|\\n]*(?:[\\s:+"\']|refs\\/heads\\/)main(?=$|[\\s;&|:"\'])'),   reason: 'Pushing to main is not allowed' },
+  { level: 'high', id: 'push-master',               segment: true, regex: new RegExp(GIT + 'push\\b[^;&|\\n]*(?:[\\s:+"\']|refs\\/heads\\/)master(?=$|[\\s;&|:"\'])'), reason: 'Pushing to master is not allowed' },
 
   // Block deleting protected branches locally
-  { level: 'high', id: 'branch-delete-protected',   regex: /\bgit\s+branch\s+.*(?:-[dD]|--delete)\s+(?:main|master)\b/, reason: 'Deleting a protected branch is not allowed' },
+  { level: 'high', id: 'branch-delete-protected',   regex: new RegExp(GIT + 'branch\\s+.*(?:-[dD]|--delete)\\s+(?:main|master)\\b'), reason: 'Deleting a protected branch is not allowed' },
 
   // Block direct changes when on a protected branch
-  { level: 'high', id: 'commit-on-protected',       regex: /\bgit\s+commit\b/,                                reason: 'Committing directly on {branch} is not allowed', branchOnly: true },
-  { level: 'high', id: 'merge-on-protected',        regex: /\bgit\s+merge\b/,                                 reason: 'Merging into {branch} is not allowed', branchOnly: true },
-  { level: 'high', id: 'rebase-on-protected',       regex: /\bgit\s+rebase\b/,                                reason: 'Rebasing {branch} is not allowed', branchOnly: true },
-  { level: 'high', id: 'reset-on-protected',        regex: /\bgit\s+reset\b/,                                 reason: 'Resetting {branch} is not allowed', branchOnly: true },
-  { level: 'high', id: 'push-on-protected',         regex: /\bgit\s+push\b/,                                  reason: 'Pushing from {branch} is not allowed', branchOnly: true },
+  { level: 'high', id: 'commit-on-protected',       regex: new RegExp(GIT + 'commit\\b'),                                reason: 'Committing directly on {branch} is not allowed', branchOnly: true },
+  { level: 'high', id: 'merge-on-protected',        regex: new RegExp(GIT + 'merge\\b'),                                 reason: 'Merging into {branch} is not allowed', branchOnly: true },
+  { level: 'high', id: 'rebase-on-protected',       regex: new RegExp(GIT + 'rebase\\b'),                                reason: 'Rebasing {branch} is not allowed', branchOnly: true },
+  { level: 'high', id: 'reset-on-protected',        regex: new RegExp(GIT + 'reset\\b'),                                 reason: 'Resetting {branch} is not allowed', branchOnly: true },
+  { level: 'high', id: 'push-on-protected',         regex: new RegExp(GIT + 'push\\b'),                                  reason: 'Pushing from {branch} is not allowed', branchOnly: true },
 
   // Block destructive gh CLI operations
   { level: 'high', id: 'gh-pr-merge',               regex: /\bgh\s+pr\s+merge\b/,                             reason: 'Merging PRs via gh CLI is not allowed' },
@@ -96,8 +99,9 @@ function getCurrentBranch() {
   }
 }
 
-// Separators inside quotes are argument text, not command boundaries, so
-// segment-scoped patterns run on a copy with those separators blanked.
+// Separators inside quotes are argument text, not command boundaries, and an
+// unquoted # starts a comment, so segment-scoped patterns run on a copy with
+// quoted separators blanked and comments dropped.
 function maskQuotedSeparators(cmd) {
   let out = '';
   let q = '';
@@ -108,6 +112,10 @@ function maskQuotedSeparators(cmd) {
       if (ch === q) q = '';
       else if (/[;&|\n]/.test(ch)) { out += ' '; continue; }
     } else if (ch === '"' || ch === "'") q = ch;
+    else if (ch === '#' && (i === 0 || /\s/.test(cmd[i - 1]))) {
+      while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++;
+      continue;
+    }
     out += ch;
   }
   return out;
@@ -115,6 +123,7 @@ function maskQuotedSeparators(cmd) {
 
 function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL) {
   const threshold = LEVELS[safetyLevel] || LEVELS.high;
+  cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
   const masked = maskQuotedSeparators(cmd);
   for (const p of PATTERNS) {
     if (LEVELS[p.level] > threshold) continue;

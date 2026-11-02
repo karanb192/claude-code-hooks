@@ -94,6 +94,32 @@ describe('Bash: legitimate commands are allowed', () => {
     shouldAllow('Bash', { command: 'mv /tmp/new_test.py tests/new_test.py' }));
   it('blocks find -delete under a test dir whatever the name filter', () =>
     shouldBlock('Bash', { command: "find tests -name '*.py' -delete" }, 'delete-test'));
+  it('blocks a capitalised test directory (case-insensitive volumes)', () => {
+    shouldBlock('Bash', { command: 'rm -rf Tests' }, 'delete-test');
+    shouldBlock('Bash', { command: 'find TESTS -delete' }, 'delete-test');
+  });
+  it('blocks a glob or brace group that expands to the test directory', () => {
+    for (const command of ['rm -rf tests*', 'rm -rf tests?', 'rm -rf {tests}', 'rm -rf {tests,}'])
+      shouldBlock('Bash', { command }, 'delete-test');
+  });
+  it('blocks find piped to xargs rm', () => {
+    shouldBlock('Bash', { command: 'find tests -print | xargs rm' }, 'delete-test');
+    shouldBlock('Bash', { command: 'find tests -print0 | xargs -0 rm -f' }, 'delete-test');
+  });
+  it('blocks find -exec with a path, a quoted rm, or git rm', () => {
+    for (const command of ['find tests -exec /bin/rm {} +', "find tests -exec 'rm' {} +", 'find tests -exec git rm {} +'])
+      shouldBlock('Bash', { command }, 'delete-test');
+  });
+  it('blocks a delete split by a backslash-newline', () =>
+    shouldBlock('Bash', { command: 'rm -rf \\\n  tests' }, 'delete-test'));
+  it('blocks moving tests into TMPDIR with a default or into a per-user temp folder', () => {
+    shouldBlock('Bash', { command: 'mv tests ${TMPDIR:-/tmp}' }, 'delete-test');
+    shouldBlock('Bash', { command: 'mv tests /var/folders/xx/T/' }, 'delete-test');
+    shouldBlock('Bash', { command: 'mv tests $HOME/.Trash/' }, 'delete-test');
+  });
+  it('allows xargs rm on non-test files', () =>
+    shouldAllow('Bash', { command: "find . -name '*.log' -print | xargs rm" }));
+  it('allows rm of a scripts file named rmtests.sh', () => shouldAllow('Bash', { command: 'cat rmtests.sh' }));
   it('allows moving a test within the project', () =>
     shouldAllow('Bash', { command: 'mv tests/old_test.py tests/unit/' }));
   it('allows creating a test dir', () => shouldAllow('Bash', { command: 'mkdir -p tests/unit' }));

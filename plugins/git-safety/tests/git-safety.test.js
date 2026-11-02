@@ -109,6 +109,9 @@ describe('Unit: checkCommand()', () => {
     it('does not read main from a later command', () => shouldAllow('git push origin feat; echo main', 'feat'));
     it('a quoted separator does not end the push', () =>
       shouldBlock('git push --push-option="a;b" origin HEAD:main', 'push-main', 'feat'));
+    it('blocks git -C repo push origin main', () => shouldBlock('git -C /repo push origin main', 'push-main', 'feat'));
+    it('blocks a backslash-newline before main', () => shouldBlock('git push origin \\\n  main', 'push-main', 'feat'));
+    it('a main in a comment is not a push to main', () => shouldAllow('git push origin feat # then main', 'feat'));
     it("a single-quoted pipe does not end the push", () =>
       shouldBlock("git push -o 'ci.skip|x' origin master", 'push-master', 'feat'));
   });

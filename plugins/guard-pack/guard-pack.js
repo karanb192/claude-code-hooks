@@ -38,7 +38,7 @@ const fs = require('fs');
 const path = require('path');
 
 const LIB = path.join(__dirname, 'lib');
-const LOG_DIR = path.join(process.env.HOME || '/tmp', '.claude', 'hooks-logs');
+const LOG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.claude', 'hooks-logs');
 
 const envBool = (key) => process.env[key] === 'true';
 
