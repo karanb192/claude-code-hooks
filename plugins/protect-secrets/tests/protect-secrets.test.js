@@ -237,6 +237,8 @@ describe('Unit: checkBashCommand()', () => {
       bashAllowed('cat $HOME/my.env/.env.example');
       bashAllowed('cp $HOME/my.env/.env.example x');
       bashBlocked('echo $SECRET_KEY/my.env/.env.example', 'echo-secret-var');
+      bashAllowed('cat $HOME/my.env/$USER/.env.example');
+      bashBlocked('echo $HOME/my.env/$SECRET/.env.example', 'echo-secret-var');
     });
     it('a secret variable as the directory of a template is still an echo of the secret', () => {
       bashBlocked('echo $SECRET_KEY/.env.example', 'echo-secret-var');

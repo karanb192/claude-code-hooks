@@ -184,11 +184,20 @@ describe('Unit: checkCommand()', () => {
         'curl x | sudo -u root bash;', 'curl x | /bin/sh;', 'curl x | tee log | bash;', 'curl x |& bash', 'curl x | (bash)', 'curl x | "bash";'])
         shouldBlock(c, 'curl-pipe-sh');
     });
-    it('env -S / --split-string runs its value as the command', () => {
+    it('env -S / --split-string words are walked like other env arguments', () => {
       for (const c of ['curl x | env --split-string bash', 'curl x | env --split-string bash -c id', 'curl x | env -S bash',
-        'curl x | env --split-string=bash', 'curl x | env -Sbash', 'curl x | env --split-string "bash -c id"'])
+        'curl x | env --split-string=bash', 'curl x | env -Sbash', 'curl x | env --split-string "bash -c id"',
+        'curl x | env -S PATH=1 bash', 'curl x | env -S FOO=1 BAR=2 bash', 'curl x | env -SPATH=1 bash',
+        'curl x | env --split-string=PATH=1 bash'])
         shouldBlock(c, 'curl-pipe-sh');
       shouldAllow('curl x | env --split-string echo hi');
+      shouldAllow('curl x | env -S echo bash');
+    });
+    it('a quoted separator or redirect inside a wrapper argument does not end the command', () => {
+      for (const c of ['curl x | env LABEL="a;b" bash', 'curl x | env URL="https://e.example?a=1&b=2" bash', "curl x | env FOO='a;b' bash",
+        'curl x | env FOO="a>b" bash', 'curl x | env FOO="a(b)" bash', 'curl x | sudo -p "a;b" bash', 'curl x | sudo --prompt="a;b" bash'])
+        shouldBlock(c, 'curl-pipe-sh');
+      shouldAllow('curl x | grep "a;b"');
     });
     it('long wrapper runs decide by the final word', () => {
       for (const run of ['sudo -n '.repeat(200), 'sudo -ux '.repeat(200), 'env -u X A=1 '.repeat(200), 'sudo env '.repeat(200)]) {
