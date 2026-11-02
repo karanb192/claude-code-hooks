@@ -54,8 +54,9 @@ const PATTERNS = [
   // HIGH - complementary coverage the sibling hook does not provide
 
   // Block pushing directly to a protected branch by name
-  { level: 'high', id: 'push-main',                 regex: /\bgit\s+push\b.*\bmain\b/,                        reason: 'Pushing to main is not allowed' },
-  { level: 'high', id: 'push-master',               regex: /\bgit\s+push\b.*\bmaster\b/,                      reason: 'Pushing to master is not allowed' },
+  // The branch as a whole ref (origin main, HEAD:main, +main, refs/heads/main), so my-main-feature is not main.
+  { level: 'high', id: 'push-main',                 regex: /\bgit\s+push\b[^;&|\n]*(?:[\s:+"']|refs\/heads\/)main(?=$|[\s;&|:"'])/,   reason: 'Pushing to main is not allowed' },
+  { level: 'high', id: 'push-master',               regex: /\bgit\s+push\b[^;&|\n]*(?:[\s:+"']|refs\/heads\/)master(?=$|[\s;&|:"'])/, reason: 'Pushing to master is not allowed' },
 
   // Block deleting protected branches locally
   { level: 'high', id: 'branch-delete-protected',   regex: /\bgit\s+branch\s+.*(?:-[dD]|--delete)\s+(?:main|master)\b/, reason: 'Deleting a protected branch is not allowed' },
@@ -77,7 +78,7 @@ const PATTERNS = [
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
 const EMOJIS = { critical: '🚨', high: '⛔', strict: '⚠️' };
-const LOG_DIR = path.join(process.env.HOME, '.claude', 'hooks-logs');
+const LOG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.claude', 'hooks-logs');
 
 function log(data) {
   try {

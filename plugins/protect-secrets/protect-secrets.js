@@ -269,9 +269,9 @@ function checkFilePath(filePath, safetyLevel = SAFETY_LEVEL) {
 function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   if (!cmd) return { blocked: false, pattern: null };
   cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
-  for (const allow of ALLOWLIST) {
-    if (allow.test(cmd)) return { blocked: false, pattern: null };
-  }
+  // Mask each allowlisted path on its own; matching the allowlist against the
+  // whole string let `cat .env # .env.example` through.
+  cmd = cmd.replace(/[^\s"'`=@<>;|&()]+/g, token => isAllowlisted(token) ? 'allowlisted-template' : token);
   const threshold = LEVELS[safetyLevel] || 2;
   for (const p of BASH_PATTERNS) {
     if (LEVELS[p.level] <= threshold && p.regex.test(cmd)) {

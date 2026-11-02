@@ -88,7 +88,7 @@ const envBool = (key, fallback) => key in process.env ? process.env[key] === 'tr
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
 const EMOJIS = { critical: '🚨', high: '⛔', strict: '⚠️' };
-const LOG_DIR = path.join(process.env.HOME, '.claude', 'hooks-logs');
+const LOG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.claude', 'hooks-logs');
 
 // Secret material that instruction text has no business directing an agent at.
 // Kept consistent with protect-secrets.js's sensitive-file list. The .env

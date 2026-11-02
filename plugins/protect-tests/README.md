@@ -17,7 +17,7 @@ Restart Claude Code, done. (Or from a shell: `claude plugin install protect-test
 
 | Tool | Blocked when | Level | Deny id |
 |------|--------------|-------|---------|
-| `Bash` | `rm` / `unlink` / `shred` / `trash` / `git rm` targets a test file or test directory | `critical` | `delete-test` |
+| `Bash` | `rm` / `unlink` / `shred` / `trash` / `git rm` targets a test file or test directory (`tests/` or a bare `tests`), `find` deletes test files (`-delete`, `-exec rm`), or `mv` moves tests into `/tmp`, `$TMPDIR`, `~/.Trash` or `/dev/null` | `critical` | `delete-test` |
 | `Bash` | `mv` renames a test file to a disabled name (`.bak`, `.old`, `.orig`, `.disabled`, `.skip`, `.ignore`, `.tmp`, `~`) | `high` | `rename-test` |
 | `Edit` / `MultiEdit` | the edit adds a skip/xfail/ignore marker to an existing test file | `high` | `skip-test` |
 | `Write` | the new test file's content is already skipped/ignored | `strict` | `write-skipped-test` |

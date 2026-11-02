@@ -32,7 +32,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync, execFileSync } = require('child_process');
 
-const LOG_DIR = path.join(process.env.HOME, '.claude', 'hooks-logs');
+const LOG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.claude', 'hooks-logs');
 
 function log(data) {
   try {

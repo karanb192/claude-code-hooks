@@ -21,7 +21,7 @@ Restart Claude Code, done. (Or from a shell: `claude plugin install git-safety@c
 
 Blocked at the default `high` level:
 
-- `git push` naming `main` or `master` (any flags)
+- `git push` naming `main` or `master` as a ref (`origin main`, `HEAD:main`, `+main`, `refs/heads/main`; any flags). A branch that only contains the word, such as `my-main-feature`, is not blocked
 - `git branch -d` / `-D` / `--delete` on `main` or `master`
 - `git commit`, `git merge`, `git rebase`, `git reset`, `git push` while the current branch **is** `main` or `master`
 - `gh pr merge`, `gh pr close`, `gh issue close`, `gh release delete`, `gh repo delete`

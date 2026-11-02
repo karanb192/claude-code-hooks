@@ -54,18 +54,22 @@ const ASK = {
 const PATTERNS = [
   // CRITICAL - Catastrophic, unrecoverable
   { level: 'critical', id: 'rm-home',          regex: /\brm\s+(-.+\s+)*["']?~\/?["']?(\s|$|[;&|])/,                        reason: 'rm targeting home directory' },
-  { level: 'critical', id: 'rm-home-var',      regex: /\brm\s+(-.+\s+)*["']?\$HOME["']?(\s|$|[;&|])/,                      reason: 'rm targeting $HOME' },
-  { level: 'critical', id: 'rm-home-trailing', regex: /\brm\s+.+\s+["']?(~\/?|\$HOME)["']?(\s*$|[;&|])/,                   reason: 'rm with trailing ~/ or $HOME' },
+  { level: 'critical', id: 'rm-home-var',      regex: /\brm\s+(-.+\s+)*["']?\$(HOME|\{HOME\})\/?["']?(\s|$|[;&|])/,          reason: 'rm targeting $HOME' },
+  { level: 'critical', id: 'rm-home-trailing', regex: /\brm\s+.+\s+["']?(~\/?|\$(HOME|\{HOME\})\/?)["']?(\s*$|[;&|])/,    reason: 'rm with trailing ~/ or $HOME' },
+  { level: 'critical', id: 'rm-home-abs',      regex: /\brm\s+(-.+\s+)*["']?\/(home|Users)(\/[^\/\s"';&|]+)?\/?["']?(\s|$|[;&|])/, reason: 'rm targeting a home directory by absolute path' },
   { level: 'critical', id: 'rm-root',          regex: /\brm\s+(-.+\s+)*\/(\*|\s|$|[;&|])/,                                 reason: 'rm targeting root filesystem' },
   { level: 'critical', id: 'rm-system',        regex: /\brm\s+(-.+\s+)*\/(etc|usr|var|bin|sbin|lib|boot|dev|proc|sys)(\/|\s|$)/, reason: 'rm targeting system directory' },
   { level: 'critical', id: 'rm-cwd',           regex: /\brm\s+(-.+\s+)*(\.\/?|\*|\.\/\*)(\s|$|[;&|])/,                     reason: 'rm deleting current directory contents' },
-  { level: 'critical', id: 'dd-disk',          regex: /\bdd\b.+of=\/dev\/(sd[a-z]|nvme|hd[a-z]|vd[a-z]|xvd[a-z])/,         reason: 'dd writing to disk device' },
-  { level: 'critical', id: 'mkfs',             regex: /\bmkfs(\.\w+)?\s+\/dev\/(sd[a-z]|nvme|hd[a-z]|vd[a-z])/,            reason: 'mkfs formatting disk' },
+  { level: 'critical', id: 'rm-parent',        regex: /\brm\s+(-.+\s+)*["']?\.\.\/?(\*)?["']?(\s|$|[;&|])/,                   reason: 'rm deleting the parent directory' },
+  { level: 'critical', id: 'dd-disk',          regex: /\bdd\b.+of=\/dev\/(sd[a-z]|nvme|hd[a-z]|vd[a-z]|xvd[a-z]|r?disk\d)/,         reason: 'dd writing to disk device' },
+  { level: 'critical', id: 'mkfs',             regex: /\bmkfs(\.\w+)?\s+\/dev\/(sd[a-z]|nvme|hd[a-z]|vd[a-z]|r?disk\d)/,    reason: 'mkfs formatting disk' },
   { level: 'critical', id: 'fork-bomb',        regex: /:\(\)\s*\{.*:\s*\|\s*:.*&/,                                         reason: 'fork bomb detected' },
 
   // HIGH - Significant risk, data loss, security
-  { level: 'high', id: 'curl-pipe-sh',   regex: /\b(curl|wget)\b.+\|\s*(ba)?sh\b/,                                        reason: 'piping URL to shell (RCE risk)' },
-  { level: 'high', id: 'git-force-main', regex: /\bgit\s+push\b(?!.+--force-with-lease).+(--force|-f)\b.+\b(main|master)\b/, reason: 'force push to main/master' },
+  { level: 'high', id: 'curl-pipe-sh',   regex: /\b(curl|wget)\b.+\|\s*(sudo\s+(-\S+\s+)*)?(\S*\/)?(ba|z|da|k)?sh\b/,         reason: 'piping URL to shell (RCE risk)' },
+  { level: 'high', id: 'curl-subst-sh',  regex: /(\b(ba|z|da|k)?sh|\bsource|(^|[;&|(]\s*)\.)\s+<\(\s*(curl|wget)\b|\b(ba|z|da|k)?sh\s+-c\s+["']?\$\(\s*(curl|wget)\b/, reason: 'running a downloaded script through process or command substitution (RCE risk)' },
+  // Flag and branch in either order, within one command segment; +main is a force refspec.
+  { level: 'high', id: 'git-force-main', regex: /\bgit\s+push\b(?![^;&|\n]*--force-with-lease)(?=[^;&|\n]*\s(--force|-f)(?=\s|$))(?=[^;&|\n]*(?:[\s:"']|refs\/heads\/)(main|master)(?=$|[\s;&|"']))|\bgit\s+push\b[^;&|\n]*\s["']?\+([^\s:]*:)?(refs\/heads\/)?(main|master)(?=$|[\s;&|"'])/, reason: 'force push to main/master' },
   { level: 'high', id: 'git-reset-hard', regex: /\bgit\s+reset\s+--hard/,                                                 reason: 'git reset --hard loses uncommitted work' },
   { level: 'high', id: 'git-clean-f',    regex: /\bgit\s+clean\s+(-\w*f|-f)/,                                             reason: 'git clean -f deletes untracked files' },
   { level: 'high', id: 'chmod-777',      regex: /\bchmod\b.+\b777\b/,                                                     reason: 'chmod 777 is a security risk' },
@@ -81,7 +85,7 @@ const PATTERNS = [
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
 const EMOJIS = { critical: '🚨', high: '⛔', strict: '⚠️' };
-const LOG_DIR = path.join(process.env.HOME, '.claude', 'hooks-logs');
+const LOG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.claude', 'hooks-logs');
 
 function log(data) {
   try {

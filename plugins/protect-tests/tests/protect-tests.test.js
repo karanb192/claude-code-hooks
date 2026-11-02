@@ -73,6 +73,23 @@ describe('Bash: legitimate commands are allowed', () => {
   it('allows npm test', () => shouldAllow('Bash', { command: 'npm test' }));
   it('allows rm of non-test artifacts', () => shouldAllow('Bash', { command: 'rm -rf node_modules' }));
   it('allows rm of build output', () => shouldAllow('Bash', { command: 'rm -rf dist build .pytest_cache' }));
+  it('blocks rm -rf of a tests directory without a trailing slash', () =>
+    shouldBlock('Bash', { command: 'rm -rf tests' }, 'delete-test'));
+  it('blocks rm -rf of a nested spec directory without a slash', () =>
+    shouldBlock('Bash', { command: 'rm -rf ./src/spec' }, 'delete-test'));
+  it('blocks rm of a quoted test directory', () => shouldBlock('Bash', { command: 'rm -r "test"' }, 'delete-test'));
+  it('blocks find -delete on a test directory', () => shouldBlock('Bash', { command: 'find tests -delete' }, 'delete-test'));
+  it('blocks find -exec rm on test files', () =>
+    shouldBlock('Bash', { command: "find . -name '*_test.py' -exec rm {} +" }, 'delete-test'));
+  it('blocks moving tests into /tmp', () => shouldBlock('Bash', { command: 'mv tests /tmp/' }, 'delete-test'));
+  it('blocks moving a test file into the trash', () =>
+    shouldBlock('Bash', { command: 'mv src/auth.test.ts ~/.Trash/' }, 'delete-test'));
+  it('allows a test run next to an unrelated rm', () =>
+    shouldAllow('Bash', { command: 'rm -rf node_modules && npm test' }));
+  it('allows rm of a test-results folder', () => shouldAllow('Bash', { command: 'rm -rf test-results coverage' }));
+  it('allows find -delete on logs', () => shouldAllow('Bash', { command: "find . -name '*.log' -delete" }));
+  it('allows moving a test within the project', () =>
+    shouldAllow('Bash', { command: 'mv tests/old_test.py tests/unit/' }));
   it('allows creating a test dir', () => shouldAllow('Bash', { command: 'mkdir -p tests/unit' }));
   it('allows go test', () => shouldAllow('Bash', { command: 'go test ./...' }));
   it('allows refactor rename to another test name', () => shouldAllow('Bash', { command: 'mv test_old.py test_new.py' }));

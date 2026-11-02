@@ -68,6 +68,22 @@ const DELETE_VERB = /(\brm\b|\bunlink\b|\bshred\b|\btrash\b|\bgit\s+rm\b)/;
 const RENAME_VERB = /\bmv\b/;
 const DISABLED_DEST = /(\.bak|\.old|\.orig|\.disabled|\.skip|\.ignore|\.tmp|~)(["'\s]|$)/i;
 
+// Ways to drop a suite that carry no test/ slash or test file name: a bare
+// directory operand (rm -rf tests), find -delete, or a move to a temp or
+// trash folder. Each is judged within one command segment.
+const TEST_DIR_ARG = '(?:^|[\\s\'"/])(?:tests?|__tests__|specs?)(?=[\\s\'"/)]|$)';
+const BARE_DIR_DELETE = new RegExp('(?:\\b(?:rm|unlink|shred|trash)\\b|\\bgit\\s+rm\\b).*' + TEST_DIR_ARG);
+const TEST_NAME_GLOB = new RegExp(TEST_DIR_ARG + '|test_|_test\\.|\\.(?:test|spec)\\.|_spec\\.rb');
+const FIND_DELETE = /\bfind\b.*(?:\s-delete\b|\s-exec(?:dir)?\s+(?:rm|unlink|shred)\b)/;
+const DISCARD_DEST = /\s["']?(?:\/tmp|\/var\/tmp|\/private\/tmp|\/dev\/null|\$\{?TMPDIR\}?|~\/\.Trash)(?=[\/\s"']|$)/;
+
+function dropsTestSuite(cmd) {
+  return cmd.split(/[;&|\n]+/).some(seg =>
+    BARE_DIR_DELETE.test(seg) ||
+    (FIND_DELETE.test(seg) && TEST_NAME_GLOB.test(seg)) ||
+    (RENAME_VERB.test(seg) && TEST_NAME_GLOB.test(seg) && DISCARD_DEST.test(seg)));
+}
+
 // Markers that turn an existing test off in place.
 const SKIP_MARKERS = [
   /@pytest\.mark\.(skip|xfail)/,          // pytest
@@ -107,6 +123,7 @@ function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL) {
 
   if (toolName === 'Bash') {
     const cmd = toolInput.command || '';
+    if (dropsTestSuite(cmd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
     if (!TEST_TOKEN.test(cmd)) return allow();
     if (DELETE_VERB.test(cmd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
     if (RENAME_VERB.test(cmd) && DISABLED_DEST.test(cmd))

@@ -97,6 +97,16 @@ describe('Unit: checkCommand()', () => {
     it('blocks git push origin master', () => shouldBlock('git push origin master', 'push-master'));
     it('blocks git push master', () => shouldBlock('git push master', 'push-master'));
     it('blocks push to main with extra flags', () => shouldBlock('git push origin main --tags', 'push-main'));
+    it('blocks HEAD:main', () => shouldBlock('git push origin HEAD:main', 'push-main'));
+    it('blocks refs/heads/main', () => shouldBlock('git push origin HEAD:refs/heads/main', 'push-main'));
+    it('blocks a quoted main', () => shouldBlock('git push origin "main"', 'push-main'));
+    it('blocks main before a chained command', () => shouldBlock('git push origin main && echo done', 'push-main'));
+    it('allows a branch with main inside its name', () =>
+      shouldAllow('git push -u origin my-main-feature', 'my-main-feature'));
+    it('allows a branch starting with main-', () => shouldAllow('git push origin main-menu-fix', 'main-menu-fix'));
+    it('allows a branch ending in /master-plan', () => shouldAllow('git push origin feat/master-plan', 'feat/master-plan'));
+    it('allows a feature branch named feat/main', () => shouldAllow('git push origin feat/main', 'feat/main'));
+    it('does not read main from a later command', () => shouldAllow('git push origin feat; echo main', 'feat'));
   });
 
   // ── Deleting protected branches ────────────────────────────────────────

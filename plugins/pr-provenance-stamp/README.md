@@ -2,7 +2,7 @@
 
 > Stamps a provenance receipt (prompts, estimated spend, tests run with exit codes, and a truthful agent-authored line split) into your PR body on `gh pr create`.
 
-A PostToolUse hook keeps a per-session ledger: tool-call count, agent-authored line count, and every test/typecheck/lint command with its real exit code. When Claude runs `gh pr create` (or `glab mr create`), a PreToolUse (Bash) hook reads the session transcript for the real prompt count, estimated token/dollar spend, and models, asks git for the branch's total added lines to derive an agent-vs-human split, then appends a one-line receipt to the PR `--body`. If the command builds its body with a heredoc, `$(...)`, backticks, or process substitution, the hook defers and leaves the command untouched rather than risk corrupting it.
+A PostToolUse hook keeps a per-session ledger: tool-call count, agent-authored line count, and every test/typecheck/lint command with its real exit code. When Claude runs `gh pr create` (or `glab mr create`), a PreToolUse (Bash) hook reads the session transcript for the real prompt count, estimated token/dollar spend, and models, asks git for the branch's total added lines to derive an agent-vs-human split, then appends a one-line receipt to the PR `--body`. A command that is only the create call is approved with the receipt added; if anything is chained before or after it (`cd repo && gh pr create ...`, `gh pr create ... && <other command>`), the rewritten command is shown to you for approval instead. If the command builds its body with a heredoc, `$(...)`, backticks, or process substitution, the hook defers and leaves the command untouched rather than risk corrupting it.
 
 ## Install
 

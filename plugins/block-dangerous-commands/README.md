@@ -2,7 +2,7 @@
 
 > PreToolUse guard for Bash: blocks dangerous shell commands (rm -rf ~, fork bombs, curl|sh, force push to main) before they run.
 
-A `PreToolUse` hook fires before every `Bash` call and tests the command against a curated pattern list: rm targeting home/root/system directories or the cwd, dd to disk devices, mkfs, fork bombs, curl/wget piped to shell, force push to main/master, `git reset --hard`, `git clean -f`, chmod 777, docker volume deletion, and more. On a match it denies the call and shows the pattern id and reason, so Claude knows exactly why. Three safety levels control how much is blocked, and per-level ask mode turns a hard deny into a prompt you approve or reject. Every block/ask is logged to `~/.claude/hooks-logs/<date>.jsonl`.
+A `PreToolUse` hook fires before every `Bash` call and tests the command against a curated pattern list: rm targeting home (`~`, `$HOME`, `${HOME}`, `/home/<user>`, `/Users/<user>`), root or system directories, the cwd or its parent (`..`), dd to disk devices (including macOS `/dev/disk*`), mkfs, fork bombs, curl/wget piped to any shell or run through `bash <(curl ...)` / `sh -c "$(curl ...)"`, force push to main/master (flag before or after the branch, or a `+main` refspec), `git reset --hard`, `git clean -f`, chmod 777, docker volume deletion, and more. On a match it denies the call and shows the pattern id and reason, so Claude knows exactly why. Three safety levels control how much is blocked, and per-level ask mode turns a hard deny into a prompt you approve or reject. Every block/ask is logged to `~/.claude/hooks-logs/<date>.jsonl`.
 
 ## Install
 
