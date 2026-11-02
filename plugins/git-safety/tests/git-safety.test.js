@@ -107,6 +107,10 @@ describe('Unit: checkCommand()', () => {
     it('allows a branch ending in /master-plan', () => shouldAllow('git push origin feat/master-plan', 'feat/master-plan'));
     it('allows a feature branch named feat/main', () => shouldAllow('git push origin feat/main', 'feat/main'));
     it('does not read main from a later command', () => shouldAllow('git push origin feat; echo main', 'feat'));
+    it('a quoted separator does not end the push', () =>
+      shouldBlock('git push --push-option="a;b" origin HEAD:main', 'push-main', 'feat'));
+    it("a single-quoted pipe does not end the push", () =>
+      shouldBlock("git push -o 'ci.skip|x' origin master", 'push-master', 'feat'));
   });
 
   // ── Deleting protected branches ────────────────────────────────────────

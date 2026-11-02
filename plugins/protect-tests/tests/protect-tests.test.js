@@ -88,6 +88,12 @@ describe('Bash: legitimate commands are allowed', () => {
     shouldAllow('Bash', { command: 'rm -rf node_modules && npm test' }));
   it('allows rm of a test-results folder', () => shouldAllow('Bash', { command: 'rm -rf test-results coverage' }));
   it('allows find -delete on logs', () => shouldAllow('Bash', { command: "find . -name '*.log' -delete" }));
+  it('blocks moving a test into a temp subfolder', () =>
+    shouldBlock('Bash', { command: 'mv tests/auth_test.py /tmp/stash/ && echo ok' }, 'delete-test'));
+  it('allows restoring a test from /tmp', () =>
+    shouldAllow('Bash', { command: 'mv /tmp/new_test.py tests/new_test.py' }));
+  it('blocks find -delete under a test dir whatever the name filter', () =>
+    shouldBlock('Bash', { command: "find tests -name '*.py' -delete" }, 'delete-test'));
   it('allows moving a test within the project', () =>
     shouldAllow('Bash', { command: 'mv tests/old_test.py tests/unit/' }));
   it('allows creating a test dir', () => shouldAllow('Bash', { command: 'mkdir -p tests/unit' }));

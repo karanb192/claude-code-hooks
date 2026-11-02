@@ -222,6 +222,8 @@ describe('Unit: checkBashCommand()', () => {
     it('copying the real file over a template stays blocked', () =>
       bashBlocked('cp .env .env.example', 'cp-env'));
     it('the template name in a quoted path is still masked', () => bashAllowed('cat "/app/.env.example"'));
+    it('a secret variable glued to a template name is still an echo of the secret', () =>
+      bashBlocked('echo $SECRET_KEY.env.example', 'echo-secret-var'));
   });
 
   describe('HIGH: Environment dumps', () => {

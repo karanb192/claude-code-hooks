@@ -35,8 +35,9 @@ describe('HOME unset', () => {
   for (const script of SCRIPTS) {
     it(`${path.basename(script)} loads without HOME`, () => {
       const out = run(script, { tool_name: 'Read', tool_input: { file_path: 'README.md' }, cwd: scratch }, env);
+      assert.ifError(out.error);
+      assert.strictEqual(out.status, 0, out.stderr);
       assert.doesNotMatch(out.stderr, /ERR_INVALID_ARG_TYPE/, out.stderr);
-      assert.notStrictEqual(out.status, 1, out.stderr);
     });
   }
 

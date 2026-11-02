@@ -45,22 +45,18 @@
  * before it runs"): this hook emits the documented shape,
  *
  *   { "hookSpecificOutput": { "hookEventName": "PreToolUse",
- *       "permissionDecision": "allow", "permissionDecisionReason": "...",
+ *       "permissionDecision": "ask", "permissionDecisionReason": "...",
  *       "updatedInput": { ...tool_input, "command": <rewritten> } } }
  *
- * `permissionDecision: "allow"` alongside `updatedInput` is the only combination
- * the docs illustrate and the only one field reports confirm is applied; the
- * docs do not define behavior when permissionDecision is omitted, so this hook
- * does not rely on that ambiguity. Two consequences worth knowing:
- *   - "allow" bypasses the permission prompt for THIS command: the user is NOT
- *     re-prompted, and the rewritten command is what executes (and what shows
- *     in the transcript). The hook only ever fires on `gh pr create` /
- *     `glab mr create`, and only appends to the --body argument.
- *   - "allow" is returned only when the whole command is the create call (plus
- *     leading VAR=val assignments). Anything chained before or after it
- *     (`cd x && gh pr create ...`, `gh pr create ... && curl ... | sh`) gets
- *     "ask" instead, which the docs define as showing the rewritten input to
- *     the user, so the hook never waves an unrelated command past the prompt.
+ * The docs pair `updatedInput` with "allow" (auto-approve) or "ask" (show the
+ * modified input to the user); they do not define it with the decision
+ * omitted. This hook returns "ask": a stamping hook must not grant a
+ * permission the user's own rules did not, and its shell scanner cannot
+ * prove that nothing else rides along in the command (ANSI-C quoting, odd
+ * separators). Consequences worth knowing:
+ *   - Every stamped `gh pr create` / `glab mr create` shows a permission
+ *     prompt with the rewritten command, even if a rule would have allowed it.
+ *     The hook only appends to the --body argument.
  *   - GitHub issue #15897 (updatedInput silently dropped) was a MULTI-hook
  *     aggregation bug: a later PreToolUse hook's empty result clobbered an
  *     earlier hook's updatedInput: reported fixed as of Claude Code v2.1.168.
@@ -625,6 +621,8 @@ function findUnsafeConstruct(command) {
     if (ch === '\\') { i++; continue; }
     if (ch === '`') return 'backtick';
     if (ch === '$' && command[i + 1] === '(') return 'command-substitution';
+    // ANSI-C ($'..') and locale ($"..") quoting have escape rules the tokenizer does not model.
+    if (ch === '$' && (command[i + 1] === "'" || command[i + 1] === '"') && !inD) return 'ansi-c-quote';
     if (inD) { if (ch === '"') inD = false; continue; }
     if (ch === "'") { inS = true; continue; }
     if (ch === '"') { inD = true; continue; }
@@ -748,21 +746,6 @@ function isCommandPosition(tokens, i, command) {
  * bind to the gh command. A missed stamp is acceptable; a mangled command or a
  * clobbered PR body is not.
  */
-/**
- * Is the create call the WHOLE command? Only VAR=val assignments may precede
- * it, and its argument window must run to the last token with nothing after.
- */
-function isStandaloneCreate(tokens, createIdx, win, command) {
-  for (let k = 0; k < createIdx - 2; k++) {
-    const raw = command.slice(tokens[k].start, tokens[k].end);
-    if (tokens[k].quote !== '' || !/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[k].text)) return false;
-    if (containsUnquoted(raw, /[;&|<>()#]/)) return false;
-    if (/[\n\\]/.test(command.slice(tokens[k].end, tokens[k + 1].start))) return false;
-  }
-  const last = win.length ? win[win.length - 1] : createIdx;
-  return last === tokens.length - 1 && command.slice(tokens[last].end).trim() === '';
-}
-
 function rewriteBodyArg(command, stampBlock) {
   if (typeof command !== 'string') return { command, changed: false };
 
@@ -834,7 +817,7 @@ function rewriteBodyArg(command, stampBlock) {
     const insertAt = tokens[createIdx].end;
     const newBody = applyStampToBody('', stampBlock);
     const rewritten = command.slice(0, insertAt) + ` --body ${shellQuote(newBody)}` + command.slice(insertAt);
-    return { command: rewritten, changed: true, standalone: isStandaloneCreate(tokens, createIdx, win, command) };
+    return { command: rewritten, changed: true };
   }
 
   const tok = tokens[bodyIdx];
@@ -863,7 +846,7 @@ function rewriteBodyArg(command, stampBlock) {
 
   const stamped = applyStampToBody(existing, stampBlock);
   const rewritten = command.slice(0, valueStart) + shellQuote(stamped) + command.slice(valueEnd);
-  return { command: rewritten, changed: true, standalone: isStandaloneCreate(tokens, createIdx, win, command) };
+  return { command: rewritten, changed: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -895,7 +878,7 @@ function handlePreToolUse(data, dir = STATE_DIR, runGit = defaultRunGit) {
   }
   const prov = buildProvenance(ledger, transcript, totalAdded);
   const stampBlock = renderStamp(prov);
-  const { command: newCommand, changed, deferred, reason, standalone } = rewriteBodyArg(command, stampBlock);
+  const { command: newCommand, changed, deferred, reason } = rewriteBodyArg(command, stampBlock);
 
   if (!changed) {
     log({ level: 'SKIP', reason: reason || (deferred ? 'deferred flow' : 'no rewrite'), session_id });
@@ -912,13 +895,11 @@ function handlePreToolUse(data, dir = STATE_DIR, runGit = defaultRunGit) {
     agentPct: prov.agentPct,
   });
 
-  // "allow" skips the permission prompt, so it is reserved for a command that
-  // is only the create call; a chained command is shown to the user ("ask").
-  // See the updatedInput SCHEMA caveat in the header.
+  // "ask", never "allow": see the updatedInput SCHEMA caveat in the header.
   return {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
-      permissionDecision: standalone ? 'allow' : 'ask',
+      permissionDecision: 'ask',
       permissionDecisionReason: 'pr-provenance-stamp: appended provenance receipt to the --body argument',
       updatedInput: { ...tool_input, command: newCommand },
     },

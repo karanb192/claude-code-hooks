@@ -8,7 +8,9 @@
  * Evaluation order (cheap checks first, filesystem and subprocess work
  * last): subagent-spawn-cap, config-guard, block-dangerous-commands,
  * protect-secrets, protect-tests, git-safety, case-insensitive-guard. The
- * first blocking verdict wins and is emitted in that guard's own output
+ * first deny wins; an ask is held while the later guards run, because a
+ * later deny must outrank it (deny > ask, as when the standalone hooks run
+ * side by side). The verdict is emitted in that guard's own output
  * format, suffixed "(via guard-pack)". A guard that throws is logged and
  * skipped so one broken guard can never switch off the other six
  * (fail-open per guard, same convention as the standalone hooks).
@@ -149,17 +151,21 @@ function log(data) {
 // Evaluate all guards for one event; returns null or the winning verdict
 // with its guard attached. Exported for tests.
 function evaluate(toolName, toolInput, cwd, event) {
+  let ask = null;
   for (const g of GUARDS) {
     try {
       if (g.skip && g.skip()) continue;
       const mod = require(path.join(LIB, `${g.name}.js`));
       const verdict = g.run(mod, toolName, toolInput, cwd, event);
-      if (verdict) return { guard: g.name, emojis: g.emojis, ...verdict };
+      if (!verdict) continue;
+      const hit = { guard: g.name, emojis: g.emojis, ...verdict };
+      if (!hit.ask) return hit;
+      ask = ask || hit;
     } catch (e) {
       log({ level: 'ERROR', guard: g.name, error: e.message });
     }
   }
-  return null;
+  return ask;
 }
 
 async function main() {

@@ -75,7 +75,8 @@ const TEST_DIR_ARG = '(?:^|[\\s\'"/])(?:tests?|__tests__|specs?)(?=[\\s\'"/)]|$)
 const BARE_DIR_DELETE = new RegExp('(?:\\b(?:rm|unlink|shred|trash)\\b|\\bgit\\s+rm\\b).*' + TEST_DIR_ARG);
 const TEST_NAME_GLOB = new RegExp(TEST_DIR_ARG + '|test_|_test\\.|\\.(?:test|spec)\\.|_spec\\.rb');
 const FIND_DELETE = /\bfind\b.*(?:\s-delete\b|\s-exec(?:dir)?\s+(?:rm|unlink|shred)\b)/;
-const DISCARD_DEST = /\s["']?(?:\/tmp|\/var\/tmp|\/private\/tmp|\/dev\/null|\$\{?TMPDIR\}?|~\/\.Trash)(?=[\/\s"']|$)/;
+// The destination is mv's last operand; a temp path earlier is a source.
+const DISCARD_DEST = /\s["']?(?:\/tmp|\/var\/tmp|\/private\/tmp|\/dev\/null|\$\{?TMPDIR\}?|~\/\.Trash)(?:\/[^\s"']*)?["']?\s*$/;
 
 function dropsTestSuite(cmd) {
   return cmd.split(/[;&|\n]+/).some(seg =>

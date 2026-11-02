@@ -55,8 +55,8 @@ const PATTERNS = [
 
   // Block pushing directly to a protected branch by name
   // The branch as a whole ref (origin main, HEAD:main, +main, refs/heads/main), so my-main-feature is not main.
-  { level: 'high', id: 'push-main',                 regex: /\bgit\s+push\b[^;&|\n]*(?:[\s:+"']|refs\/heads\/)main(?=$|[\s;&|:"'])/,   reason: 'Pushing to main is not allowed' },
-  { level: 'high', id: 'push-master',               regex: /\bgit\s+push\b[^;&|\n]*(?:[\s:+"']|refs\/heads\/)master(?=$|[\s;&|:"'])/, reason: 'Pushing to master is not allowed' },
+  { level: 'high', id: 'push-main',                 segment: true, regex: /\bgit\s+push\b[^;&|\n]*(?:[\s:+"']|refs\/heads\/)main(?=$|[\s;&|:"'])/,   reason: 'Pushing to main is not allowed' },
+  { level: 'high', id: 'push-master',               segment: true, regex: /\bgit\s+push\b[^;&|\n]*(?:[\s:+"']|refs\/heads\/)master(?=$|[\s;&|:"'])/, reason: 'Pushing to master is not allowed' },
 
   // Block deleting protected branches locally
   { level: 'high', id: 'branch-delete-protected',   regex: /\bgit\s+branch\s+.*(?:-[dD]|--delete)\s+(?:main|master)\b/, reason: 'Deleting a protected branch is not allowed' },
@@ -96,11 +96,29 @@ function getCurrentBranch() {
   }
 }
 
+// Separators inside quotes are argument text, not command boundaries, so
+// segment-scoped patterns run on a copy with those separators blanked.
+function maskQuotedSeparators(cmd) {
+  let out = '';
+  let q = '';
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (ch === '\\' && q !== "'" && i + 1 < cmd.length) { out += ch + cmd[++i]; continue; }
+    if (q) {
+      if (ch === q) q = '';
+      else if (/[;&|\n]/.test(ch)) { out += ' '; continue; }
+    } else if (ch === '"' || ch === "'") q = ch;
+    out += ch;
+  }
+  return out;
+}
+
 function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL) {
   const threshold = LEVELS[safetyLevel] || LEVELS.high;
+  const masked = maskQuotedSeparators(cmd);
   for (const p of PATTERNS) {
     if (LEVELS[p.level] > threshold) continue;
-    if (!p.regex.test(cmd)) continue;
+    if (!p.regex.test(p.segment ? masked : cmd)) continue;
 
     if (p.branchOnly) {
       if (!branch) branch = getCurrentBranch();

@@ -69,7 +69,7 @@ const PATTERNS = [
   { level: 'high', id: 'curl-pipe-sh',   regex: /\b(curl|wget)\b.+\|\s*(sudo\s+(-\S+\s+)*)?(\S*\/)?(ba|z|da|k)?sh\b/,         reason: 'piping URL to shell (RCE risk)' },
   { level: 'high', id: 'curl-subst-sh',  regex: /(\b(ba|z|da|k)?sh|\bsource|(^|[;&|(]\s*)\.)\s+<\(\s*(curl|wget)\b|\b(ba|z|da|k)?sh\s+-c\s+["']?\$\(\s*(curl|wget)\b/, reason: 'running a downloaded script through process or command substitution (RCE risk)' },
   // Flag and branch in either order, within one command segment; +main is a force refspec.
-  { level: 'high', id: 'git-force-main', regex: /\bgit\s+push\b(?![^;&|\n]*--force-with-lease)(?=[^;&|\n]*\s(--force|-f)(?=\s|$))(?=[^;&|\n]*(?:[\s:"']|refs\/heads\/)(main|master)(?=$|[\s;&|"']))|\bgit\s+push\b[^;&|\n]*\s["']?\+([^\s:]*:)?(refs\/heads\/)?(main|master)(?=$|[\s;&|"'])/, reason: 'force push to main/master' },
+  { level: 'high', id: 'git-force-main', segment: true, regex: /\bgit\s+push\b(?![^;&|\n]*--force-with-lease)(?=[^;&|\n]*\s(--force|-f)(?=\s|$|[;&|"']))(?=[^;&|\n]*(?:[\s:"']|refs\/heads\/)(main|master)(?=$|[\s;&|"']))|\bgit\s+push\b[^;&|\n]*\s["']?\+([^\s:]*:)?(refs\/heads\/)?(main|master)(?=$|[\s;&|"'])/, reason: 'force push to main/master' },
   { level: 'high', id: 'git-reset-hard', regex: /\bgit\s+reset\s+--hard/,                                                 reason: 'git reset --hard loses uncommitted work' },
   { level: 'high', id: 'git-clean-f',    regex: /\bgit\s+clean\s+(-\w*f|-f)/,                                             reason: 'git clean -f deletes untracked files' },
   { level: 'high', id: 'chmod-777',      regex: /\bchmod\b.+\b777\b/,                                                     reason: 'chmod 777 is a security risk' },
@@ -95,10 +95,28 @@ function log(data) {
   } catch {}
 }
 
+// Separators inside quotes are argument text, not command boundaries, so
+// segment-scoped patterns run on a copy with those separators blanked.
+function maskQuotedSeparators(cmd) {
+  let out = '';
+  let q = '';
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (ch === '\\' && q !== "'" && i + 1 < cmd.length) { out += ch + cmd[++i]; continue; }
+    if (q) {
+      if (ch === q) q = '';
+      else if (/[;&|\n]/.test(ch)) { out += ' '; continue; }
+    } else if (ch === '"' || ch === "'") q = ch;
+    out += ch;
+  }
+  return out;
+}
+
 function checkCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   const threshold = LEVELS[safetyLevel] || 2;
+  const masked = maskQuotedSeparators(cmd);
   for (const p of PATTERNS) {
-    if (LEVELS[p.level] <= threshold && p.regex.test(cmd)) {
+    if (LEVELS[p.level] <= threshold && p.regex.test(p.segment ? masked : cmd)) {
       return { blocked: true, pattern: p };
     }
   }
