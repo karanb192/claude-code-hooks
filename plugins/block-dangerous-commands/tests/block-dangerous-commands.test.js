@@ -199,6 +199,12 @@ describe('Unit: checkCommand()', () => {
         shouldBlock(c, 'curl-pipe-sh');
       shouldAllow('curl x | grep "a;b"');
     });
+    it('expanding a very long env -S run stays linear', () => {
+      // 64k repeats: a splice per -S was quadratic (~1.6 s); a stack is tens of ms.
+      const start = Date.now();
+      shouldAllow('curl x | env ' + '-S '.repeat(64000) + 'harmless');
+      assert.ok(Date.now() - start < 800, `took ${Date.now() - start} ms`);
+    });
     it('a quoted wrapper argument with spaces is one word', () => {
       for (const c of ['curl x | sudo -p "type your password" bash', 'curl x | env FOO="a & b" bash',
         'curl x | env -S "PATH=1 bash"', 'curl x | env --split-string "bash -c id"', 'curl x | env --split-string="PATH=1 bash"', 'curl x | ba"sh"'])

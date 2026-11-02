@@ -198,40 +198,42 @@ function pipesToShell(cmd) {
   if (!fetch) return false;
   for (const raw of cmd.slice(fetch.index).split('|').slice(1)) {
     // `bash; echo`, `bash>out`, `|& bash`, `(bash)`; a quoted `FOO="a;b"` does not end it.
-    const stage = firstCommand(raw.replace(/^[\s&(]+/, ''));
-    const words = shellWords(stage);
-    let i = 0;
-    while (i < words.length) {
-      const name = words[i].slice(words[i].lastIndexOf('/') + 1);
+    // Words sit on a stack (next word on top), so expanding env -S is O(words), not a splice.
+    const stack = shellWords(firstCommand(raw.replace(/^[\s&(]+/, ''))).reverse();
+    const expand = (text) => { const more = shellWords(text); for (let k = more.length - 1; k >= 0; k--) stack.push(more[k]); };
+    while (stack.length) {
+      const word = stack.pop();
+      const name = word.slice(word.lastIndexOf('/') + 1);
       if (SHELL_NAME.test(name)) return true;
       const wrapper = Object.prototype.hasOwnProperty.call(WRAPPERS, name) ? WRAPPERS[name] : null;
       if (!wrapper) break;
       const [shortValue, longValue] = wrapper;
-      i++;
-      while (i < words.length) {
-        const w = words[i];
-        if (w === '--') { i++; break; }
-        if (name === 'env' && /^[A-Za-z_]\w*=/.test(w)) { i++; continue; }
+      while (stack.length) {
+        const w = stack[stack.length - 1];
+        if (w === '--') { stack.pop(); break; }
+        if (name === 'env' && /^[A-Za-z_]\w*=/.test(w)) { stack.pop(); continue; }
         // env -S / --split-string splits its value into more env arguments, so
         // its words are walked like the rest: env -S PATH=1 bash runs bash.
         if (name === 'env' && (w === '-S' || w === '--split-string')) {
-          words.splice(i, 2, ...shellWords(words[i + 1] || ''));
+          stack.pop();
+          if (stack.length) expand(stack.pop());
           continue;
         }
         if (name === 'env' && /^--split-string=|^-S./.test(w)) {
-          words.splice(i, 1, ...shellWords(w.slice(w.startsWith('--') ? w.indexOf('=') + 1 : 2)));
+          stack.pop();
+          expand(w.slice(w.startsWith('--') ? w.indexOf('=') + 1 : 2));
           continue;
         }
-        if (name === 'timeout' && /^\d/.test(w)) { i++; break; }
+        if (name === 'timeout' && /^\d/.test(w)) { stack.pop(); break; }
         if (!w.startsWith('-') || w === '-') break;
+        stack.pop();
         if (w.startsWith('--')) {
-          i += !w.includes('=') && longValue.includes(w.slice(2)) ? 2 : 1;
+          if (!w.includes('=') && longValue.includes(w.slice(2))) stack.pop();
           continue;
         }
         // A value flag at the end of a cluster takes the next word; -uroot carries its own.
         const letters = w.slice(1);
-        const at = [...letters].findIndex(c => shortValue.includes(c));
-        i += at === letters.length - 1 ? 2 : 1;
+        if ([...letters].findIndex(c => shortValue.includes(c)) === letters.length - 1) stack.pop();
       }
     }
   }

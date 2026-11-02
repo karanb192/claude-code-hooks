@@ -277,7 +277,8 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   // kept, so $SECRET_KEY/.env.example is still seen, except that a plain
   // segment's `.env` (my.env/) is defused; a $ in the name is not a template.
   cmd = cmd.replace(/[^\s"'`=@<>;|&()]+/g, token => {
-    const dir = token.slice(0, token.lastIndexOf('/') + 1);
+    // An scp remote with no slash (host:.env.example) keeps its colon in the directory part.
+    const dir = token.slice(0, Math.max(token.lastIndexOf('/'), token.lastIndexOf(':')) + 1);
     if (token.slice(dir.length).includes('$') || !isAllowlisted(token)) return token;
     // Only `.env` in a plain segment is defused; hosts (api.openai.com/), scp
     // remotes (host:) and variables stay visible to the other rules.
