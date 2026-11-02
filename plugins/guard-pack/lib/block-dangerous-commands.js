@@ -130,7 +130,9 @@ function maskQuotedSeparators(cmd) {
     if (q) {
       if (ch === q) { q = ''; blank = false; }
       else if (blank) { out += '_'; continue; }
-      else if (/[;&|\n]/.test(ch)) { out += ' '; continue; }
+      // A placeholder, not a space: "topic;main" is one ref word, not topic and main.
+      else if (/[;&|]/.test(ch)) { out += '_'; continue; }
+      else if (ch === '\n') { out += ' '; continue; }
     } else if (ch === '"' || ch === "'") {
       q = ch;
       blank = out[out.length - 1] === '=';
@@ -163,7 +165,9 @@ const SHELL_NAME = /^(?:ba|z|da|k)?sh$/;
 function pipesToShell(cmd) {
   const fetch = new RegExp(FETCH).exec(cmd);
   if (!fetch) return false;
-  for (const stage of cmd.slice(fetch.index).split('|').slice(1)) {
+  for (const raw of cmd.slice(fetch.index).split('|').slice(1)) {
+    // The stage's first command ends at a separator or redirect: `bash; echo`, `bash>out`, `|& bash`.
+    const stage = raw.replace(/^[\s&(]+/, '').split(/[;&<>()\n]/)[0];
     const words = stage.trim().split(/\s+/).map(w => w.replace(/^["']+|["']+$/g, ''));
     let i = 0;
     while (i < words.length) {
@@ -177,6 +181,12 @@ function pipesToShell(cmd) {
         const w = words[i];
         if (w === '--') { i++; break; }
         if (name === 'env' && /^[A-Za-z_]\w*=/.test(w)) { i++; continue; }
+        // env -S / --split-string: the value is the command line itself.
+        if (name === 'env' && /^(?:-S|--split-string)(?:=|$)|^-S./.test(w)) {
+          const attached = w.startsWith('--') ? w.slice(w.indexOf('=') + 1) : w.slice(2);
+          if (w.includes('=') || /^-S./.test(w)) words[i] = attached.replace(/^["']+/, ''); else i++;
+          break;
+        }
         if (name === 'timeout' && /^\d/.test(w)) { i++; break; }
         if (!w.startsWith('-') || w === '-') break;
         if (w.startsWith('--')) {

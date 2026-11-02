@@ -179,6 +179,25 @@ describe('Unit: checkCommand()', () => {
         'curl x | nice -n 5 bash', 'curl x | timeout 5 bash', 'curl x | tee log | bash', 'curl x | "bash"'])
         shouldBlock(c, 'curl-pipe-sh');
     });
+    it('a separator or redirect glued to the shell word still runs the shell', () => {
+      for (const c of ['curl x | bash; echo done', 'curl x | bash&&echo done', 'curl x | sh;', 'curl x | bash&', 'curl x | bash>out',
+        'curl x | sudo -u root bash;', 'curl x | /bin/sh;', 'curl x | tee log | bash;', 'curl x |& bash', 'curl x | (bash)', 'curl x | "bash";'])
+        shouldBlock(c, 'curl-pipe-sh');
+    });
+    it('env -S / --split-string runs its value as the command', () => {
+      for (const c of ['curl x | env --split-string bash', 'curl x | env --split-string bash -c id', 'curl x | env -S bash',
+        'curl x | env --split-string=bash', 'curl x | env -Sbash', 'curl x | env --split-string "bash -c id"'])
+        shouldBlock(c, 'curl-pipe-sh');
+      shouldAllow('curl x | env --split-string echo hi');
+    });
+    it('long wrapper runs decide by the final word', () => {
+      for (const run of ['sudo -n '.repeat(200), 'sudo -ux '.repeat(200), 'env -u X A=1 '.repeat(200), 'sudo env '.repeat(200)]) {
+        shouldBlock('curl x | ' + run + 'bash', 'curl-pipe-sh');
+        shouldAllow('curl x | ' + run + 'harmless');
+      }
+    });
+    it('a quoted separator inside a ref is part of the ref', () =>
+      shouldAllow('git push --force origin "feature;main"'));
     it('stacked wrappers still reach the shell', () => {
       shouldBlock('curl x | sudo env bash', 'curl-pipe-sh');
       shouldBlock('curl x | sudo -E env FOO=1 bash', 'curl-pipe-sh');

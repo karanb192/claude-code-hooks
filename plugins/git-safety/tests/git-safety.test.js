@@ -116,6 +116,10 @@ describe('Unit: checkCommand()', () => {
       for (const c of ['git --git-dir /repo push origin main', 'git -C "my repo" push origin main', 'git -C. push origin main'])
         shouldBlock(c, 'push-main', 'feat');
     });
+    it('a quoted separator inside a ref or option is part of that word', () => {
+      for (const c of ['git push origin "topic;main"', 'git push -o "ci.skip;main" origin feature', 'git push origin "feature|main"'])
+        shouldAllow(c, 'feature');
+    });
     it('a quoted -c value with a space stays one word', () =>
       shouldBlock('git -c user.name="Ada Lovelace" push origin main', 'push-main', 'feat'));
     it('a quoted refspec destination is still main', () => shouldBlock('git push origin HEAD:"main"', 'push-main', 'feat'));

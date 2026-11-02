@@ -123,7 +123,9 @@ function maskQuotedSeparators(cmd) {
     if (q) {
       if (ch === q) { q = ''; blank = false; }
       else if (blank) { out += '_'; continue; }
-      else if (/[;&|\n]/.test(ch)) { out += ' '; continue; }
+      // A placeholder, not a space: "topic;main" is one ref word, not topic and main.
+      else if (/[;&|]/.test(ch)) { out += '_'; continue; }
+      else if (ch === '\n') { out += ' '; continue; }
     } else if (ch === '"' || ch === "'") {
       q = ch;
       blank = out[out.length - 1] === '=';

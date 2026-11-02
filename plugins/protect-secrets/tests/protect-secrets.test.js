@@ -233,6 +233,11 @@ describe('Unit: checkBashCommand()', () => {
       bashAllowed('cat foo/.env/.env.example');
       bashAllowed('grep X my.env/.env.example');
     });
+    it('plain directories after a variable are masked with the template name', () => {
+      bashAllowed('cat $HOME/my.env/.env.example');
+      bashAllowed('cp $HOME/my.env/.env.example x');
+      bashBlocked('echo $SECRET_KEY/my.env/.env.example', 'echo-secret-var');
+    });
     it('a secret variable as the directory of a template is still an echo of the secret', () => {
       bashBlocked('echo $SECRET_KEY/.env.example', 'echo-secret-var');
       bashBlocked('printf "%s" "$TOKEN/.env.example"', 'printf-secret-var');

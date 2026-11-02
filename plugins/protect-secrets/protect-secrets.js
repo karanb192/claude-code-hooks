@@ -273,13 +273,15 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   if (!cmd) return { blocked: false, pattern: null };
   cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
   // Mask each allowlisted file name on its own; matching the allowlist against
-  // the whole string let `cat .env # .env.example` through. A directory with a
-  // variable is kept, so $SECRET_KEY/.env.example is still seen; a plain one
-  // (my.env/) is masked with the name; a $ in the name is not a template.
+  // the whole string let `cat .env # .env.example` through. The directory up
+  // to its last variable is kept, so $SECRET_KEY/.env.example is still seen;
+  // plain segments after it (my.env/) are masked with the name; a $ in the
+  // name is not a template.
   cmd = cmd.replace(/[^\s"'`=@<>;|&()]+/g, token => {
     const dir = token.slice(0, token.lastIndexOf('/') + 1);
     if (token.slice(dir.length).includes('$') || !isAllowlisted(token)) return token;
-    return dir.includes('$') ? dir + 'allowlisted-template' : 'allowlisted-template';
+    const lastVar = dir.lastIndexOf('$');
+    return (lastVar === -1 ? '' : dir.slice(0, dir.indexOf('/', lastVar) + 1)) + 'allowlisted-template';
   });
   const threshold = LEVELS[safetyLevel] || 2;
   for (const p of BASH_PATTERNS) {
