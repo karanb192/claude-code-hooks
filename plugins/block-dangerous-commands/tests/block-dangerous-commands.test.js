@@ -126,6 +126,9 @@ describe('Unit: checkCommand()', () => {
       shouldBlock('rm -rf $HOME/.', 'rm-home-var');
       shouldBlock('rm -rf ${HOME}/..', 'rm-home-var');
     });
+    it('blocks any path ending in ..', () => {
+      for (const c of ['rm -rf /Users/alice/project/..', 'rm -rf ~/foo/..', 'rm -rf ../docs/..']) shouldBlock(c);
+    });
     it('blocks ./.., ../. and ../..', () => {
       for (const c of ['rm -rf ./..', 'rm -rf ../.', 'rm -rf ../..']) shouldBlock(c, 'rm-parent');
     });
@@ -194,6 +197,19 @@ describe('Unit: checkCommand()', () => {
     it('blocks git -c k=v push --force main', () => shouldBlock('git -c core.x=y push --force origin main', 'git-force-main'));
     it('blocks a backslash-newline before main', () => shouldBlock('git push --force origin \\\n  main', 'git-force-main'));
     it('blocks git -C repo reset --hard', () => shouldBlock('git -C /repo reset -q --hard HEAD', 'git-reset-hard'));
+    it('blocks git global options with separate, attached or quoted values', () => {
+      for (const c of ['git --git-dir /repo push --force origin main', 'git -C/repo push --force origin main',
+        "git -C '/tmp/my repo' push --force origin main", 'git -C. push --force origin main'])
+        shouldBlock(c, 'git-force-main');
+    });
+    it('blocks a quoted force flag', () => {
+      shouldBlock('git push "--force" origin main', 'git-force-main');
+      shouldBlock("git push '-f' origin main", 'git-force-main');
+    });
+    it('blocks an escaped separator inside an option', () =>
+      shouldBlock('git push --push-option=a\\;b origin main --force', 'git-force-main'));
+    it('main inside an option value is not the ref', () =>
+      shouldAllow('git push origin feature --push-option="see; main" --force'));
     it('a quoted separator does not end the push', () =>
       shouldBlock('git push --push-option="a;b" origin main --force', 'git-force-main'));
     it('still sees a force push to main inside sh -c', () => shouldBlock('sh -c "git push origin main --force"', 'git-force-main'));
@@ -218,6 +234,11 @@ describe('Unit: checkCommand()', () => {
 
   describe('STRICT: other patterns (requires strict level)', () => {
     it('blocks git push --force feature', () => shouldBlock('git push --force origin feature', 'git-force-any', 'strict'));
+    it('a force flag in a comment is not a force push at strict', () =>
+      shouldAllow('git push origin feature # --force', 'strict'));
+    it('a lease in a comment does not excuse --force at strict', () =>
+      shouldBlock('git push --force origin feature # --force-with-lease', 'git-force-any', 'strict'));
+    it('allows --force-with-lease at strict', () => shouldAllow('git push --force-with-lease origin feature', 'strict'));
     it('blocks git checkout .', () => shouldBlock('git checkout .', 'git-checkout-dot', 'strict'));
     it('blocks sudo rm', () => shouldBlock('sudo rm -rf /tmp/test', 'sudo-rm', 'strict'));
     it('blocks docker system prune', () => shouldBlock('docker system prune', 'docker-prune', 'strict'));

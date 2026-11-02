@@ -52,13 +52,17 @@ const ASK = {
 };
 
 // git with global options before the subcommand (git -C repo push, git -c k=v push).
-const GIT = '\\bgit(?:\\s+(?:-[Cc]\\s+\\S+|--[\\w-]+(?:=\\S+)?|-[A-Za-z]))*\\s+';
+// Option values may be quoted, attached (-C/repo) or a separate word (--git-dir /repo).
+const GIT_VAL = '(?:"[^"]*"|\'[^\']*\'|\\S+)';
+const GIT = '\\bgit(?:\\s+(?:-C\\s*' + GIT_VAL + '|-c\\s*\\S+|--(?:git-dir|work-tree|namespace|exec-path|super-prefix|config-env)(?:=\\S+|\\s+' + GIT_VAL + ')|--[\\w-]+(?:=\\S+)?|-[A-Za-z]))*\\s+';
 const MAIN_REF = '(?:[\\s:"\']|refs\\/heads\\/)(?:main|master)(?=$|[\\s;&|"\'])';
 // A shell word, not the "sh" in a *.sh file name; optional path (/bin/bash).
 const SHELL = '(?<![\\w.\\/-])(?:[^\\s|;&]*\\/)?(?:ba|z|da|k)?sh(?![\\w.-])';
 const FETCH = '(?:[^\\s|;&(]*\\/)?(?:curl|wget)\\b';
-// Wrappers between the pipe and the shell: sudo -u root bash, env FOO=1 bash.
-const WRAP = '(?:(?:sudo|doas|env|command|exec|nohup)(?:\\s+(?:-{1,2}\\S+(?:\\s+(?!' + SHELL + ')[^\\s|;&-]\\S*)?|\\w+=\\S*))*\\s+)*';
+// One wrapper between the pipe and the shell: sudo -u root bash, env FOO=1 bash.
+// A single lazy run, not nested repetition, so a long non-match stays linear.
+const WRAP = '(?:(?:sudo|doas|env|command|exec|nohup)\\b[^|;&\\n]*?\\s)?';
+const FORCE_FLAG = '\\s["\']?(?:--force|-f)["\']?(?=\\s|$|[;&|"\'])';
 
 const PATTERNS = [
   // CRITICAL - Catastrophic, unrecoverable
@@ -70,7 +74,7 @@ const PATTERNS = [
   { level: 'critical', id: 'rm-root',          regex: /\brm\s+(-.+\s+)*\/(\*|\s|$|[;&|])/,                                 reason: 'rm targeting root filesystem' },
   { level: 'critical', id: 'rm-system',        regex: /\brm\s+(-.+\s+)*\/(etc|usr|var|bin|sbin|lib|boot|dev|proc|sys)(\/|\s|$)/, reason: 'rm targeting system directory' },
   { level: 'critical', id: 'rm-cwd',           regex: /\brm\s+(-.+\s+)*(\.\/?|\*|\.\/\*)(\s|$|[;&|])/,                     reason: 'rm deleting current directory contents' },
-  { level: 'critical', id: 'rm-parent',        regex: /\brm\s+(-.+\s+)*["']?(\.\/)?\.\.(\/\.{1,2})*\/?(\*)?["']?(\s|$|[;&|])/, reason: 'rm deleting the parent directory' },
+  { level: 'critical', id: 'rm-parent',        regex: /\brm\s+(-.+\s+)*["']?([^\s"';&|]*\/)?\.\.(\/\.{1,2})*\/?(\*)?["']?(\s|$|[;&|])/, reason: 'rm of a path ending in .. deletes a parent directory' },
   { level: 'critical', id: 'dd-disk',          regex: /\bdd\b.+of=\/dev\/(sd[a-z]|nvme|hd[a-z]|vd[a-z]|xvd[a-z]|r?disk\d)/,         reason: 'dd writing to disk device' },
   { level: 'critical', id: 'mkfs',             regex: /\bmkfs(\.\w+)?\s+\/dev\/(sd[a-z]|nvme|hd[a-z]|vd[a-z]|r?disk\d)/,    reason: 'mkfs formatting disk' },
   { level: 'critical', id: 'fork-bomb',        regex: /:\(\)\s*\{.*:\s*\|\s*:.*&/,                                         reason: 'fork bomb detected' },
@@ -80,14 +84,14 @@ const PATTERNS = [
   { level: 'high', id: 'curl-subst-sh',  regex: new RegExp('(?:' + SHELL + '|(?<![\\w.\\/-])source|(?:^|[;&|(]\\s*)\\.)\\s+<\\(\\s*' + FETCH + '|(?:' + SHELL + '\\s+-c|(?<![\\w.\\/-])eval)\\s+["\']?\\$\\(\\s*' + FETCH), reason: 'running a downloaded script through process or command substitution (RCE risk)' },
   // Flag and branch in either order, within one command segment; +main is a force refspec.
   // A bare --force-with-lease never matches the (?=\s|...) after --force, so it needs no exception.
-  { level: 'high', id: 'git-force-main', segment: true, regex: new RegExp(GIT + 'push\\b(?=[^;&|\\n]*\\s(?:--force|-f)(?=\\s|$|[;&|"\']))(?=[^;&|\\n]*' + MAIN_REF + ')|' + GIT + 'push\\b[^;&|\\n]*\\s["\']?\\+(?:[^\\s:]*:)?(?:refs\\/heads\\/)?(?:main|master)(?=$|[\\s;&|"\'])'), reason: 'force push to main/master' },
+  { level: 'high', id: 'git-force-main', segment: true, regex: new RegExp(GIT + 'push\\b(?=[^;&|\\n]*' + FORCE_FLAG + ')(?=[^;&|\\n]*' + MAIN_REF + ')|' + GIT + 'push\\b[^;&|\\n]*\\s["\']?\\+(?:[^\\s:]*:)?(?:refs\\/heads\\/)?(?:main|master)(?=$|[\\s;&|"\'])'), reason: 'force push to main/master' },
   { level: 'high', id: 'git-reset-hard', regex: new RegExp(GIT + 'reset\\b[^;&|\\n]*\\s--hard\\b'),                       reason: 'git reset --hard loses uncommitted work' },
   { level: 'high', id: 'git-clean-f',    regex: new RegExp(GIT + 'clean\\s+(-\\w*f|-f)'),                                 reason: 'git clean -f deletes untracked files' },
   { level: 'high', id: 'chmod-777',      regex: /\bchmod\b.+\b777\b/,                                                     reason: 'chmod 777 is a security risk' },
   { level: 'high', id: 'docker-vol-rm',  regex: /\bdocker\s+volume\s+(rm|prune)/,                                         reason: 'docker volume deletion loses data' },
 
   // STRICT - Cautionary, context-dependent
-  { level: 'strict', id: 'git-force-any',    regex: new RegExp(GIT + 'push\\b(?!.+--force-with-lease).+(--force|-f)\\b'),     reason: 'force push (use --force-with-lease)' },
+  { level: 'strict', id: 'git-force-any',    segment: true, regex: new RegExp(GIT + 'push\\b(?=[^;&|\\n]*' + FORCE_FLAG + ')'), reason: 'force push (use --force-with-lease)' },
   { level: 'strict', id: 'git-checkout-dot', regex: new RegExp(GIT + 'checkout\\s+\\.'),                                     reason: 'git checkout . discards changes' },
   { level: 'strict', id: 'sudo-rm',          regex: /\bsudo\s+rm\b/,                                                       reason: 'sudo rm has elevated privileges' },
   { level: 'strict', id: 'docker-prune',     regex: /\bdocker\s+(system|image)\s+prune/,                                   reason: 'docker prune removes images' },
@@ -108,18 +112,27 @@ function log(data) {
 
 // Separators inside quotes are argument text, not command boundaries, and an
 // unquoted # starts a comment, so segment-scoped patterns run on a copy with
-// quoted separators blanked and comments dropped.
+// quoted and escaped separators blanked and comments dropped. A quote that
+// opens mid-word (--push-option="x;main") is an option value: its text is
+// blanked too, so it cannot pose as a ref. A quoted whole word ("main") stays.
 function maskQuotedSeparators(cmd) {
   let out = '';
   let q = '';
+  let blank = false;
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i];
-    if (ch === '\\' && q !== "'" && i + 1 < cmd.length) { out += ch + cmd[++i]; continue; }
+    if (ch === '\\' && q !== "'" && i + 1 < cmd.length) {
+      const next = cmd[++i];
+      out += blank || /[;&|]/.test(next) ? '__' : ch + next;
+      continue;
+    }
     if (q) {
-      if (ch === q) q = '';
-      else if (/[;&|\n]/.test(ch)) { out += ' '; continue; }
-    } else if (ch === '"' || ch === "'") q = ch;
-    else if (ch === '#' && (i === 0 || /\s/.test(cmd[i - 1]))) {
+      if (ch === q) { q = ''; blank = false; }
+      else if (blank || /[;&|\n]/.test(ch)) { out += /\s/.test(ch) ? ' ' : '_'; continue; }
+    } else if (ch === '"' || ch === "'") {
+      q = ch;
+      blank = out.length > 0 && !/\s/.test(out[out.length - 1]);
+    } else if (ch === '#' && (i === 0 || /\s/.test(cmd[i - 1]))) {
       while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++;
       continue;
     }
@@ -130,7 +143,8 @@ function maskQuotedSeparators(cmd) {
 
 function checkCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   const threshold = LEVELS[safetyLevel] || 2;
-  cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
+  // bash removes a backslash-newline outright, joining the two lines.
+  cmd = cmd.replace(/\\\r?\n/g, '');
   const masked = maskQuotedSeparators(cmd);
   for (const p of PATTERNS) {
     if (LEVELS[p.level] <= threshold && p.regex.test(p.segment ? masked : cmd)) {

@@ -47,12 +47,14 @@ const SAFETY_LEVEL = ['critical', 'high', 'strict'].includes(process.env.HOOK_SA
 const PROTECTED_BRANCHES = ['main', 'master'];
 
 // git with global options before the subcommand (git -C repo push, git -c k=v push).
-const GIT = '\\bgit(?:\\s+(?:-[Cc]\\s+\\S+|--[\\w-]+(?:=\\S+)?|-[A-Za-z]))*\\s+';
+// Option values may be quoted, attached (-C/repo) or a separate word (--git-dir /repo).
+const GIT_VAL = '(?:"[^"]*"|\'[^\']*\'|\\S+)';
+const GIT = '\\bgit(?:\\s+(?:-C\\s*' + GIT_VAL + '|-c\\s*\\S+|--(?:git-dir|work-tree|namespace|exec-path|super-prefix|config-env)(?:=\\S+|\\s+' + GIT_VAL + ')|--[\\w-]+(?:=\\S+)?|-[A-Za-z]))*\\s+';
 
 const PATTERNS = [
   // STRICT - force-push is normally handled by block-dangerous-commands.js.
   // Only enforced here at 'strict' so git-safety is self-sufficient standalone.
-  { level: 'strict', id: 'force-push',              regex: new RegExp(GIT + 'push\\b.*(?:--force(?!-with-lease)|-f)\\b'), reason: 'Force-pushing is not allowed' },
+  { level: 'strict', id: 'force-push',              segment: true, regex: new RegExp(GIT + 'push\\b[^;&|\\n]*\\s["\']?(?:--force|-f)["\']?(?=\\s|$|[;&|"\'])'), reason: 'Force-pushing is not allowed' },
 
   // HIGH - complementary coverage the sibling hook does not provide
 
@@ -101,18 +103,27 @@ function getCurrentBranch() {
 
 // Separators inside quotes are argument text, not command boundaries, and an
 // unquoted # starts a comment, so segment-scoped patterns run on a copy with
-// quoted separators blanked and comments dropped.
+// quoted and escaped separators blanked and comments dropped. A quote that
+// opens mid-word (--push-option="x;main") is an option value: its text is
+// blanked too, so it cannot pose as a ref. A quoted whole word ("main") stays.
 function maskQuotedSeparators(cmd) {
   let out = '';
   let q = '';
+  let blank = false;
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i];
-    if (ch === '\\' && q !== "'" && i + 1 < cmd.length) { out += ch + cmd[++i]; continue; }
+    if (ch === '\\' && q !== "'" && i + 1 < cmd.length) {
+      const next = cmd[++i];
+      out += blank || /[;&|]/.test(next) ? '__' : ch + next;
+      continue;
+    }
     if (q) {
-      if (ch === q) q = '';
-      else if (/[;&|\n]/.test(ch)) { out += ' '; continue; }
-    } else if (ch === '"' || ch === "'") q = ch;
-    else if (ch === '#' && (i === 0 || /\s/.test(cmd[i - 1]))) {
+      if (ch === q) { q = ''; blank = false; }
+      else if (blank || /[;&|\n]/.test(ch)) { out += /\s/.test(ch) ? ' ' : '_'; continue; }
+    } else if (ch === '"' || ch === "'") {
+      q = ch;
+      blank = out.length > 0 && !/\s/.test(out[out.length - 1]);
+    } else if (ch === '#' && (i === 0 || /\s/.test(cmd[i - 1]))) {
       while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++;
       continue;
     }
@@ -123,7 +134,8 @@ function maskQuotedSeparators(cmd) {
 
 function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL) {
   const threshold = LEVELS[safetyLevel] || LEVELS.high;
-  cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
+  // bash removes a backslash-newline outright, joining the two lines.
+  cmd = cmd.replace(/\\\r?\n/g, '');
   const masked = maskQuotedSeparators(cmd);
   for (const p of PATTERNS) {
     if (LEVELS[p.level] > threshold) continue;

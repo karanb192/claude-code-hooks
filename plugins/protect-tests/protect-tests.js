@@ -73,20 +73,24 @@ const DISABLED_DEST = /(\.bak|\.old|\.orig|\.disabled|\.skip|\.ignore|\.tmp|~)([
 // directory operand (rm -rf tests, tests*, {tests,}), find or xargs feeding a
 // delete, or a move to a temp or trash folder. Each is judged within one
 // command; a pipe stays inside it, so find ... | xargs rm is one command.
-const TEST_DIR_ARG = '(?:^|[\\s\'"/{,])(?:tests?|__tests__|specs?)(?=[\\s\'"/)*?},]|$)';
-const DEL_CMD = '(?:["\']?(?:[^\\s"\'|;&]*\\/)?(?:rm|unlink|shred|trash)["\']?(?![\\w.-])|\\bgit\\s+rm\\b)';
+const TEST_DIR_ARG = '(?:^|[\\s\'"/{,*?])(?:tests?|__tests__|specs?)(?=[\\s\'"/)*?},]|$)';
+const DEL_CMD = '(?:(?:env|sudo|command|nice|nohup)\\s+(?:-\\S+\\s+)*)?(?:["\']?(?:[^\\s"\'|;&]*\\/)?(?:rm|unlink|shred|trash)["\']?(?![\\w.-])|\\bgit\\s+rm\\b)';
 const BARE_DIR_DELETE = new RegExp('(?:\\b(?:rm|unlink|shred|trash)\\b|\\bgit\\s+rm\\b)[^|]*' + TEST_DIR_ARG, 'i');
 const TEST_NAME_GLOB = new RegExp(TEST_DIR_ARG + '|test_|_test\\.|\\.(?:test|spec)\\.|_spec\\.rb', 'i');
 const FIND_DELETE = new RegExp('\\bfind\\b.*(?:\\s-delete\\b|\\s-exec(?:dir)?\\s+' + DEL_CMD + ')');
-const XARGS_DELETE = new RegExp('\\|\\s*xargs\\b(?:\\s+-\\S+)*\\s+' + DEL_CMD);
+// xargs flags that take a value (-n 1, -I {}, -P 4) consume the next word.
+const XARGS_DELETE = new RegExp('\\|\\s*xargs\\b(?:\\s+(?:-[0prtxo]+|-[adEIJLnPRSsil]\\s*[^\\s|;&]+|--[\\w-]+(?:=\\S+)?))*\\s+' + DEL_CMD);
 // The destination is mv's last operand; a temp path earlier is a source.
 const DISCARD_DEST = /\s["']?(?:\/tmp|\/var\/tmp|\/private\/tmp|\/(?:private\/)?var\/folders|\/dev\/null|\$\{?TMPDIR(?::-[^}\s]*)?\}?|(?:~|\$\{?HOME\}?)\/\.Trash)(?:\/[^\s"']*)?["']?\s*$/;
 
+// mv's operands end where a comment, redirect or pipe begins.
+const MV_TAIL = /\s+(?:#|\d*[<>]|\|)[\s\S]*$/;
+
 function dropsTestSuite(cmd) {
-  return cmd.replace(/\\\r?\n\s*/g, ' ').split(/[;&\n]+|\|\|/).some(seg =>
+  return cmd.replace(/\\\r?\n/g, '').split(/[;&\n]+|\|\|/).some(seg =>
     BARE_DIR_DELETE.test(seg) ||
     ((FIND_DELETE.test(seg) || XARGS_DELETE.test(seg)) && TEST_NAME_GLOB.test(seg)) ||
-    (RENAME_VERB.test(seg) && TEST_NAME_GLOB.test(seg) && DISCARD_DEST.test(seg)));
+    (RENAME_VERB.test(seg) && TEST_NAME_GLOB.test(seg) && DISCARD_DEST.test(seg.replace(MV_TAIL, ''))));
 }
 
 // Markers that turn an existing test off in place.

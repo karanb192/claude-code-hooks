@@ -108,8 +108,11 @@ const SENSITIVE_FILES = [
 // Delegation sinks: file contents or secret env vars fed to an external model CLI or API host.
 const SINK_CLI = '(?:gemini(?:-cli)?|codex|llm|sgpt|aichat|openai|mods|fabric)';
 // A sink CLI behind env assignments, wrappers (sudo, npx, env, timeout, xargs ...), a path or an npm scope.
+// One lazy run after the first wrapper already spans any later wrappers and
+// assignments; repeating it made `| sudo -n sudo -n ...` exponential.
 const SINK_PREFIX = '(?:^|[|;&(`"\'!\\n]|\\b(?:do|then|else)\\b)\\s*'
-  + '(?:(?:sudo|npx|uvx|bunx|pnpm\\s+dlx|command|time|exec|nice|nohup|env|timeout|xargs)\\b[^;|&\\n]*?\\s+|[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*'
+  + '(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*'
+  + '(?:(?:sudo|npx|uvx|bunx|pnpm\\s+dlx|command|time|exec|nice|nohup|env|timeout|xargs)\\b[^;|&\\n]*?\\s+)?'
   + '(?:[^\\s"\';|&]*\\/)?';
 const SINK_END = '(?=[\\s<]|$)';
 const SINK_CMD = SINK_PREFIX + SINK_CLI + SINK_END;
@@ -270,9 +273,11 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   if (!cmd) return { blocked: false, pattern: null };
   cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
   // Mask each allowlisted path on its own; matching the allowlist against the
-  // whole string let `cat .env # .env.example` through. A token with $ is an
-  // expansion ($SECRET_KEY.env.example), not a literal path, so it stays.
-  cmd = cmd.replace(/[^\s"'`=@<>;|&()]+/g, token => !token.includes('$') && isAllowlisted(token) ? 'allowlisted-template' : token);
+  // whole string let `cat .env # .env.example` through. A $ in the file name
+  // is an expansion ($SECRET_KEY.env.example), so it stays; a $ in the
+  // directory ($HOME/.env.example) is fine.
+  cmd = cmd.replace(/[^\s"'`=@<>;|&()]+/g, token =>
+    !token.slice(token.lastIndexOf('/') + 1).includes('$') && isAllowlisted(token) ? 'allowlisted-template' : token);
   const threshold = LEVELS[safetyLevel] || 2;
   for (const p of BASH_PATTERNS) {
     if (LEVELS[p.level] <= threshold && p.regex.test(cmd)) {

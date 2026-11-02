@@ -117,6 +117,19 @@ describe('Bash: legitimate commands are allowed', () => {
     shouldBlock('Bash', { command: 'mv tests /var/folders/xx/T/' }, 'delete-test');
     shouldBlock('Bash', { command: 'mv tests $HOME/.Trash/' }, 'delete-test');
   });
+  it('mv to a temp folder stays a discard before a comment, redirect or pipe', () => {
+    for (const command of ['mv tests /tmp | cat', 'mv tests /tmp/ # archive', 'mv tests /tmp >log', 'mv tests /tmp 2>&1'])
+      shouldBlock('Bash', { command }, 'delete-test');
+  });
+  it('blocks xargs flags that take a value, and env before rm in -exec', () => {
+    for (const command of ['find tests -print | xargs -n 1 rm', 'find tests -print | xargs -P 4 rm',
+      'find tests -print0 | xargs -0 -I {} rm {}', 'find tests -exec env rm {} +'])
+      shouldBlock('Bash', { command }, 'delete-test');
+  });
+  it('blocks a glob before the test directory word', () => {
+    shouldBlock('Bash', { command: 'rm -rf *tests' }, 'delete-test');
+    shouldBlock('Bash', { command: 'rm -rf *tests*' }, 'delete-test');
+  });
   it('allows xargs rm on non-test files', () =>
     shouldAllow('Bash', { command: "find . -name '*.log' -print | xargs rm" }));
   it('allows rm of a scripts file named rmtests.sh', () => shouldAllow('Bash', { command: 'cat rmtests.sh' }));

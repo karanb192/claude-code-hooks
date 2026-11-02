@@ -112,6 +112,16 @@ describe('Unit: checkCommand()', () => {
     it('blocks git -C repo push origin main', () => shouldBlock('git -C /repo push origin main', 'push-main', 'feat'));
     it('blocks a backslash-newline before main', () => shouldBlock('git push origin \\\n  main', 'push-main', 'feat'));
     it('a main in a comment is not a push to main', () => shouldAllow('git push origin feat # then main', 'feat'));
+    it('blocks git global options with separate, attached or quoted values', () => {
+      for (const c of ['git --git-dir /repo push origin main', 'git -C "my repo" push origin main', 'git -C. push origin main'])
+        shouldBlock(c, 'push-main', 'feat');
+    });
+    it('main inside an option value is not the ref', () =>
+      shouldAllow('git push --push-option="deploy;main" origin feature', 'feature'));
+    it('blocks an escaped separator inside an option', () =>
+      shouldBlock('git push --push-option=a\\;b origin main', 'push-main', 'feat'));
+    it('a force flag in a comment is not a force push at strict', () =>
+      shouldAllow('git push origin feature # --force', 'feature', 'strict'));
     it("a single-quoted pipe does not end the push", () =>
       shouldBlock("git push -o 'ci.skip|x' origin master", 'push-master', 'feat'));
   });
