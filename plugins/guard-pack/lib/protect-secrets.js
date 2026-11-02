@@ -273,13 +273,15 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   if (!cmd) return { blocked: false, pattern: null };
   cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
   // Mask each allowlisted file name on its own; matching the allowlist against
-  // the whole string let `cat .env # .env.example` through. Directory segments
-  // with a variable are kept, so $SECRET_KEY/.env.example is still seen;
-  // plain segments (my.env/) are masked; a $ in the name is not a template.
+  // the whole string let `cat .env # .env.example` through. The directory is
+  // kept, so $SECRET_KEY/.env.example is still seen, except that a plain
+  // segment's `.env` (my.env/) is defused; a $ in the name is not a template.
   cmd = cmd.replace(/[^\s"'`=@<>;|&()]+/g, token => {
     const dir = token.slice(0, token.lastIndexOf('/') + 1);
     if (token.slice(dir.length).includes('$') || !isAllowlisted(token)) return token;
-    return dir.split('/').map(seg => seg.includes('$') ? seg : seg && 'dir').join('/') + 'allowlisted-template';
+    // Only `.env` in a plain segment is defused; hosts (api.openai.com/), scp
+    // remotes (host:) and variables stay visible to the other rules.
+    return dir.split('/').map(seg => seg.includes('$') ? seg : seg.replace(/\.env/gi, '_env')).join('/') + 'allowlisted-template';
   });
   const threshold = LEVELS[safetyLevel] || 2;
   for (const p of BASH_PATTERNS) {

@@ -107,6 +107,8 @@ test('every guard checker finishes the same inputs in under 50ms', () => {
     for (const [name, call] of Object.entries(calls)) {
       const mod = require(path.join(${JSON.stringify(ROOT)}, 'plugins', name, name + '.js'));
       process.stdout.write(name + '\\n');
+      // Warm up so one-time regex compilation is not counted as backtracking.
+      call(mod, 'echo warm');
       for (const input of inputs) {
         const start = process.hrtime.bigint();
         call(mod, input);
