@@ -116,6 +116,7 @@ describe('Unit: checkCommand()', () => {
       for (const c of ['git --git-dir /repo push origin main', 'git -C "my repo" push origin main', 'git -C. push origin main'])
         shouldBlock(c, 'push-main', 'feat');
     });
+    it('a quoted refspec destination is still main', () => shouldBlock('git push origin HEAD:"main"', 'push-main', 'feat'));
     it('main inside an option value is not the ref', () =>
       shouldAllow('git push --push-option="deploy;main" origin feature', 'feature'));
     it('blocks an escaped separator inside an option', () =>

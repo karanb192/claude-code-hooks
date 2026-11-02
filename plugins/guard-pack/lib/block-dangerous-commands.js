@@ -53,15 +53,21 @@ const ASK = {
 
 // git with global options before the subcommand (git -C repo push, git -c k=v push).
 // Option values may be quoted, attached (-C/repo) or a separate word (--git-dir /repo).
-const GIT_VAL = '(?:"[^"]*"|\'[^\']*\'|\\S+)';
-const GIT = '\\bgit(?:\\s+(?:-C\\s*' + GIT_VAL + '|-c\\s*\\S+|--(?:git-dir|work-tree|namespace|exec-path|super-prefix|config-env)(?:=\\S+|\\s+' + GIT_VAL + ')|--[\\w-]+(?:=\\S+)?|-[A-Za-z]))*\\s+';
+// The alternatives never match the same text, so a long option run stays linear.
+const GIT_VAL = '(?:"[^"]*"|\'[^\']*\'|[^\\s"\'][^\\s]*)';
+const GIT_LONG_VAL = '(?:git-dir|work-tree|namespace|exec-path|super-prefix|config-env)';
+const GIT = '\\bgit(?:\\s+(?:-[Cc]\\s*' + GIT_VAL + '|--' + GIT_LONG_VAL + '(?:=|\\s+)' + GIT_VAL + '|--(?!' + GIT_LONG_VAL + '\\b)[\\w-]+(?:=\\S+)?|-(?![Cc])[A-Za-z]))*\\s+';
 const MAIN_REF = '(?:[\\s:"\']|refs\\/heads\\/)(?:main|master)(?=$|[\\s;&|"\'])';
 // A shell word, not the "sh" in a *.sh file name; optional path (/bin/bash).
 const SHELL = '(?<![\\w.\\/-])(?:[^\\s|;&]*\\/)?(?:ba|z|da|k)?sh(?![\\w.-])';
 const FETCH = '(?:[^\\s|;&(]*\\/)?(?:curl|wget)\\b';
-// One wrapper between the pipe and the shell: sudo -u root bash, env FOO=1 bash.
-// A single lazy run, not nested repetition, so a long non-match stays linear.
-const WRAP = '(?:(?:sudo|doas|env|command|exec|nohup)\\b[^|;&\\n]*?\\s)?';
+// Up to three wrappers between the pipe and the shell (sudo -u root bash,
+// sudo env FOO=1 bash), each followed only by its own flags and assignments,
+// so `sudo apt install bash` is not a shell. Only flags listed as taking a
+// value consume the next word, which keeps a long flag run linear.
+const WRAP = '(?:(?:sudo|doas)(?:\\s+-[ugCDhprtU]\\s*\\S+|\\s+-{1,2}(?![ugCDhprtU](?:\\s|$))[A-Za-z-]*)*\\s+'
+  + '|env(?:\\s+-[uCS]\\s*\\S+|\\s+-{1,2}(?![uCS](?:\\s|$))[A-Za-z-]*|\\s+[A-Za-z_]\\w*=\\S*)*\\s+'
+  + '|(?:command|exec|nohup)(?:\\s+-[A-Za-z]+)*\\s+){0,3}';
 const FORCE_FLAG = '\\s["\']?(?:--force|-f)["\']?(?=\\s|$|[;&|"\'])';
 
 const PATTERNS = [
@@ -113,8 +119,9 @@ function log(data) {
 // Separators inside quotes are argument text, not command boundaries, and an
 // unquoted # starts a comment, so segment-scoped patterns run on a copy with
 // quoted and escaped separators blanked and comments dropped. A quote that
-// opens mid-word (--push-option="x;main") is an option value: its text is
-// blanked too, so it cannot pose as a ref. A quoted whole word ("main") stays.
+// opens right after = (--push-option="x;main") is an option value: its text is
+// blanked too, so it cannot pose as a ref. A quoted whole word ("main") or
+// a quoted refspec side (HEAD:"main") stays.
 function maskQuotedSeparators(cmd) {
   let out = '';
   let q = '';
@@ -131,7 +138,7 @@ function maskQuotedSeparators(cmd) {
       else if (blank || /[;&|\n]/.test(ch)) { out += /\s/.test(ch) ? ' ' : '_'; continue; }
     } else if (ch === '"' || ch === "'") {
       q = ch;
-      blank = out.length > 0 && !/\s/.test(out[out.length - 1]);
+      blank = out[out.length - 1] === '=';
     } else if (ch === '#' && (i === 0 || /\s/.test(cmd[i - 1]))) {
       while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++;
       continue;

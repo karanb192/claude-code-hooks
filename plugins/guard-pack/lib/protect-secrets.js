@@ -272,12 +272,14 @@ function checkFilePath(filePath, safetyLevel = SAFETY_LEVEL) {
 function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   if (!cmd) return { blocked: false, pattern: null };
   cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
-  // Mask each allowlisted path on its own; matching the allowlist against the
-  // whole string let `cat .env # .env.example` through. A $ in the file name
-  // is an expansion ($SECRET_KEY.env.example), so it stays; a $ in the
-  // directory ($HOME/.env.example) is fine.
-  cmd = cmd.replace(/[^\s"'`=@<>;|&()]+/g, token =>
-    !token.slice(token.lastIndexOf('/') + 1).includes('$') && isAllowlisted(token) ? 'allowlisted-template' : token);
+  // Mask each allowlisted file name on its own; matching the allowlist against
+  // the whole string let `cat .env # .env.example` through. Only the name is
+  // masked, so a variable in the directory ($SECRET_KEY/.env.example) is still
+  // seen, and a $ in the name ($SECRET_KEY.env.example) is not a template.
+  cmd = cmd.replace(/[^\s"'`=@<>;|&()]+/g, token => {
+    const dir = token.slice(0, token.lastIndexOf('/') + 1);
+    return !token.slice(dir.length).includes('$') && isAllowlisted(token) ? dir + 'allowlisted-template' : token;
+  });
   const threshold = LEVELS[safetyLevel] || 2;
   for (const p of BASH_PATTERNS) {
     if (LEVELS[p.level] <= threshold && p.regex.test(cmd)) {

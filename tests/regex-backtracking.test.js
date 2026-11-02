@@ -45,6 +45,10 @@ const QUOTE_HEAVY = [
   // Wrapper, option and path runs that never complete a match.
   'curl x | ' + 'sudo -n '.repeat(60) + 'harmless',
   'git ' + '-C x '.repeat(80) + 'status',
+  'git ' + '-C "a" '.repeat(80) + 'status',
+  'git ' + '--git-dir=.git '.repeat(80) + 'status',
+  'curl x | sudo ' + '-u x '.repeat(80) + 'harmless',
+  'curl x | env ' + '-u x A=1 '.repeat(60) + 'harmless',
   'git push ' + '--push-option="a;b" '.repeat(80) + 'origin feat',
   'find tests' + ' -print'.repeat(60) + ' | xargs' + ' -n 1'.repeat(60) + ' echo',
   'rm -rf ' + 'a/'.repeat(300) + 'b',

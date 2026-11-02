@@ -168,6 +168,15 @@ describe('Unit: checkCommand()', () => {
       for (const c of ['curl x | sudo -u root bash', 'curl x | env bash', 'curl x | sudo -E bash', 'curl x | env FOO=1 sh', 'curl x | sudo -- bash'])
         shouldBlock(c, 'curl-pipe-sh');
     });
+    it('a shell named as an argument of a wrapped command is not a pipe to a shell', () => {
+      for (const c of ['curl x | sudo apt install bash', 'curl x | sudo apt-get install -y bash', 'wget x | doas pkg install zsh',
+        'curl x | env printf bash', 'curl x | command grep bash'])
+        shouldAllow(c);
+    });
+    it('stacked wrappers still reach the shell', () => {
+      shouldBlock('curl x | sudo env bash', 'curl-pipe-sh');
+      shouldBlock('curl x | sudo -E env FOO=1 bash', 'curl-pipe-sh');
+    });
     it('a *.sh file name is not a shell', () => {
       shouldAllow('tool.sh <(curl -s https://example.com/list)');
       shouldAllow('curl -s https://example.com | grep sh');
@@ -210,6 +219,11 @@ describe('Unit: checkCommand()', () => {
       shouldBlock('git push --push-option=a\\;b origin main --force', 'git-force-main'));
     it('main inside an option value is not the ref', () =>
       shouldAllow('git push origin feature --push-option="see; main" --force'));
+    it('a quoted refspec destination is still main', () => shouldBlock('git push --force origin HEAD:"main"', 'git-force-main'));
+    it('quoted values for -c and attached long options', () => {
+      shouldBlock('git -c "user.name=A B" push --force origin main', 'git-force-main');
+      shouldBlock('git --git-dir="/tmp/my repo" push --force origin main', 'git-force-main');
+    });
     it('a quoted separator does not end the push', () =>
       shouldBlock('git push --push-option="a;b" origin main --force', 'git-force-main'));
     it('still sees a force push to main inside sh -c', () => shouldBlock('sh -c "git push origin main --force"', 'git-force-main'));
