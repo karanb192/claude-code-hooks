@@ -51,6 +51,7 @@ const QUOTE_HEAVY = [
   'curl x | sudo ' + '-ux '.repeat(80) + 'harmless',
   'curl x | env ' + '-uNAME '.repeat(80) + 'harmless',
   'curl x ' + '| sudo env '.repeat(80) + 'harmless',
+  'curl x | env ' + '-S '.repeat(200) + 'harmless',
   'curl x | env ' + '-u x A=1 '.repeat(60) + 'harmless',
   'git push ' + '--push-option="a;b" '.repeat(80) + 'origin feat',
   'find tests' + ' -print'.repeat(60) + ' | xargs' + ' -n 1'.repeat(60) + ' echo',

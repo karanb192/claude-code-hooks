@@ -199,6 +199,12 @@ describe('Unit: checkCommand()', () => {
         shouldBlock(c, 'curl-pipe-sh');
       shouldAllow('curl x | grep "a;b"');
     });
+    it('a quoted wrapper argument with spaces is one word', () => {
+      for (const c of ['curl x | sudo -p "type your password" bash', 'curl x | env FOO="a & b" bash',
+        'curl x | env -S "PATH=1 bash"', 'curl x | env --split-string "bash -c id"', 'curl x | env --split-string="PATH=1 bash"', 'curl x | ba"sh"'])
+        shouldBlock(c, 'curl-pipe-sh');
+      shouldAllow('curl x | env -S "echo bash"');
+    });
     it('long wrapper runs decide by the final word', () => {
       for (const run of ['sudo -n '.repeat(200), 'sudo -ux '.repeat(200), 'env -u X A=1 '.repeat(200), 'sudo env '.repeat(200)]) {
         shouldBlock('curl x | ' + run + 'bash', 'curl-pipe-sh');

@@ -162,6 +162,24 @@ const WRAPPERS = {
 };
 const SHELL_NAME = /^(?:ba|z|da|k)?sh$/;
 
+// Shell words with quotes removed: "type your password" is one word.
+function shellWords(text) {
+  const words = [];
+  let word = null;
+  let q = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (!q && /\s/.test(ch)) { if (word !== null) words.push(word); word = null; continue; }
+    if (word === null) word = '';
+    if (ch === '\\' && q !== "'" && i + 1 < text.length) { word += text[++i]; continue; }
+    if (q) { if (ch === q) q = ''; else word += ch; continue; }
+    if (ch === '"' || ch === "'") { q = ch; continue; }
+    word += ch;
+  }
+  if (word !== null) words.push(word);
+  return words;
+}
+
 // The first command of a pipe stage ends at an unquoted separator or redirect.
 function firstCommand(stage) {
   let q = '';
@@ -181,7 +199,7 @@ function pipesToShell(cmd) {
   for (const raw of cmd.slice(fetch.index).split('|').slice(1)) {
     // `bash; echo`, `bash>out`, `|& bash`, `(bash)`; a quoted `FOO="a;b"` does not end it.
     const stage = firstCommand(raw.replace(/^[\s&(]+/, ''));
-    const words = stage.trim().split(/\s+/).map(w => w.replace(/^["']+|["']+$/g, ''));
+    const words = shellWords(stage);
     let i = 0;
     while (i < words.length) {
       const name = words[i].slice(words[i].lastIndexOf('/') + 1);
@@ -196,9 +214,12 @@ function pipesToShell(cmd) {
         if (name === 'env' && /^[A-Za-z_]\w*=/.test(w)) { i++; continue; }
         // env -S / --split-string splits its value into more env arguments, so
         // its words are walked like the rest: env -S PATH=1 bash runs bash.
-        if (name === 'env' && (w === '-S' || w === '--split-string')) { i++; continue; }
+        if (name === 'env' && (w === '-S' || w === '--split-string')) {
+          words.splice(i, 2, ...shellWords(words[i + 1] || ''));
+          continue;
+        }
         if (name === 'env' && /^--split-string=|^-S./.test(w)) {
-          words[i] = w.slice(w.startsWith('--') ? w.indexOf('=') + 1 : 2).replace(/^["']+/, '');
+          words.splice(i, 1, ...shellWords(w.slice(w.startsWith('--') ? w.indexOf('=') + 1 : 2)));
           continue;
         }
         if (name === 'timeout' && /^\d/.test(w)) { i++; break; }
