@@ -228,6 +228,11 @@ describe('Unit: checkBashCommand()', () => {
       bashAllowed('grep STRIPE $HOME/.env.example');
       bashBlocked('cat $HOME/.env', 'cat-env');
     });
+    it('a template under a directory whose name contains .env is still a template', () => {
+      bashAllowed('cat my.env/.env.example');
+      bashAllowed('cat foo/.env/.env.example');
+      bashAllowed('grep X my.env/.env.example');
+    });
     it('a secret variable as the directory of a template is still an echo of the secret', () => {
       bashBlocked('echo $SECRET_KEY/.env.example', 'echo-secret-var');
       bashBlocked('printf "%s" "$TOKEN/.env.example"', 'printf-secret-var');

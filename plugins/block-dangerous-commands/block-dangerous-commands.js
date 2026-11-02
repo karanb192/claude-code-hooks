@@ -61,13 +61,6 @@ const MAIN_REF = '(?:[\\s:"\']|refs\\/heads\\/)(?:main|master)(?=$|[\\s;&|"\'])'
 // A shell word, not the "sh" in a *.sh file name; optional path (/bin/bash).
 const SHELL = '(?<![\\w.\\/-])(?:[^\\s|;&]*\\/)?(?:ba|z|da|k)?sh(?![\\w.-])';
 const FETCH = '(?:[^\\s|;&(]*\\/)?(?:curl|wget)\\b';
-// Up to three wrappers between the pipe and the shell (sudo -u root bash,
-// sudo env FOO=1 bash), each followed only by its own flags and assignments,
-// so `sudo apt install bash` is not a shell. Only flags listed as taking a
-// value consume the next word, which keeps a long flag run linear.
-const WRAP = '(?:(?:sudo|doas)(?:\\s+-[ugCDhprtU]\\s*\\S+|\\s+-{1,2}(?![ugCDhprtU](?:\\s|$))[A-Za-z-]*)*\\s+'
-  + '|env(?:\\s+-[uCS]\\s*\\S+|\\s+-{1,2}(?![uCS](?:\\s|$))[A-Za-z-]*|\\s+[A-Za-z_]\\w*=\\S*)*\\s+'
-  + '|(?:command|exec|nohup)(?:\\s+-[A-Za-z]+)*\\s+){0,3}';
 const FORCE_FLAG = '\\s["\']?(?:--force|-f)["\']?(?=\\s|$|[;&|"\'])';
 
 const PATTERNS = [
@@ -86,7 +79,8 @@ const PATTERNS = [
   { level: 'critical', id: 'fork-bomb',        regex: /:\(\)\s*\{.*:\s*\|\s*:.*&/,                                         reason: 'fork bomb detected' },
 
   // HIGH - Significant risk, data loss, security
-  { level: 'high', id: 'curl-pipe-sh',   regex: new RegExp(FETCH + '.+\\|\\s*' + WRAP + SHELL),                          reason: 'piping URL to shell (RCE risk)' },
+  // The regex finds a fetch piped somewhere; pipesToShell walks the stages.
+  { level: 'high', id: 'curl-pipe-sh',   regex: new RegExp(FETCH + '.*\\|'), confirm: pipesToShell,                    reason: 'piping URL to shell (RCE risk)' },
   { level: 'high', id: 'curl-subst-sh',  regex: new RegExp('(?:' + SHELL + '|(?<![\\w.\\/-])source|(?:^|[;&|(]\\s*)\\.)\\s+<\\(\\s*' + FETCH + '|(?:' + SHELL + '\\s+-c|(?<![\\w.\\/-])eval)\\s+["\']?\\$\\(\\s*' + FETCH), reason: 'running a downloaded script through process or command substitution (RCE risk)' },
   // Flag and branch in either order, within one command segment; +main is a force refspec.
   // A bare --force-with-lease never matches the (?=\s|...) after --force, so it needs no exception.
@@ -135,7 +129,8 @@ function maskQuotedSeparators(cmd) {
     }
     if (q) {
       if (ch === q) { q = ''; blank = false; }
-      else if (blank || /[;&|\n]/.test(ch)) { out += /\s/.test(ch) ? ' ' : '_'; continue; }
+      else if (blank) { out += '_'; continue; }
+      else if (/[;&|\n]/.test(ch)) { out += ' '; continue; }
     } else if (ch === '"' || ch === "'") {
       q = ch;
       blank = out[out.length - 1] === '=';
@@ -148,13 +143,63 @@ function maskQuotedSeparators(cmd) {
   return out;
 }
 
+// Wrappers that run the next command, with the short and long flags that take
+// a value. Walking words instead of matching one regex keeps this linear and
+// lets any depth of wrappers (sudo env FOO=1 nice -n 5 bash) reach the shell.
+const WRAPPERS = {
+  sudo: ['ugCDhprtUT', ['user', 'group', 'chdir', 'prompt', 'close-from', 'role', 'type', 'other-user', 'host', 'command-timeout']],
+  doas: ['uC', []],
+  env: ['uCS', ['unset', 'chdir', 'split-string']],
+  command: ['', []],
+  exec: ['a', []],
+  nohup: ['', []],
+  nice: ['n', ['adjustment']],
+  time: ['', []],
+  timeout: ['sk', ['signal', 'kill-after']],
+  stdbuf: ['ioe', ['input', 'output', 'error']],
+};
+const SHELL_NAME = /^(?:ba|z|da|k)?sh$/;
+
+function pipesToShell(cmd) {
+  const fetch = new RegExp(FETCH).exec(cmd);
+  if (!fetch) return false;
+  for (const stage of cmd.slice(fetch.index).split('|').slice(1)) {
+    const words = stage.trim().split(/\s+/).map(w => w.replace(/^["']+|["']+$/g, ''));
+    let i = 0;
+    while (i < words.length) {
+      const name = words[i].slice(words[i].lastIndexOf('/') + 1);
+      if (SHELL_NAME.test(name)) return true;
+      const wrapper = Object.prototype.hasOwnProperty.call(WRAPPERS, name) ? WRAPPERS[name] : null;
+      if (!wrapper) break;
+      const [shortValue, longValue] = wrapper;
+      i++;
+      while (i < words.length) {
+        const w = words[i];
+        if (w === '--') { i++; break; }
+        if (name === 'env' && /^[A-Za-z_]\w*=/.test(w)) { i++; continue; }
+        if (name === 'timeout' && /^\d/.test(w)) { i++; break; }
+        if (!w.startsWith('-') || w === '-') break;
+        if (w.startsWith('--')) {
+          i += !w.includes('=') && longValue.includes(w.slice(2)) ? 2 : 1;
+          continue;
+        }
+        // A value flag at the end of a cluster takes the next word; -uroot carries its own.
+        const letters = w.slice(1);
+        const at = [...letters].findIndex(c => shortValue.includes(c));
+        i += at === letters.length - 1 ? 2 : 1;
+      }
+    }
+  }
+  return false;
+}
+
 function checkCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   const threshold = LEVELS[safetyLevel] || 2;
   // bash removes a backslash-newline outright, joining the two lines.
   cmd = cmd.replace(/\\\r?\n/g, '');
   const masked = maskQuotedSeparators(cmd);
   for (const p of PATTERNS) {
-    if (LEVELS[p.level] <= threshold && p.regex.test(p.segment ? masked : cmd)) {
+    if (LEVELS[p.level] <= threshold && p.regex.test(p.segment ? masked : cmd) && (!p.confirm || p.confirm(cmd))) {
       return { blocked: true, pattern: p };
     }
   }

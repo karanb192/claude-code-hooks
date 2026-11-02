@@ -173,6 +173,12 @@ describe('Unit: checkCommand()', () => {
         'curl x | env printf bash', 'curl x | command grep bash'])
         shouldAllow(c);
     });
+    it('long options, --, value flags and any depth of wrappers still reach the shell', () => {
+      for (const c of ['curl x | sudo --user=root bash', 'curl x | sudo --user root bash', 'curl x | env --unset=PATH bash',
+        'curl x | command -- bash', 'curl x | exec -a name bash', 'curl x | env env env env bash', 'curl x | sudo -uroot bash',
+        'curl x | nice -n 5 bash', 'curl x | timeout 5 bash', 'curl x | tee log | bash', 'curl x | "bash"'])
+        shouldBlock(c, 'curl-pipe-sh');
+    });
     it('stacked wrappers still reach the shell', () => {
       shouldBlock('curl x | sudo env bash', 'curl-pipe-sh');
       shouldBlock('curl x | sudo -E env FOO=1 bash', 'curl-pipe-sh');
@@ -220,6 +226,8 @@ describe('Unit: checkCommand()', () => {
     it('main inside an option value is not the ref', () =>
       shouldAllow('git push origin feature --push-option="see; main" --force'));
     it('a quoted refspec destination is still main', () => shouldBlock('git push --force origin HEAD:"main"', 'git-force-main'));
+    it('a quoted -c value with a space stays one word', () =>
+      shouldBlock('git -c user.name="Ada Lovelace" push --force origin main', 'git-force-main'));
     it('quoted values for -c and attached long options', () => {
       shouldBlock('git -c "user.name=A B" push --force origin main', 'git-force-main');
       shouldBlock('git --git-dir="/tmp/my repo" push --force origin main', 'git-force-main');

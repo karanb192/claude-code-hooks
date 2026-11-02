@@ -122,7 +122,8 @@ function maskQuotedSeparators(cmd) {
     }
     if (q) {
       if (ch === q) { q = ''; blank = false; }
-      else if (blank || /[;&|\n]/.test(ch)) { out += /\s/.test(ch) ? ' ' : '_'; continue; }
+      else if (blank) { out += '_'; continue; }
+      else if (/[;&|\n]/.test(ch)) { out += ' '; continue; }
     } else if (ch === '"' || ch === "'") {
       q = ch;
       blank = out[out.length - 1] === '=';
