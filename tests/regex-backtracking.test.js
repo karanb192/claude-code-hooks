@@ -53,6 +53,8 @@ const QUOTE_HEAVY = [
   'curl x ' + '| sudo env '.repeat(80) + 'harmless',
   'curl x | env ' + '-S '.repeat(200) + 'harmless',
   "printf '%s\\n' 'sed -i s/" + '\\'.repeat(60) + " math.test.js'",
+  'grep ' + '-a '.repeat(200) + '> out.test.js',
+  '{ ' + '( '.repeat(200) + 'echo x > a.test.js',
   'curl x | env ' + '-u x A=1 '.repeat(60) + 'harmless',
   'git push ' + '--push-option="a;b" '.repeat(80) + 'origin feat',
   'find tests' + ' -print'.repeat(60) + ' | xargs' + ' -n 1'.repeat(60) + ' echo',

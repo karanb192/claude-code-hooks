@@ -160,27 +160,45 @@ function substAddsMarker(pat, rep) {
 }
 
 // Commands joined by ; && || & or a newline run on their own, so each is judged
-// alone. A pipe stays inside one command: tee writes what came before it. A
-// heredoc's body is file text, not shell, so such a command stays whole.
+// alone. A pipe stays inside one command: tee writes what came before it, also
+// across a newline after `|`. A { } or ( ) group is one command, since a
+// redirect after it writes the whole group's output. A heredoc's body is file
+// text, not shell, so such a command stays whole.
 function shellCommands(cmd) {
   if (cmd.includes('<<')) return [cmd];
   const parts = [];
   let start = 0;
   let q = '';
+  let depth = 0;
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i];
     if (ch === '\\' && q !== "'") { i++; continue; }
     if (q) { if (ch === q) q = ''; continue; }
     if (ch === '"' || ch === "'") { q = ch; continue; }
+    if (ch === '(' || (ch === '{' && /^\s?$/.test(cmd[i + 1] || '') && cmd[i - 1] !== '$')) { depth++; continue; }
+    if (depth && (ch === ')' || (ch === '}' && /[\s;]/.test(cmd[i - 1] || '')))) { depth--; continue; }
+    if (depth) continue;
     const or = ch === '|' && cmd[i + 1] === '|';
     if (ch !== ';' && ch !== '&' && ch !== '\n' && !or) continue;
     if (ch === '&' && (cmd[i - 1] === '>' || cmd[i + 1] === '>')) continue;
+    if (ch === '\n' && /\|\s*$/.test(cmd.slice(start, i))) continue;
     parts.push(cmd.slice(start, i));
     if (or || (ch === '&' && cmd[i + 1] === '&')) i++;
     start = i + 1;
   }
   parts.push(cmd.slice(start));
   return parts;
+}
+
+// What a redirect can write: search text is not output, so s/// keeps only its
+// replacement and a grep-family pattern is dropped. Removing a skip with
+// `sed 's/test.skip(/test(/' a.test.js > b.test.js` must not count `test.skip(`.
+const GREP_PATTERN = /\b(?:grep|egrep|fgrep|rg)\b((?:\s+-[\w-]+)*)\s+(?:'[^']*'|"(?:\\.|[^"\\])*"|[^\s|;&<>]+)/g;
+
+function writtenText(part) {
+  return part
+    .replace(SUBST, (m, delim, pat, rep) => rep)
+    .replace(GREP_PATTERN, (m, flags) => 'grep' + flags);
 }
 
 function shellAddsMarker(cmd, cwd) {
@@ -195,7 +213,7 @@ function shellAddsMarker(cmd, cwd) {
       const target = dq ?? sq ?? unesc(bare);
       if (!TEST_PATH.test(target)) continue;
       const existing = op.startsWith('>>') || op.includes('-a') ? '' : readExisting(target, cwd);
-      if (existing !== null && addedMarker(existing, unesc(part))) return true;
+      if (existing !== null && addedMarker(existing, unesc(writtenText(part)))) return true;
     }
   }
   return false;

@@ -301,6 +301,19 @@ describe('Bash: disabling a test from the shell', () => {
     allow('npm test 2>&1 | tee test.log');
     block("sed -i 's/test(/test.skip(/' math.test.js && cat math.test.js");
   });
+  it('a group or a pipe that continues on the next line is one command', () => {
+    block(`printf '%s\\n' "test.skip('addition', () => {});" |\n  tee math.test.js`);
+    block(`{ echo "// header"; echo "test.skip('addition', () => {});"; } > math.test.js`);
+    block(`(echo "// header"; echo "test.skip('addition', () => {});") > math.test.js`);
+    block(`{ echo a; echo "test.skip('addition', () => {});"; } | tee math.test.js`);
+  });
+  it('search text in a redirect is not output', () => {
+    fs.writeFileSync(path.join(dir, 'fixed.test.js'), "test('c', () => {});\n");
+    allow("sed 's/test.skip(/test(/' one-skip.test.js > fixed.test.js");
+    allow("grep -v 'test.skip(' one-skip.test.js > fixed.test.js");
+    allow("perl -pe 's/test\\.skip\\(/test(/' one-skip.test.js > fixed.test.js");
+    block("sed 's/test(/test.skip(/' math.test.js > fixed.test.js");
+  });
   it('a run of backslashes with no closing delimiter stays fast', () => {
     const start = Date.now();
     allow("printf '%s\\n' 'sed -i s/" + '\\'.repeat(2000) + " math.test.js'");
