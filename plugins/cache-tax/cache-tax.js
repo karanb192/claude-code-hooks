@@ -70,8 +70,8 @@ function normalizeEntry(e) {
   const out = [];
   for (const t of tiers) {
     if (!t || !num(t.read) || !num(t.write5m) || !num(t.write1h)) return null;
-    const max = t.maxContext == null ? null : Number(t.maxContext);
-    if (max != null && !(max > 0)) return null;
+    const max = t.maxContext == null ? null : t.maxContext;
+    if (max != null && (!Number.isSafeInteger(max) || max <= 0)) return null;
     out.push({ maxContext: max, read: t.read, write5m: t.write5m, write1h: t.write1h });
   }
   if (!out.length) return null;
@@ -80,46 +80,69 @@ function normalizeEntry(e) {
 }
 
 let tableCache = null;
-/** The price table from prices.json: {effective, source, families, file, error}. */
+// Strip only known provider wrappers, never model versions or snapshot dates.
+function modelId(model) {
+  let id = String(model || '').toLowerCase();
+  const bedrock = /^(?:(?:us|eu|apac|global)\.)?anthropic\.(?=claude-)/;
+  if (bedrock.test(id)) id = id.replace(bedrock, '').replace(/-v1(?::0)?$/, '');
+  return id.replace(/^claude-/, '');
+}
+function modelIds(key, entry) {
+  const ids = entry && Object.hasOwn(entry, 'models') ? entry.models : [key];
+  return Array.isArray(ids) ? ids.filter(id => typeof id === 'string' && id).map(modelId) : [];
+}
+/** Price tiers and exact model-to-family mappings, with source metadata. */
 function loadPriceTable() {
   if (tableCache) return tableCache;
-  const t = { file: PRICES_FILE, effective: null, source: null, families: {}, error: null };
+  const t = { file: PRICES_FILE, effective: null, source: null, families: Object.create(null), models: Object.create(null), error: null };
   try {
     const raw = JSON.parse(fs.readFileSync(PRICES_FILE, 'utf8'));
     t.effective = typeof raw.effective === 'string' ? raw.effective : null;
     t.source = typeof raw.source === 'string' ? raw.source : null;
     for (const [k, v] of Object.entries((raw && raw.families) || {})) {
       const tiers = normalizeEntry(v);
-      if (tiers) t.families[k.toLowerCase()] = tiers;
+      if (tiers) {
+        const key = k.toLowerCase();
+        t.families[key] = tiers;
+        for (const id of modelIds(key, v)) t.models[id] = key;
+      }
     }
   } catch (e) { t.error = e.code || e.message; }
   tableCache = t;
   return t;
 }
 
-function prices() {
-  const out = Object.assign({}, loadPriceTable().families);
+function pricing() {
+  const table = loadPriceTable();
+  const families = Object.assign(Object.create(null), table.families);
+  const models = Object.assign(Object.create(null), table.models);
   let extra = {};
   try { extra = JSON.parse(process.env.CACHE_TAX_PRICES || '{}'); } catch (_) { extra = {}; }
   for (const [k, v] of Object.entries(extra || {})) {
     const tiers = normalizeEntry(v);
-    if (tiers) out[k.toLowerCase()] = tiers;
+    if (tiers) {
+      const key = k.toLowerCase();
+      families[key] = tiers;
+      // Family overrides keep the table's aliases. New keys match exactly;
+      // an optional models list can add explicit aliases without wildcards.
+      if (!Object.hasOwn(table.families, key) || Object.hasOwn(v, 'models')) {
+        for (const id of modelIds(key, v)) models[id] = key;
+      }
+    }
   }
-  return out;
+  return { families, models };
 }
+function prices() { return pricing().families; }
 
-// Longest key first so fable-5-1 wins over fable-5 and sonnet-5-5 over sonnet-5.
 function family(model) {
-  const m = String(model || '').toLowerCase();
-  const keys = Object.keys(prices()).sort((a, b) => b.length - a.length);
-  for (const k of keys) if (m.includes(k)) return k;
-  return null;
+  return pricing().models[modelId(model)] || null;
 }
 /** Rates for a model at a context size (tokens sent, cached or not). */
 function priceFor(model, ctx) {
-  const f = family(model);
+  const p = pricing();
+  const f = p.models[modelId(model)];
   if (!f) return null;
-  const tiers = prices()[f];
+  const tiers = p.families[f];
   const n = Number(ctx) || 0;
   const t = tiers.find(x => x.maxContext == null || n <= x.maxContext) || tiers[tiers.length - 1];
   return { family: f, read: t.read, write5m: t.write5m, write1h: t.write1h };

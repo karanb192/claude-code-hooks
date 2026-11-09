@@ -56,7 +56,7 @@ function run(payload, env = {}, args = []) {
 }
 
 describe('pricing', () => {
-  it('maps model ids to the longest matching family', () => {
+  it('maps explicit model ids to their price families', () => {
     assert.strictEqual(family('claude-fable-5-1'), 'fable-5-1');
     assert.strictEqual(family('claude-fable-5'), 'fable-5');
     assert.strictEqual(family('claude-opus-5'), 'opus-5');
@@ -64,6 +64,55 @@ describe('pricing', () => {
     assert.strictEqual(family('claude-sonnet-5'), 'sonnet-5');
     assert.strictEqual(family('claude-sonnet-4-6'), 'sonnet');
     assert.strictEqual(family('something-else'), null);
+  });
+  it('prices every active canonical model and the deprecated Preview model', () => {
+    const rows = [
+      ['fable-5-1', 0.25, 12.5, 20], ['mythos-5-1', 0.25, 12.5, 20],
+      ['fable-5', 1, 12.5, 20], ['mythos-5', 1, 12.5, 20],
+      ['opus-5-5', 0.2, 5, 8], ['opus-5', 0.5, 6.25, 10],
+      ['opus-4-8', 0.5, 6.25, 10], ['opus-4-7', 0.5, 6.25, 10],
+      ['opus-4-6', 0.5, 6.25, 10], ['opus-4-5-20251101', 0.5, 6.25, 10],
+      ['sonnet-5-5', 0.1, 2.5, 4], ['sonnet-5', 0.2, 2.5, 4],
+      ['sonnet-4-6', 0.3, 3.75, 6], ['haiku-5-5', 0.01, 0.125, 0.2],
+      ['haiku-4-5-20251001', 0.1, 1.25, 2], ['mythos-preview', 2.5, 31.25, 50],
+    ];
+    for (const [id, ...rates] of rows) {
+      const p = priceFor(`claude-${id}`, 100000);
+      assert.ok(p, id);
+      assert.deepStrictEqual([p.read, p.write5m, p.write1h], rates, id);
+    }
+    assert.strictEqual(priceFor('claude-mythos-preview', 1000000).write1h, 50);
+  });
+  it('accepts known provider wrappers and exact dated aliases without changing rates', () => {
+    for (const prefix of ['anthropic.', 'us.anthropic.', 'eu.anthropic.', 'apac.anthropic.', 'global.anthropic.']) {
+      for (const suffix of ['', '-v1', '-v1:0']) {
+        assert.deepStrictEqual(priceFor(`${prefix}claude-opus-4-5-20251101${suffix}`), priceFor('claude-opus-4-5'));
+      }
+      assert.deepStrictEqual(priceFor(`${prefix}claude-opus-5-5`), priceFor('claude-opus-5-5'));
+    }
+    assert.deepStrictEqual(priceFor('CLAUDE-OPUS-5-5'), priceFor('claude-opus-5-5'));
+    for (const [id, canonical] of [
+      ['claude-opus-4-5@20251101', 'claude-opus-4-5'],
+      ['claude-sonnet-4-5@20250929', 'claude-sonnet-4-5'],
+      ['claude-haiku-4-5@20251001', 'claude-haiku-4-5'],
+      ['claude-3-5-haiku@20241022', 'claude-3-5-haiku-20241022'],
+      ['claude-3-5-haiku-latest', 'claude-3-5-haiku-20241022'],
+    ]) assert.deepStrictEqual(priceFor(id), priceFor(canonical), id);
+  });
+  it('does not guess prices for unknown versions, snapshots, providers or retired models', () => {
+    for (const id of [
+      'claude-sonnet-99', 'claude-haiku-99', 'claude-opus-4-999', 'claude-opus-5-foo',
+      'claude-fable-5-2', 'claude-mythos-preview-2', 'claude-mythos-preview-20260601',
+      'claude-3-haiku-20240307', 'claude-3-opus-20240229', 'claude-sonnet-4-7',
+      'claude-opus-4-5-20990101', 'claude-opus-4-5@20990101', 'claude-opus-4-5-latest',
+      'claude-opus-5-5-v1', 'anthropic.claude-opus-5-5-v99:0',
+      'vendor.claude-sonnet-4-6', 'foo-anthropic.claude-opus-5-5', 'anthropic.opus-5-5',
+      'not-claude-opus-5-5', 'claude-opus-5-5-extra', 'sonnet', 'haiku', 'opus-4',
+      '__proto__', 'constructor', 'toString', '', null,
+    ]) {
+      assert.strictEqual(family(id), null, String(id));
+      assert.strictEqual(priceFor(id, 100000), null, String(id));
+    }
   });
   it('prices Sonnet 5 below Sonnet 4.x', () => {
     assert.deepStrictEqual([priceFor('claude-sonnet-5').read, priceFor('claude-sonnet-5').write5m, priceFor('claude-sonnet-5').write1h], [0.2, 2.5, 4]);
@@ -145,6 +194,26 @@ describe('prices.json', () => {
     assert.ok(Number.isFinite(Date.parse(raw.effective)));
     assert.match(raw.source, /^https:\/\//);
   });
+  it('records the Preview input source and cache-rate derivation', () => {
+    const p = raw.families['mythos-preview'];
+    assert.strictEqual(p.source, 'https://www.anthropic.com/glasswing');
+    assert.match(p.cacheSource, /claude\.com\/docs\/en\/build-with-claude\/prompt-caching#pricing$/);
+    assert.match(p.basis, /Derived from \$25\/MTok input/);
+    assert.deepStrictEqual([p.read, p.write5m, p.write1h], [25 * 0.1, 25 * 1.25, 25 * 2]);
+  });
+  it('lists unique exact model aliases and routes each one to its own family', () => {
+    const seen = new Set();
+    for (const [key, entry] of Object.entries(raw.families)) {
+      const ids = entry.models || [key];
+      assert.ok(Array.isArray(ids) && ids.length, key);
+      for (const id of ids) {
+        assert.match(id, /^[a-z0-9-]+(?:@\d{8})?$/);
+        assert.ok(!seen.has(id), `duplicate model ${id}`);
+        seen.add(id);
+        assert.strictEqual(family(`claude-${id}`), key, id);
+      }
+    }
+  });
   it('has sane rates: lowercase keys, read <= 5m write <= 1h write, ascending tiers ending unbounded', () => {
     for (const [k, v] of Object.entries(raw.families)) {
       assert.strictEqual(k, k.toLowerCase(), k);
@@ -168,6 +237,63 @@ describe('price overrides and a missing table', () => {
   it('accepts a tiered object in CACHE_TAX_PRICES', () => {
     const r = run({ model: { id: 'claude-opus-5-5' }, prompt_cache: pc }, { CACHE_TAX_PRICES: '{"opus-5-5":{"tiers":[{"maxContext":200000,"read":0.2,"write5m":5,"write1h":8},{"read":0.4,"write5m":10,"write1h":16}]}}' }, ['--statusline']);
     assert.match(r.out, /cold costs \$6\.40$/);
+  });
+  it('keeps known family aliases and supports exact new model overrides', () => {
+    process.env.CACHE_TAX_PRICES = JSON.stringify({
+      sonnet: [1, 2, 3], 'claude-sonnet-99': [4, 5, 6],
+      custom: { read: 7, write5m: 8, write1h: 9, models: ['claude-new-model', 'new-model@20261109'] },
+    });
+    try {
+      assert.strictEqual(priceFor('claude-sonnet-4-6').write1h, 3);
+      assert.strictEqual(priceFor('claude-sonnet-99').write1h, 6);
+      assert.strictEqual(priceFor('claude-new-model').write1h, 9);
+      assert.strictEqual(priceFor('claude-new-model@20261109').write1h, 9);
+      assert.strictEqual(priceFor('claude-sonnet-99-extra'), null);
+      assert.strictEqual(priceFor('claude-new-model-2'), null);
+    } finally { delete process.env.CACHE_TAX_PRICES; }
+  });
+  it('lets exact model overrides take priority over a shared family', () => {
+    for (const extra of [
+      { sonnet: [1, 2, 3], 'sonnet-4-6': [4, 5, 6] },
+      { 'sonnet-4-6': [4, 5, 6], sonnet: [1, 2, 3] },
+    ]) {
+      process.env.CACHE_TAX_PRICES = JSON.stringify(extra);
+      try {
+        assert.strictEqual(priceFor('claude-sonnet-4-6').write1h, 6);
+        assert.strictEqual(priceFor('claude-sonnet-4-5').write1h, 3);
+      } finally { delete process.env.CACHE_TAX_PRICES; }
+    }
+  });
+  it('rejects malformed context thresholds without coercion or exceptions', () => {
+    for (const maxContext of [{ toString: 'oops' }, {}, [], [100000], true, false, '100000', 'Infinity', 0, -1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      assert.strictEqual(normalizeEntry({ tiers: [{ maxContext, read: 1, write5m: 2, write1h: 3 }] }), null, JSON.stringify(maxContext));
+    }
+    assert.ok(normalizeEntry({ tiers: [{ maxContext: 100000, read: 0, write5m: 0, write1h: 0 }, { read: 1, write5m: 2, write1h: 3 }] }));
+  });
+  it('ignores a malformed tier override and still uses the built-in rates (integration)', () => {
+    const r = run({ model: { id: 'claude-opus-5-5' }, prompt_cache: { ...pc, warm: false, expires_at: 0 } }, {
+      CACHE_TAX_PRICES: JSON.stringify({ 'opus-5-5': { tiers: [{ maxContext: { toString: 'oops' }, read: 1, write5m: 2, write1h: 3 }] } }),
+    }, ['--statusline']);
+    assert.strictEqual(r.code, 0);
+    assert.doesNotMatch(r.err, /TypeError|Cannot convert object to primitive value/);
+    assert.match(r.out, /400k = \$3\.20$/);
+  });
+  it('skips malformed file entries while retaining valid ones and environment overrides', () => {
+    const f = path.join(tmp, 'invalid-tier-prices.json');
+    fs.writeFileSync(f, JSON.stringify({ families: {
+      'opus-5-5': { tiers: [{ maxContext: { toString: 'oops' }, read: 1, write5m: 2, write1h: 3 }] },
+      'sonnet-5-5': { read: 1, write5m: 2, write1h: 3 },
+    } }));
+    const cold = { ...pc, warm: false, expires_at: 0 };
+    for (const [id, extra, expected] of [
+      ['opus-5-5', {}, 'n/a'], ['sonnet-5-5', {}, '$1.20'],
+      ['opus-5-5', { CACHE_TAX_PRICES: '{"opus-5-5":[1,2,4]}' }, '$1.60'],
+    ]) {
+      const r = run({ model: { id: `claude-${id}` }, prompt_cache: cold }, { CACHE_TAX_PRICES_FILE: f, ...extra }, ['--statusline']);
+      assert.strictEqual(r.code, 0);
+      assert.doesNotMatch(r.err, /TypeError|Cannot convert object to primitive value/);
+      assert.ok(r.out.endsWith(`400k = ${expected}`), r.out);
+    }
   });
   it('reads CACHE_TAX_PRICES_FILE instead of the bundled table', () => {
     const f = path.join(tmp, 'my-prices.json');
@@ -277,6 +403,21 @@ describe('transcript parsing', () => {
     assert.strictEqual(t.writeUsd, null);
     assert.strictEqual(t.readUsd, null);
     assert.strictEqual(t.fullMissUsd, null);
+  });
+  it('keeps unsupported versions unavailable in status lines and session totals', () => {
+    const now = Date.now();
+    const p = writeTranscript(tmp, [
+      { ts: now - 4 * HOUR, model: 'claude-haiku-4-5', write: 100000, read: 1000, id: 'a' },
+      { ts: now - 3 * HOUR, model: 'claude-haiku-99', write: 100000, read: 1000, id: 'b' },
+    ]);
+    assert.strictEqual(scanTranscript(p).writeUsd, null);
+    const r = run({}, {}, ['--render', '--transcript', p]);
+    assert.strictEqual(r.code, 0);
+    assert.match(r.out, /cold cost   n\/a/);
+    assert.match(r.out, /writes 200k tok n\/a · reads 2k tok n\/a/);
+    const line = run({ model: { id: 'claude-sonnet-99' }, prompt_cache: { warm: false, ttl: '1h', expires_at: 0, recache_tokens_if_cold: 100000 } }, {}, ['--statusline']);
+    assert.strictEqual(line.code, 0);
+    assert.strictEqual(line.out, 'cache COLD · next msg re-writes 100k = n/a');
   });
   it('does not mark absent cache usage as unpriced spending', () => {
     const p = writeTranscript(tmp, [
