@@ -108,8 +108,11 @@ const SENSITIVE_FILES = [
 // Delegation sinks: file contents or secret env vars fed to an external model CLI or API host.
 const SINK_CLI = '(?:gemini(?:-cli)?|codex|llm|sgpt|aichat|openai|mods|fabric)';
 // A sink CLI behind env assignments, wrappers (sudo, npx, env, timeout, xargs ...), a path or an npm scope.
+// One lazy run after the first wrapper already spans any later wrappers and
+// assignments; repeating it made `| sudo -n sudo -n ...` exponential.
 const SINK_PREFIX = '(?:^|[|;&(`"\'!\\n]|\\b(?:do|then|else)\\b)\\s*'
-  + '(?:(?:sudo|npx|uvx|bunx|pnpm\\s+dlx|command|time|exec|nice|nohup|env|timeout|xargs)\\b[^;|&\\n]*?\\s+|[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*'
+  + '(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*'
+  + '(?:(?:sudo|npx|uvx|bunx|pnpm\\s+dlx|command|time|exec|nice|nohup|env|timeout|xargs)\\b[^;|&\\n]*?\\s+)?'
   + '(?:[^\\s"\';|&]*\\/)?';
 const SINK_END = '(?=[\\s<]|$)';
 const SINK_CMD = SINK_PREFIX + SINK_CLI + SINK_END;
@@ -269,9 +272,18 @@ function checkFilePath(filePath, safetyLevel = SAFETY_LEVEL) {
 function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   if (!cmd) return { blocked: false, pattern: null };
   cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
-  for (const allow of ALLOWLIST) {
-    if (allow.test(cmd)) return { blocked: false, pattern: null };
-  }
+  // Mask each allowlisted file name on its own; matching the allowlist against
+  // the whole string let `cat .env # .env.example` through. The directory is
+  // kept, so $SECRET_KEY/.env.example is still seen, except that a plain
+  // segment's `.env` (my.env/) is defused; a $ in the name is not a template.
+  cmd = cmd.replace(/[^\s"'`=@<>;|&()]+/g, token => {
+    // An scp remote with no slash (host:.env.example) keeps its colon in the directory part.
+    const dir = token.slice(0, Math.max(token.lastIndexOf('/'), token.lastIndexOf(':')) + 1);
+    if (token.slice(dir.length).includes('$') || !isAllowlisted(token)) return token;
+    // Only `.env` in a plain segment is defused; hosts (api.openai.com/), scp
+    // remotes (host:) and variables stay visible to the other rules.
+    return dir.split('/').map(seg => seg.includes('$') ? seg : seg.replace(/\.env/gi, '_env')).join('/') + 'allowlisted-template';
+  });
   const threshold = LEVELS[safetyLevel] || 2;
   for (const p of BASH_PATTERNS) {
     if (LEVELS[p.level] <= threshold && p.regex.test(cmd)) {

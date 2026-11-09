@@ -286,6 +286,18 @@ describe('Integration: subagent-spawn-cap through the pack', () => {
     assert.strictEqual(decisionOf(output), 'ask');
   });
 
+  it('a later deny outranks an earlier ask', async () => {
+    // block-dangerous-commands (earlier) asks under HOOK_ASK_HIGH; git-safety (later) denies a push naming main.
+    const { output } = await runHook(payload('Bash', { command: 'git push --force origin main' }), { HOOK_ASK_HIGH: 'true' });
+    assert.strictEqual(decisionOf(output), 'deny');
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /\[push-main\]/);
+  });
+
+  it('an ask with no later deny is still an ask', async () => {
+    const { output } = await runHook(payload('Bash', { command: 'chmod 777 run.sh' }), { HOOK_ASK_HIGH: 'true' });
+    assert.strictEqual(decisionOf(output), 'ask');
+  });
+
   it('a Bash call never touches the spawn ledger', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-pack-spawn-'));
     await runHook(payload('Bash', { command: 'git status' }, { session_id: 'pack-s7' }), { HOME: home });

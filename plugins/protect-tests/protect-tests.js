@@ -44,7 +44,7 @@ const SAFETY_LEVEL = ['critical', 'high', 'strict'].includes(process.env.HOOK_SA
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
 const EMOJIS = { critical: '🚨', high: '⛔', strict: '⚠️' };
-const LOG_DIR = path.join(process.env.HOME || '/tmp', '.claude', 'hooks-logs');
+const LOG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.claude', 'hooks-logs');
 
 // A path that looks like a test file (many languages / conventions).
 const TEST_PATH = new RegExp(
@@ -61,12 +61,37 @@ const TEST_PATH = new RegExp(
 );
 
 // The same, but as it would appear as a token inside a shell command.
+// Case-insensitive: on a default macOS or Windows volume, Tests/ is tests/.
 const TEST_TOKEN =
-  /(test_[\w.-]+\.\w+|[\w.-]+_test\.\w+|[\w.-]+\.(test|spec)\.\w+|[\w.-]+_spec\.rb|(^|[\s'"/])(tests?|__tests__|specs?)\/)/;
+  /(test_[\w.-]+\.\w+|[\w.-]+_test\.\w+|[\w.-]+\.(test|spec)\.\w+|[\w.-]+_spec\.rb|(^|[\s'"/])(tests?|__tests__|specs?)\/)/i;
 
 const DELETE_VERB = /(\brm\b|\bunlink\b|\bshred\b|\btrash\b|\bgit\s+rm\b)/;
 const RENAME_VERB = /\bmv\b/;
 const DISABLED_DEST = /(\.bak|\.old|\.orig|\.disabled|\.skip|\.ignore|\.tmp|~)(["'\s]|$)/i;
+
+// Ways to drop a suite that carry no test/ slash or test file name: a bare
+// directory operand (rm -rf tests, tests*, {tests,}), find or xargs feeding a
+// delete, or a move to a temp or trash folder. Each is judged within one
+// command; a pipe stays inside it, so find ... | xargs rm is one command.
+const TEST_DIR_ARG = '(?:^|[\\s\'"/{,*?])(?:tests?|__tests__|specs?)(?=[\\s\'"/)*?},]|$)';
+const DEL_CMD = '(?:(?:env|sudo|command|nice|nohup)\\s+(?:-\\S+\\s+)*)?(?:["\']?(?:[^\\s"\'|;&]*\\/)?(?:rm|unlink|shred|trash)["\']?(?![\\w.-])|\\bgit\\s+rm\\b)';
+const BARE_DIR_DELETE = new RegExp('(?:\\b(?:rm|unlink|shred|trash)\\b|\\bgit\\s+rm\\b)[^|]*' + TEST_DIR_ARG, 'i');
+const TEST_NAME_GLOB = new RegExp(TEST_DIR_ARG + '|test_|_test\\.|\\.(?:test|spec)\\.|_spec\\.rb', 'i');
+const FIND_DELETE = new RegExp('\\bfind\\b.*(?:\\s-delete\\b|\\s-exec(?:dir)?\\s+' + DEL_CMD + ')');
+// xargs flags that take a value (-n 1, -I {}, -P 4) consume the next word.
+const XARGS_DELETE = new RegExp('\\|\\s*xargs\\b(?:\\s+(?:-[0prtxo]+|-[adEIJLnPRSsil]\\s*[^\\s|;&]+|--[\\w-]+(?:=\\S+)?))*\\s+' + DEL_CMD);
+// The destination is mv's last operand; a temp path earlier is a source.
+const DISCARD_DEST = /\s["']?(?:\/tmp|\/var\/tmp|\/private\/tmp|\/(?:private\/)?var\/folders|\/dev\/null|\$\{?TMPDIR(?::-[^}\s]*)?\}?|(?:~|\$\{?HOME\}?)\/\.Trash)(?:\/[^\s"']*)?["']?\s*$/;
+
+// mv's operands end where a comment, redirect or pipe begins.
+const MV_TAIL = /\s+(?:#|\d*[<>]|\|)[\s\S]*$/;
+
+function dropsTestSuite(cmd) {
+  return cmd.replace(/\\\r?\n/g, '').split(/[;&\n]+|\|\|/).some(seg =>
+    BARE_DIR_DELETE.test(seg) ||
+    ((FIND_DELETE.test(seg) || XARGS_DELETE.test(seg)) && TEST_NAME_GLOB.test(seg)) ||
+    (RENAME_VERB.test(seg) && TEST_NAME_GLOB.test(seg) && DISCARD_DEST.test(seg.replace(MV_TAIL, ''))));
+}
 
 // Markers that turn an existing test off in place.
 const SKIP_MARKERS = [
@@ -107,6 +132,7 @@ function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL) {
 
   if (toolName === 'Bash') {
     const cmd = toolInput.command || '';
+    if (dropsTestSuite(cmd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
     if (!TEST_TOKEN.test(cmd)) return allow();
     if (DELETE_VERB.test(cmd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
     if (RENAME_VERB.test(cmd) && DISABLED_DEST.test(cmd))

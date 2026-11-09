@@ -73,6 +73,68 @@ describe('Bash: legitimate commands are allowed', () => {
   it('allows npm test', () => shouldAllow('Bash', { command: 'npm test' }));
   it('allows rm of non-test artifacts', () => shouldAllow('Bash', { command: 'rm -rf node_modules' }));
   it('allows rm of build output', () => shouldAllow('Bash', { command: 'rm -rf dist build .pytest_cache' }));
+  it('blocks rm -rf of a tests directory without a trailing slash', () =>
+    shouldBlock('Bash', { command: 'rm -rf tests' }, 'delete-test'));
+  it('blocks rm -rf of a nested spec directory without a slash', () =>
+    shouldBlock('Bash', { command: 'rm -rf ./src/spec' }, 'delete-test'));
+  it('blocks rm of a quoted test directory', () => shouldBlock('Bash', { command: 'rm -r "test"' }, 'delete-test'));
+  it('blocks find -delete on a test directory', () => shouldBlock('Bash', { command: 'find tests -delete' }, 'delete-test'));
+  it('blocks find -exec rm on test files', () =>
+    shouldBlock('Bash', { command: "find . -name '*_test.py' -exec rm {} +" }, 'delete-test'));
+  it('blocks moving tests into /tmp', () => shouldBlock('Bash', { command: 'mv tests /tmp/' }, 'delete-test'));
+  it('blocks moving a test file into the trash', () =>
+    shouldBlock('Bash', { command: 'mv src/auth.test.ts ~/.Trash/' }, 'delete-test'));
+  it('allows a test run next to an unrelated rm', () =>
+    shouldAllow('Bash', { command: 'rm -rf node_modules && npm test' }));
+  it('allows rm of a test-results folder', () => shouldAllow('Bash', { command: 'rm -rf test-results coverage' }));
+  it('allows find -delete on logs', () => shouldAllow('Bash', { command: "find . -name '*.log' -delete" }));
+  it('blocks moving a test into a temp subfolder', () =>
+    shouldBlock('Bash', { command: 'mv tests/auth_test.py /tmp/stash/ && echo ok' }, 'delete-test'));
+  it('allows restoring a test from /tmp', () =>
+    shouldAllow('Bash', { command: 'mv /tmp/new_test.py tests/new_test.py' }));
+  it('blocks find -delete under a test dir whatever the name filter', () =>
+    shouldBlock('Bash', { command: "find tests -name '*.py' -delete" }, 'delete-test'));
+  it('blocks a capitalised test directory (case-insensitive volumes)', () => {
+    shouldBlock('Bash', { command: 'rm -rf Tests' }, 'delete-test');
+    shouldBlock('Bash', { command: 'find TESTS -delete' }, 'delete-test');
+  });
+  it('blocks a glob or brace group that expands to the test directory', () => {
+    for (const command of ['rm -rf tests*', 'rm -rf tests?', 'rm -rf {tests}', 'rm -rf {tests,}'])
+      shouldBlock('Bash', { command }, 'delete-test');
+  });
+  it('blocks find piped to xargs rm', () => {
+    shouldBlock('Bash', { command: 'find tests -print | xargs rm' }, 'delete-test');
+    shouldBlock('Bash', { command: 'find tests -print0 | xargs -0 rm -f' }, 'delete-test');
+  });
+  it('blocks find -exec with a path, a quoted rm, or git rm', () => {
+    for (const command of ['find tests -exec /bin/rm {} +', "find tests -exec 'rm' {} +", 'find tests -exec git rm {} +'])
+      shouldBlock('Bash', { command }, 'delete-test');
+  });
+  it('blocks a delete split by a backslash-newline', () =>
+    shouldBlock('Bash', { command: 'rm -rf \\\n  tests' }, 'delete-test'));
+  it('blocks moving tests into TMPDIR with a default or into a per-user temp folder', () => {
+    shouldBlock('Bash', { command: 'mv tests ${TMPDIR:-/tmp}' }, 'delete-test');
+    shouldBlock('Bash', { command: 'mv tests /var/folders/xx/T/' }, 'delete-test');
+    shouldBlock('Bash', { command: 'mv tests $HOME/.Trash/' }, 'delete-test');
+  });
+  it('mv to a temp folder stays a discard before a comment, redirect or pipe', () => {
+    for (const command of ['mv tests /tmp | cat', 'mv tests /tmp/ # archive', 'mv tests /tmp >log', 'mv tests /tmp 2>&1'])
+      shouldBlock('Bash', { command }, 'delete-test');
+  });
+  it('blocks xargs flags that take a value, and env before rm in -exec', () => {
+    for (const command of ['find tests -print | xargs -n 1 rm', 'find tests -print | xargs -P 4 rm',
+      'find tests -print0 | xargs -0 -I {} rm {}', 'find tests -exec env rm {} +'])
+      shouldBlock('Bash', { command }, 'delete-test');
+  });
+  it('blocks a glob before the test directory word', () => {
+    shouldBlock('Bash', { command: 'rm -rf *tests' }, 'delete-test');
+    shouldBlock('Bash', { command: 'rm -rf *tests*' }, 'delete-test');
+  });
+  it('allows xargs rm on non-test files', () =>
+    shouldAllow('Bash', { command: "find . -name '*.log' -print | xargs rm" }));
+  it('allows rm of a scripts file named rmtests.sh', () => shouldAllow('Bash', { command: 'cat rmtests.sh' }));
+  it('allows moving a test within the project', () =>
+    shouldAllow('Bash', { command: 'mv tests/old_test.py tests/unit/' }));
   it('allows creating a test dir', () => shouldAllow('Bash', { command: 'mkdir -p tests/unit' }));
   it('allows go test', () => shouldAllow('Bash', { command: 'go test ./...' }));
   it('allows refactor rename to another test name', () => shouldAllow('Bash', { command: 'mv test_old.py test_new.py' }));

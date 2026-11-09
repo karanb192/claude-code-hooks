@@ -88,7 +88,7 @@ const envBool = (key, fallback) => key in process.env ? process.env[key] === 'tr
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
 const EMOJIS = { critical: '🚨', high: '⛔', strict: '⚠️' };
-const LOG_DIR = path.join(process.env.HOME, '.claude', 'hooks-logs');
+const LOG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.claude', 'hooks-logs');
 
 // Secret material that instruction text has no business directing an agent at.
 // Kept consistent with protect-secrets.js's sensitive-file list. The .env
@@ -273,7 +273,7 @@ function scanDirectives(content, threshold, findings) {
 // UserPromptSubmit and PreToolUse registrations of this same script read it
 // and deny everything for that session until a human clears it.
 
-const STATE_DIR = path.join(process.env.HOME || '/tmp', '.claude', 'hooks-state', 'instructions-audit');
+const STATE_DIR = path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.claude', 'hooks-state', 'instructions-audit');
 
 function flagPath(sessionId) {
   const safe = String(sessionId || 'unknown-session').replace(/[^A-Za-z0-9._-]/g, '_');

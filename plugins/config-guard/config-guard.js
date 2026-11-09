@@ -132,7 +132,7 @@ const CLAUDE_CLI_WRITE = /\bclaude\s+(config\s+(set|add|remove|rm)|mcp\s+(add|ad
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
 const EMOJIS = { critical: '🔒', high: '🛡️', strict: '⚠️' };
-const LOG_DIR = path.join(process.env.HOME || '/tmp', '.claude', 'hooks-logs');
+const LOG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.claude', 'hooks-logs');
 
 function log(data) {
   try {

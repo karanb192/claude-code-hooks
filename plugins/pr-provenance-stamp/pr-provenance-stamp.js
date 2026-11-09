@@ -45,17 +45,18 @@
  * before it runs"): this hook emits the documented shape,
  *
  *   { "hookSpecificOutput": { "hookEventName": "PreToolUse",
- *       "permissionDecision": "allow", "permissionDecisionReason": "...",
+ *       "permissionDecision": "ask", "permissionDecisionReason": "...",
  *       "updatedInput": { ...tool_input, "command": <rewritten> } } }
  *
- * `permissionDecision: "allow"` alongside `updatedInput` is the only combination
- * the docs illustrate and the only one field reports confirm is applied; the
- * docs do not define behavior when permissionDecision is omitted, so this hook
- * does not rely on that ambiguity. Two consequences worth knowing:
- *   - "allow" bypasses the permission prompt for THIS command: the user is NOT
- *     re-prompted, and the rewritten command is what executes (and what shows
- *     in the transcript). The hook only ever fires on `gh pr create` /
- *     `glab mr create`, and only appends to the --body argument.
+ * The docs pair `updatedInput` with "allow" (auto-approve) or "ask" (show the
+ * modified input to the user); they do not define it with the decision
+ * omitted. This hook returns "ask": a stamping hook must not grant a
+ * permission the user's own rules did not, and its shell scanner cannot
+ * prove that nothing else rides along in the command (ANSI-C quoting, odd
+ * separators). Consequences worth knowing:
+ *   - Every stamped `gh pr create` / `glab mr create` shows a permission
+ *     prompt with the rewritten command, even if a rule would have allowed it.
+ *     The hook only appends to the --body argument.
  *   - GitHub issue #15897 (updatedInput silently dropped) was a MULTI-hook
  *     aggregation bug: a later PreToolUse hook's empty result clobbered an
  *     earlier hook's updatedInput: reported fixed as of Claude Code v2.1.168.
@@ -620,6 +621,8 @@ function findUnsafeConstruct(command) {
     if (ch === '\\') { i++; continue; }
     if (ch === '`') return 'backtick';
     if (ch === '$' && command[i + 1] === '(') return 'command-substitution';
+    // ANSI-C ($'..') and locale ($"..") quoting have escape rules the tokenizer does not model.
+    if (ch === '$' && (command[i + 1] === "'" || command[i + 1] === '"') && !inD) return 'ansi-c-quote';
     if (inD) { if (ch === '"') inD = false; continue; }
     if (ch === "'") { inS = true; continue; }
     if (ch === '"') { inD = true; continue; }
@@ -892,15 +895,11 @@ function handlePreToolUse(data, dir = STATE_DIR, runGit = defaultRunGit) {
     agentPct: prov.agentPct,
   });
 
-  // Documented shape: updatedInput directly under hookSpecificOutput, with
-  // permissionDecision "allow": the only combination the docs illustrate and
-  // the only one field reports confirm is applied. NOTE: "allow" bypasses the
-  // permission prompt for this command; the rewritten command executes without
-  // a re-prompt. See the updatedInput SCHEMA caveat in the header.
+  // "ask", never "allow": see the updatedInput SCHEMA caveat in the header.
   return {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
-      permissionDecision: 'allow',
+      permissionDecision: 'ask',
       permissionDecisionReason: 'pr-provenance-stamp: appended provenance receipt to the --body argument',
       updatedInput: { ...tool_input, command: newCommand },
     },

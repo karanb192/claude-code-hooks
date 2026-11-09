@@ -69,7 +69,7 @@ const { execSync } = require('child_process');
 // Examples:
 //   iCloud:   path.join(process.env.HOME, 'Library/Mobile Documents/com~apple~CloudDocs/Claude-Code-Sessions')
 //   Obsidian: path.join(process.env.HOME, 'Obsidian/MyVault/claude-sessions')
-const SESSION_LOG_DIR = path.join(process.env.HOME, '.claude', 'sessions');
+const SESSION_LOG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.claude', 'sessions');
 
 // Max characters logged per bash command (first line only, then truncated).
 // Overridable via CC_SESSION_BASH_TRUNCATE (a positive integer); anything else
@@ -78,7 +78,7 @@ const envTruncate = Number(process.env.CC_SESSION_BASH_TRUNCATE);
 const BASH_TRUNCATE = Number.isInteger(envTruncate) && envTruncate > 0 ? envTruncate : 200;
 // ─────────────────────────────────────────────────────────────────────────────
 
-const LOG_DIR = path.join(process.env.HOME, '.claude', 'hooks-logs');
+const LOG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.claude', 'hooks-logs');
 const SESSION_DIR = process.env.CC_SESSION_LOG_DIR || SESSION_LOG_DIR;
 
 function log(data) {

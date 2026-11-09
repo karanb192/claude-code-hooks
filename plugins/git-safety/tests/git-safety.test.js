@@ -97,6 +97,40 @@ describe('Unit: checkCommand()', () => {
     it('blocks git push origin master', () => shouldBlock('git push origin master', 'push-master'));
     it('blocks git push master', () => shouldBlock('git push master', 'push-master'));
     it('blocks push to main with extra flags', () => shouldBlock('git push origin main --tags', 'push-main'));
+    it('blocks HEAD:main', () => shouldBlock('git push origin HEAD:main', 'push-main'));
+    it('blocks refs/heads/main', () => shouldBlock('git push origin HEAD:refs/heads/main', 'push-main'));
+    it('blocks a quoted main', () => shouldBlock('git push origin "main"', 'push-main'));
+    it('blocks main before a chained command', () => shouldBlock('git push origin main && echo done', 'push-main'));
+    it('allows a branch with main inside its name', () =>
+      shouldAllow('git push -u origin my-main-feature', 'my-main-feature'));
+    it('allows a branch starting with main-', () => shouldAllow('git push origin main-menu-fix', 'main-menu-fix'));
+    it('allows a branch ending in /master-plan', () => shouldAllow('git push origin feat/master-plan', 'feat/master-plan'));
+    it('allows a feature branch named feat/main', () => shouldAllow('git push origin feat/main', 'feat/main'));
+    it('does not read main from a later command', () => shouldAllow('git push origin feat; echo main', 'feat'));
+    it('a quoted separator does not end the push', () =>
+      shouldBlock('git push --push-option="a;b" origin HEAD:main', 'push-main', 'feat'));
+    it('blocks git -C repo push origin main', () => shouldBlock('git -C /repo push origin main', 'push-main', 'feat'));
+    it('blocks a backslash-newline before main', () => shouldBlock('git push origin \\\n  main', 'push-main', 'feat'));
+    it('a main in a comment is not a push to main', () => shouldAllow('git push origin feat # then main', 'feat'));
+    it('blocks git global options with separate, attached or quoted values', () => {
+      for (const c of ['git --git-dir /repo push origin main', 'git -C "my repo" push origin main', 'git -C. push origin main'])
+        shouldBlock(c, 'push-main', 'feat');
+    });
+    it('a quoted separator inside a ref or option is part of that word', () => {
+      for (const c of ['git push origin "topic;main"', 'git push -o "ci.skip;main" origin feature', 'git push origin "feature|main"'])
+        shouldAllow(c, 'feature');
+    });
+    it('a quoted -c value with a space stays one word', () =>
+      shouldBlock('git -c user.name="Ada Lovelace" push origin main', 'push-main', 'feat'));
+    it('a quoted refspec destination is still main', () => shouldBlock('git push origin HEAD:"main"', 'push-main', 'feat'));
+    it('main inside an option value is not the ref', () =>
+      shouldAllow('git push --push-option="deploy;main" origin feature', 'feature'));
+    it('blocks an escaped separator inside an option', () =>
+      shouldBlock('git push --push-option=a\\;b origin main', 'push-main', 'feat'));
+    it('a force flag in a comment is not a force push at strict', () =>
+      shouldAllow('git push origin feature # --force', 'feature', 'strict'));
+    it("a single-quoted pipe does not end the push", () =>
+      shouldBlock("git push -o 'ci.skip|x' origin master", 'push-master', 'feat'));
   });
 
   // ── Deleting protected branches ────────────────────────────────────────

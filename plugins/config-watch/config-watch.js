@@ -48,7 +48,7 @@ const path = require('path');
 const envBool = (key, fallback) => key in process.env ? process.env[key] === 'true' : fallback;
 const BLOCK_MODE = envBool('CONFIG_WATCH_BLOCK', false);
 
-const LOG_DIR = path.join(process.env.HOME || '/tmp', '.claude', 'hooks-logs');
+const LOG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.claude', 'hooks-logs');
 
 function log(data) {
   try {

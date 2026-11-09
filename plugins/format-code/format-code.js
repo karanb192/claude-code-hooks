@@ -24,7 +24,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const LOG_DIR = path.join(process.env.HOME, '.claude', 'hooks-logs');
+const LOG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.claude', 'hooks-logs');
 
 const PRETTIER_EXTS = new Set(['.js', '.ts', '.json', '.md', '.yaml', '.yml', '.html']);
 
