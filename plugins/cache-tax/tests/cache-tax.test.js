@@ -6,16 +6,23 @@
  * Or:  npm test
  */
 
-const { describe, it, before, after } = require('node:test');
+const { describe, it, after } = require('node:test');
 const assert = require('node:assert');
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+// Isolate imported functions too: their paths and settings are captured at load.
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cache-tax-'));
+for (const k of Object.keys(process.env)) if (k.startsWith('CACHE_TAX_')) delete process.env[k];
+process.env.HOME = tmp;
+process.env.USERPROFILE = tmp;
+after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+
 const SCRIPT = path.join(__dirname, '..', 'cache-tax.js');
 const mod = require(SCRIPT);
-const { family, priceFor, parseUsageLine, readLastUsage, scanTranscript, tierOf, stateFrom, statusLine, guard, resume, renderCard, fmtDur } = mod;
+const { family, priceFor, normalizeEntry, loadPriceTable, PRICES_FILE, parseUsageLine, readLastUsage, scanTranscript, tierOf, stateFrom, statusLine, guard, resume, renderCard, fmtDur } = mod;
 
 const HOUR = 3600 * 1000;
 
@@ -42,16 +49,14 @@ function writeTranscript(dir, lines) {
 }
 
 function run(payload, env = {}, args = []) {
-  const r = spawnSync('node', [SCRIPT, ...args], { input: JSON.stringify(payload), env: Object.assign({}, process.env, env), encoding: 'utf8' });
+  // Strip ambient CACHE_TAX_* so a developer's shell never changes the result.
+  const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('CACHE_TAX_')));
+  const r = spawnSync('node', [SCRIPT, ...args], { input: JSON.stringify(payload), env: Object.assign(base, { HOME: tmp, USERPROFILE: tmp }, env), encoding: 'utf8' });
   return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
 }
 
-let tmp;
-before(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cache-tax-')); });
-after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
-
 describe('pricing', () => {
-  it('maps model ids to the longest matching family', () => {
+  it('maps explicit model ids to their price families', () => {
     assert.strictEqual(family('claude-fable-5-1'), 'fable-5-1');
     assert.strictEqual(family('claude-fable-5'), 'fable-5');
     assert.strictEqual(family('claude-opus-5'), 'opus-5');
@@ -59,6 +64,78 @@ describe('pricing', () => {
     assert.strictEqual(family('claude-sonnet-5'), 'sonnet-5');
     assert.strictEqual(family('claude-sonnet-4-6'), 'sonnet');
     assert.strictEqual(family('something-else'), null);
+  });
+  it('prices every active canonical model and the deprecated Preview model', () => {
+    const rows = [
+      ['fable-5-1', 0.25, 12.5, 20], ['mythos-5-1', 0.25, 12.5, 20],
+      ['fable-5', 1, 12.5, 20], ['mythos-5', 1, 12.5, 20],
+      ['opus-5-5', 0.2, 5, 8], ['opus-5', 0.5, 6.25, 10],
+      ['opus-4-8', 0.5, 6.25, 10], ['opus-4-7', 0.5, 6.25, 10],
+      ['opus-4-6', 0.5, 6.25, 10], ['opus-4-5-20251101', 0.5, 6.25, 10],
+      ['sonnet-5-5', 0.1, 2.5, 4], ['sonnet-5', 0.2, 2.5, 4],
+      ['sonnet-4-6', 0.3, 3.75, 6], ['haiku-5-5', 0.01, 0.125, 0.2],
+      ['haiku-4-5-20251001', 0.1, 1.25, 2], ['mythos-preview', 2.5, 31.25, 50],
+    ];
+    for (const [id, ...rates] of rows) {
+      const p = priceFor(`claude-${id}`, 100000);
+      assert.ok(p, id);
+      assert.deepStrictEqual([p.read, p.write5m, p.write1h], rates, id);
+    }
+    assert.strictEqual(priceFor('claude-mythos-preview', 1000000).write1h, 50);
+  });
+  it('accepts known provider wrappers and exact dated aliases without changing rates', () => {
+    for (const prefix of ['anthropic.', 'us.anthropic.', 'eu.anthropic.', 'apac.anthropic.', 'global.anthropic.']) {
+      for (const suffix of ['', '-v1', '-v1:0']) {
+        assert.deepStrictEqual(priceFor(`${prefix}claude-opus-4-5-20251101${suffix}`), priceFor('claude-opus-4-5'));
+      }
+      assert.deepStrictEqual(priceFor(`${prefix}claude-opus-5-5`), priceFor('claude-opus-5-5'));
+    }
+    assert.deepStrictEqual(priceFor('CLAUDE-OPUS-5-5'), priceFor('claude-opus-5-5'));
+    for (const [id, canonical] of [
+      ['claude-opus-4-5@20251101', 'claude-opus-4-5'],
+      ['claude-sonnet-4-5@20250929', 'claude-sonnet-4-5'],
+      ['claude-haiku-4-5@20251001', 'claude-haiku-4-5'],
+      ['claude-3-5-haiku@20241022', 'claude-3-5-haiku-20241022'],
+      ['claude-3-5-haiku-latest', 'claude-3-5-haiku-20241022'],
+    ]) assert.deepStrictEqual(priceFor(id), priceFor(canonical), id);
+  });
+  it('does not guess prices for unknown versions, snapshots, providers or retired models', () => {
+    for (const id of [
+      'claude-sonnet-99', 'claude-haiku-99', 'claude-opus-4-999', 'claude-opus-5-foo',
+      'claude-fable-5-2', 'claude-mythos-preview-2', 'claude-mythos-preview-20260601',
+      'claude-3-haiku-20240307', 'claude-3-opus-20240229', 'claude-sonnet-4-7',
+      'claude-opus-4-5-20990101', 'claude-opus-4-5@20990101', 'claude-opus-4-5-latest',
+      'claude-opus-5-5-v1', 'anthropic.claude-opus-5-5-v99:0',
+      'vendor.claude-sonnet-4-6', 'foo-anthropic.claude-opus-5-5', 'anthropic.opus-5-5',
+      'not-claude-opus-5-5', 'claude-opus-5-5-extra', 'sonnet', 'haiku', 'opus-4',
+      '__proto__', 'constructor', 'toString', '', null,
+    ]) {
+      assert.strictEqual(family(id), null, String(id));
+      assert.strictEqual(priceFor(id, 100000), null, String(id));
+    }
+  });
+  it('normalizes the documented trailing 1M context option before provider wrappers', () => {
+    for (const id of [
+      'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-5-5', 'claude-fable-5-1',
+      'anthropic.claude-opus-4-6-v1', 'us.anthropic.claude-opus-4-6-v1:0',
+      'global.anthropic.claude-opus-5-5',
+    ]) {
+      assert.deepStrictEqual(priceFor(`${id}[1m]`, 400000), priceFor(id, 400000), id);
+      assert.strictEqual(family(`${id}[1m]`), family(id), id);
+    }
+    assert.deepStrictEqual(priceFor('CLAUDE-OPUS-4-6[1M]'), priceFor('claude-opus-4-6'));
+    for (const id of [
+      'claude-opus-99[1m]', 'claude-opus-4-999[1m]', 'claude-opus-5-5[2m]',
+      'claude-opus-5-5[fast]', 'claude-opus-5-5[]', 'claude-opus-5-5[1m][1m]',
+      'claude-opus-5-5[1m]-extra', 'claude-opus-5-5[1m', 'claude-opus-[1m]5-5',
+    ]) assert.strictEqual(priceFor(id, 400000), null, id);
+  });
+  it('uses actual tokens for price tiers, not the 1M context option', () => {
+    for (const ctx of [99999, 100000, 100001, 1000000]) {
+      assert.deepStrictEqual(priceFor('claude-haiku-5-5[1m]', ctx), priceFor('claude-haiku-5-5', ctx));
+    }
+    assert.strictEqual(priceFor('claude-haiku-5-5[1m]', 100000).write1h, 0.2);
+    assert.strictEqual(priceFor('claude-haiku-5-5[1m]', 100001).write1h, 1);
   });
   it('prices Sonnet 5 below Sonnet 4.x', () => {
     assert.deepStrictEqual([priceFor('claude-sonnet-5').read, priceFor('claude-sonnet-5').write5m, priceFor('claude-sonnet-5').write1h], [0.2, 2.5, 4]);
@@ -70,6 +147,7 @@ describe('pricing', () => {
     assert.deepStrictEqual(rate('claude-opus-5-5'), [0.2, 5, 8]);
     assert.deepStrictEqual(rate('claude-sonnet-5-5'), [0.1, 2.5, 4]);
     assert.deepStrictEqual(rate('claude-mythos-5-1'), [0.25, 12.5, 20]);
+    assert.deepStrictEqual(rate('claude-mythos-5'), [1, 12.5, 20]);
     assert.deepStrictEqual(rate('claude-3-5-haiku-20241022'), [0.08, 1, 1.6]);
     for (const m of ['claude-opus-4-1-20250805', 'claude-opus-4-20250514', 'claude-opus-4@20250514', 'claude-opus-4-1@20250805',
       'anthropic.claude-opus-4-1-20250805-v1:0', 'anthropic.claude-opus-4-20250514-v1:0', 'claude-opus-4-1', 'claude-opus-4-0']) {
@@ -89,6 +167,230 @@ describe('pricing', () => {
     const p = priceFor('claude-fable-5-1');
     assert.strictEqual(p.write1h / p.read, 80);
     assert.strictEqual(p.write5m, 12.5);
+  });
+  it('maps the 5.5 models ahead of their 5 and 4.x namesakes', () => {
+    assert.strictEqual(family('claude-opus-5-5'), 'opus-5-5');
+    assert.strictEqual(family('claude-sonnet-5-5'), 'sonnet-5-5');
+    assert.strictEqual(family('claude-haiku-5-5'), 'haiku-5-5');
+    assert.strictEqual(family('claude-haiku-4-5'), 'haiku');
+  });
+  it('prices Opus 4 and 4.1 at their own rates, not the Opus 4.5 - 4.8 rates', () => {
+    for (const id of ['claude-opus-4-1-20250805', 'claude-opus-4-1', 'claude-opus-4-20250514', 'claude-opus-4-0', 'anthropic.claude-opus-4-20250514-v1:0']) {
+      const p = priceFor(id, 100000);
+      assert.deepStrictEqual([p.read, p.write5m, p.write1h], [1.5, 18.75, 30], id);
+    }
+    for (const id of ['claude-opus-4-5-20251101', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8']) {
+      const p = priceFor(id, 100000);
+      assert.deepStrictEqual([p.family, p.read, p.write5m, p.write1h], ['opus-4', 0.5, 6.25, 10], id);
+    }
+  });
+  it('prices Opus 5.5 and Sonnet 5.5 at the 2026-10-07 list rates', () => {
+    const o = priceFor('claude-opus-5-5', 300000);
+    assert.deepStrictEqual([o.read, o.write5m, o.write1h], [0.2, 5, 8]);
+    const s = priceFor('claude-sonnet-5-5', 300000);
+    assert.deepStrictEqual([s.read, s.write5m, s.write1h], [0.1, 2.5, 4]);
+  });
+  it('steps Haiku 5.5 up a tier past 100k tokens of context', () => {
+    const lo = priceFor('claude-haiku-5-5', 100000);
+    assert.deepStrictEqual([lo.read, lo.write5m, lo.write1h], [0.01, 0.125, 0.2]);
+    const hi = priceFor('claude-haiku-5-5', 100001);
+    assert.deepStrictEqual([hi.read, hi.write5m, hi.write1h], [0.05, 0.625, 1]);
+  });
+  it('prices a cold Haiku 5.5 comeback at the tier its context lands in', () => {
+    const now = Date.now();
+    const st = stateFrom(parseUsageLine(usageLine({ model: 'claude-haiku-5-5', ts: now - 2 * HOUR, write: 1000, read: 199000 })), now);
+    assert.ok(Math.abs(st.rewriteUsd - 200002 * 1 / 1e6) < 1e-9);
+    assert.ok(Math.abs(st.warmUsd - 200002 * 0.05 / 1e6) < 1e-9);
+  });
+});
+
+describe('prices.json', () => {
+  const raw = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'prices.json'), 'utf8'));
+  it('is the file the script loads, and it loads cleanly', () => {
+    assert.strictEqual(PRICES_FILE, path.join(__dirname, '..', 'prices.json'));
+    const t = loadPriceTable();
+    assert.strictEqual(t.error, null);
+    assert.deepStrictEqual(Object.keys(t.families).sort(), Object.keys(raw.families).sort(), 'every family parses; none silently dropped');
+  });
+  it('records an ISO effective date and an https source', () => {
+    assert.match(raw.effective, /^\d{4}-\d{2}-\d{2}$/);
+    assert.ok(Number.isFinite(Date.parse(raw.effective)));
+    assert.match(raw.source, /^https:\/\//);
+  });
+  it('records the Preview input source and cache-rate derivation', () => {
+    const p = raw.families['mythos-preview'];
+    assert.strictEqual(p.source, 'https://www.anthropic.com/glasswing');
+    assert.match(p.cacheSource, /claude\.com\/docs\/en\/build-with-claude\/prompt-caching#pricing$/);
+    assert.match(p.basis, /Derived from \$25\/MTok input/);
+    assert.deepStrictEqual([p.read, p.write5m, p.write1h], [25 * 0.1, 25 * 1.25, 25 * 2]);
+  });
+  it('lists unique exact model aliases and routes each one to its own family', () => {
+    const seen = new Set();
+    for (const [key, entry] of Object.entries(raw.families)) {
+      const ids = entry.models || [key];
+      assert.ok(Array.isArray(ids) && ids.length, key);
+      for (const id of ids) {
+        assert.match(id, /^[a-z0-9-]+(?:@\d{8})?$/);
+        assert.ok(!seen.has(id), `duplicate model ${id}`);
+        seen.add(id);
+        assert.strictEqual(family(`claude-${id}`), key, id);
+      }
+    }
+  });
+  it('has sane rates: lowercase keys, read <= 5m write <= 1h write, ascending tiers ending unbounded', () => {
+    for (const [k, v] of Object.entries(raw.families)) {
+      assert.strictEqual(k, k.toLowerCase(), k);
+      assert.ok(typeof v.name === 'string' && v.name, `${k} has a display name`);
+      const tiers = normalizeEntry(v);
+      assert.ok(tiers, `${k} parses`);
+      for (const t of tiers) assert.ok(t.read <= t.write5m && t.write5m <= t.write1h, `${k} rate order`);
+      assert.strictEqual(tiers[tiers.length - 1].maxContext, null, `${k} last tier is unbounded`);
+      for (let i = 1; i < tiers.length; i++) assert.ok(tiers[i - 1].maxContext < (tiers[i].maxContext == null ? Infinity : tiers[i].maxContext), `${k} tiers ascend`);
+    }
+  });
+});
+
+describe('price overrides and a missing table', () => {
+  const now = Date.now();
+  const pc = { warm: true, ttl: '1h', expires_at: now / 1000 + 1800, recache_tokens_if_cold: 400000 };
+  it('accepts the legacy array form in CACHE_TAX_PRICES', () => {
+    const r = run({ model: { id: 'claude-fable-5-1' }, prompt_cache: pc }, { CACHE_TAX_PRICES: '{"fable-5-1":[0.5,25,40]}' }, ['--statusline']);
+    assert.match(r.out, /cold costs \$16\.00$/);
+  });
+  it('accepts a tiered object in CACHE_TAX_PRICES', () => {
+    const r = run({ model: { id: 'claude-opus-5-5' }, prompt_cache: pc }, { CACHE_TAX_PRICES: '{"opus-5-5":{"tiers":[{"maxContext":200000,"read":0.2,"write5m":5,"write1h":8},{"read":0.4,"write5m":10,"write1h":16}]}}' }, ['--statusline']);
+    assert.match(r.out, /cold costs \$6\.40$/);
+  });
+  it('keeps known family aliases and supports exact new model overrides', () => {
+    process.env.CACHE_TAX_PRICES = JSON.stringify({
+      sonnet: [1, 2, 3], 'claude-sonnet-99': [4, 5, 6],
+      custom: { read: 7, write5m: 8, write1h: 9, models: ['claude-new-model', 'new-model@20261109'] },
+    });
+    try {
+      assert.strictEqual(priceFor('claude-sonnet-4-6').write1h, 3);
+      assert.strictEqual(priceFor('claude-sonnet-99').write1h, 6);
+      assert.strictEqual(priceFor('claude-new-model').write1h, 9);
+      assert.strictEqual(priceFor('claude-new-model@20261109').write1h, 9);
+      assert.strictEqual(priceFor('claude-sonnet-99-extra'), null);
+      assert.strictEqual(priceFor('claude-new-model-2'), null);
+    } finally { delete process.env.CACHE_TAX_PRICES; }
+  });
+  it('lets exact model overrides take priority over a shared family', () => {
+    for (const extra of [
+      { sonnet: [1, 2, 3], 'sonnet-4-6': [4, 5, 6] },
+      { 'sonnet-4-6': [4, 5, 6], sonnet: [1, 2, 3] },
+    ]) {
+      process.env.CACHE_TAX_PRICES = JSON.stringify(extra);
+      try {
+        assert.strictEqual(priceFor('claude-sonnet-4-6').write1h, 6);
+        assert.strictEqual(priceFor('claude-sonnet-4-5').write1h, 3);
+      } finally { delete process.env.CACHE_TAX_PRICES; }
+    }
+  });
+  it('applies family and exact model overrides with the 1M context option', () => {
+    process.env.CACHE_TAX_PRICES = JSON.stringify({
+      'opus-4': [1, 2, 3], 'claude-opus-5-5[1m]': [4, 5, 6],
+      custom: { read: 7, write5m: 8, write1h: 9, models: ['my-gateway-model[1m]'] },
+    });
+    try {
+      assert.strictEqual(priceFor('claude-opus-4-6[1m]').write1h, 3);
+      assert.strictEqual(priceFor('claude-opus-5-5[1m]').write1h, 6);
+      assert.strictEqual(priceFor('claude-opus-5-5').write1h, 6);
+      assert.strictEqual(priceFor('my-gateway-model[1m]').write1h, 9);
+      assert.strictEqual(priceFor('my-gateway-model').write1h, 9);
+    } finally { delete process.env.CACHE_TAX_PRICES; }
+    const r = run({ model: { id: 'claude-opus-4-6[1m]' }, prompt_cache: { ...pc, warm: false, expires_at: 0 } }, {
+      CACHE_TAX_PRICES_FILE: path.join(tmp, 'missing-1m-prices.json'),
+      CACHE_TAX_PRICES: '{"opus-4-6":[1,2,3]}',
+    }, ['--statusline']);
+    assert.strictEqual(r.code, 0);
+    assert.match(r.out, /400k = \$1\.20$/);
+  });
+  it('rejects malformed context thresholds without coercion or exceptions', () => {
+    for (const maxContext of [{ toString: 'oops' }, {}, [], [100000], true, false, '100000', 'Infinity', 0, -1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      assert.strictEqual(normalizeEntry({ tiers: [{ maxContext, read: 1, write5m: 2, write1h: 3 }] }), null, JSON.stringify(maxContext));
+    }
+    assert.ok(normalizeEntry({ tiers: [{ maxContext: 100000, read: 0, write5m: 0, write1h: 0 }, { read: 1, write5m: 2, write1h: 3 }] }));
+  });
+  it('ignores a malformed tier override and still uses the built-in rates (integration)', () => {
+    const r = run({ model: { id: 'claude-opus-5-5' }, prompt_cache: { ...pc, warm: false, expires_at: 0 } }, {
+      CACHE_TAX_PRICES: JSON.stringify({ 'opus-5-5': { tiers: [{ maxContext: { toString: 'oops' }, read: 1, write5m: 2, write1h: 3 }] } }),
+    }, ['--statusline']);
+    assert.strictEqual(r.code, 0);
+    assert.doesNotMatch(r.err, /TypeError|Cannot convert object to primitive value/);
+    assert.match(r.out, /400k = \$3\.20$/);
+  });
+  it('skips malformed file entries while retaining valid ones and environment overrides', () => {
+    const f = path.join(tmp, 'invalid-tier-prices.json');
+    fs.writeFileSync(f, JSON.stringify({ families: {
+      'opus-5-5': { tiers: [{ maxContext: { toString: 'oops' }, read: 1, write5m: 2, write1h: 3 }] },
+      'sonnet-5-5': { read: 1, write5m: 2, write1h: 3 },
+    } }));
+    const cold = { ...pc, warm: false, expires_at: 0 };
+    for (const [id, extra, expected] of [
+      ['opus-5-5', {}, 'n/a'], ['sonnet-5-5', {}, '$1.20'],
+      ['opus-5-5', { CACHE_TAX_PRICES: '{"opus-5-5":[1,2,4]}' }, '$1.60'],
+    ]) {
+      const r = run({ model: { id: `claude-${id}` }, prompt_cache: cold }, { CACHE_TAX_PRICES_FILE: f, ...extra }, ['--statusline']);
+      assert.strictEqual(r.code, 0);
+      assert.doesNotMatch(r.err, /TypeError|Cannot convert object to primitive value/);
+      assert.ok(r.out.endsWith(`400k = ${expected}`), r.out);
+    }
+  });
+  it('reads CACHE_TAX_PRICES_FILE instead of the bundled table', () => {
+    const f = path.join(tmp, 'my-prices.json');
+    fs.writeFileSync(f, JSON.stringify({ effective: '2027-01-01', source: 'https://example.com', families: { 'opus-5-5': { name: 'x', read: 1, write5m: 2, write1h: 3 } } }));
+    const r = run({ model: { id: 'claude-opus-5-5' }, prompt_cache: pc }, { CACHE_TAX_PRICES_FILE: f }, ['--statusline']);
+    assert.match(r.out, /cold costs \$1\.20$/);
+  });
+  it('degrades to token counts and n/a when the table is missing or broken, never crashing', () => {
+    const missing = path.join(tmp, 'nope.json');
+    // A fixed expired cache tests the fallback without racing a minute boundary.
+    const cold = { ...pc, warm: false, expires_at: 0 };
+    const r = run({ model: { id: 'claude-opus-5-5' }, prompt_cache: cold }, { CACHE_TAX_PRICES_FILE: missing }, ['--statusline']);
+    assert.strictEqual(r.code, 0);
+    assert.match(r.out, /^cache COLD · next msg re-writes 400k = n\/a$/);
+    const bad = path.join(tmp, 'bad.json');
+    fs.writeFileSync(bad, '{ not json');
+    const broken = run({ model: { id: 'claude-opus-5-5' }, prompt_cache: cold }, { CACHE_TAX_PRICES_FILE: bad }, ['--statusline']);
+    assert.strictEqual(broken.code, 0);
+    assert.strictEqual(broken.out, r.out);
+  });
+  it('says on the card where its prices came from, or why there are none', () => {
+    const p = writeTranscript(tmp, [{ ts: now - 3 * HOUR, write: 1000, read: 299000 }]);
+    assert.match(run({}, {}, ['--render', '--transcript', p]).out, /prices      list rates effective \d{4}-\d{2}-\d{2}, from prices\.json/);
+    const r = run({}, { CACHE_TAX_PRICES_FILE: path.join(tmp, 'nope.json') }, ['--render', '--transcript', p]);
+    assert.match(r.out, /prices      none loaded \(.*nope\.json: ENOENT\)/);
+    assert.match(r.out, /cold cost   n\/a/);
+  });
+  it('renders unavailable session spending as n/a with a missing or broken file', () => {
+    const p = writeTranscript(tmp, [
+      { ts: now - 4 * HOUR, write: 100000, id: 'a' },
+      { ts: now - 3 * HOUR, write: 500, read: 100000, id: 'b' },
+      { ts: now - 2 * HOUR, write: 100500, id: 'c' },
+    ]);
+    const bad = path.join(tmp, 'bad-totals.json');
+    fs.writeFileSync(bad, '{ not json');
+    for (const file of [path.join(tmp, 'nope.json'), bad]) {
+      const r = run({}, { CACHE_TAX_PRICES_FILE: file }, ['--render', '--transcript', p]);
+      assert.strictEqual(r.code, 0);
+      assert.match(r.out, /session     3 requests · writes 201k tok n\/a · reads 100k tok n\/a/);
+      assert.match(r.out, /full misses 1 \(n\/a\)/);
+      assert.doesNotMatch(r.out, /\$0\.00/);
+    }
+  });
+  it('uses and identifies valid overrides when the file is unavailable', () => {
+    const p = writeTranscript(tmp, [{ ts: now - 3 * HOUR, write: 100000, read: 200000 }]);
+    const bad = path.join(tmp, 'bad-overrides.json');
+    fs.writeFileSync(bad, '{ not json');
+    for (const file of [path.join(tmp, 'nope.json'), bad]) {
+      const r = run({}, { CACHE_TAX_PRICES_FILE: file, CACHE_TAX_PRICES: '{"fable-5-1":[0.5,25,40]}' }, ['--render', '--transcript', p]);
+      assert.strictEqual(r.code, 0);
+      assert.match(r.out, /cold cost   \$12\.00/);
+      assert.match(r.out, /session     1 requests · writes 100k tok \$4\.00 · reads 200k tok \$0\.10/);
+      assert.match(r.out, /prices      file unavailable .*; using CACHE_TAX_PRICES where matched/);
+      assert.doesNotMatch(r.out, /none loaded/);
+    }
   });
 });
 
@@ -129,6 +431,66 @@ describe('transcript parsing', () => {
     assert.strictEqual(t.fullMisses, 1);
     assert.ok(t.fullMissUsd > 2, 'full miss priced at the 1h write rate');
   });
+  it('keeps mixed-model totals unknown after an unpriced contribution', () => {
+    const p = writeTranscript(tmp, [
+      { ts: 1000, write: 100000, read: 1000, id: 'a' },
+      { ts: 2000, model: 'unpriced-model', write: 100000, read: 1000, id: 'b' },
+      { ts: 3000, write: 100000, read: 1000, id: 'c' },
+    ]);
+    const t = scanTranscript(p);
+    assert.strictEqual(t.requests, 3);
+    assert.strictEqual(t.write, 300000);
+    assert.strictEqual(t.read, 3000);
+    assert.strictEqual(t.fullMisses, 2);
+    assert.strictEqual(t.writeUsd, null);
+    assert.strictEqual(t.readUsd, null);
+    assert.strictEqual(t.fullMissUsd, null);
+  });
+  it('keeps unsupported versions unavailable in status lines and session totals', () => {
+    const now = Date.now();
+    const p = writeTranscript(tmp, [
+      { ts: now - 4 * HOUR, model: 'claude-haiku-4-5', write: 100000, read: 1000, id: 'a' },
+      { ts: now - 3 * HOUR, model: 'claude-haiku-99', write: 100000, read: 1000, id: 'b' },
+    ]);
+    assert.strictEqual(scanTranscript(p).writeUsd, null);
+    const r = run({}, {}, ['--render', '--transcript', p]);
+    assert.strictEqual(r.code, 0);
+    assert.match(r.out, /cold cost   n\/a/);
+    assert.match(r.out, /writes 200k tok n\/a · reads 2k tok n\/a/);
+    const line = run({ model: { id: 'claude-sonnet-99' }, prompt_cache: { warm: false, ttl: '1h', expires_at: 0, recache_tokens_if_cold: 100000 } }, {}, ['--statusline']);
+    assert.strictEqual(line.code, 0);
+    assert.strictEqual(line.out, 'cache COLD · next msg re-writes 100k = n/a');
+  });
+  it('prices 1M-suffixed transcript usage and mixed session totals', () => {
+    const p = writeTranscript(tmp, [
+      { ts: 1000, model: 'claude-opus-5-5', write: 100000, read: 1000, input: 0, id: 'a' },
+      { ts: 2000, model: 'claude-opus-5-5[1m]', write: 100000, read: 1000, input: 0, id: 'b' },
+    ]);
+    const t = scanTranscript(p);
+    assert.strictEqual(t.writeUsd, 1.6);
+    assert.strictEqual(t.readUsd, 0.0004);
+    const r = run({}, {}, ['--render', '--transcript', p]);
+    assert.strictEqual(r.code, 0);
+    assert.match(r.out, /writes 200k tok \$1\.60/);
+    assert.doesNotMatch(r.out, /n\/a/);
+  });
+  it('does not mark absent cache usage as unpriced spending', () => {
+    const p = writeTranscript(tmp, [
+      { ts: 1000, model: 'unpriced-model', input: 1000, id: 'a' },
+      { ts: 2000, write: 100000, read: 1000, id: 'b' },
+    ]);
+    const t = scanTranscript(p);
+    assert.strictEqual(t.writeUsd, 2);
+    assert.strictEqual(t.readUsd, 0.00025);
+    assert.strictEqual(t.fullMissUsd, 0);
+  });
+  it('keeps explicit zero-dollar overrides distinct from unavailable rates', () => {
+    const p = writeTranscript(tmp, [{ ts: Date.now(), write: 100000, read: 100000 }]);
+    const r = run({}, { CACHE_TAX_PRICES: '{"fable-5-1":[0,0,0]}' }, ['--render', '--transcript', p]);
+    assert.strictEqual(r.code, 0);
+    assert.match(r.out, /writes 100k tok \$0\.00 · reads 100k tok \$0\.00/);
+    assert.doesNotMatch(r.out, /n\/a/);
+  });
 });
 
 describe('state', () => {
@@ -166,6 +528,13 @@ describe('status line', () => {
     const now = Date.now();
     const line = statusLine({ model: { id: 'claude-opus-5' }, prompt_cache: { warm: false, ttl: '1h', expires_at: now / 1000 - 5, recache_tokens_if_cold: 100000 } }, now);
     assert.match(line, /^cache COLD · next msg re-writes 100k = \$1\.00$/);
+  });
+  it('prices cold native 1M-context status lines (integration)', () => {
+    for (const [id, cost] of [['claude-opus-5-5[1m]', '$3.20'], ['claude-opus-4-6[1m]', '$4.00']]) {
+      const r = run({ model: { id }, prompt_cache: { warm: false, ttl: '1h', expires_at: 0, recache_tokens_if_cold: 400000 } }, {}, ['--statusline']);
+      assert.strictEqual(r.code, 0);
+      assert.strictEqual(r.out, `cache COLD · next msg re-writes 400k = ${cost}`);
+    }
   });
   it('falls back to the transcript', () => {
     const now = Date.now();

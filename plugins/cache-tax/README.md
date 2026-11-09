@@ -8,11 +8,14 @@ Claude Code's main conversation rides a 1-hour prompt cache. Come back at minute
 
 ## A cache countdown row in a status line you already have
 
-No plugin install needed. `cache-tax.js` is one file with no dependencies. Copy it, then call it from your own status line script with the same stdin Claude Code sends you, and print its line as one more row:
+No plugin install needed. `cache-tax.js` has no dependencies; it reads its list prices from `prices.json` beside it. Copy both, then call the script from your own status line script with the same stdin Claude Code sends you, and print its line as one more row:
 
 ```
 curl -fsSL https://raw.githubusercontent.com/karanb192/claude-code-hooks/main/plugins/cache-tax/cache-tax.js -o ~/.claude/cache-tax.js
+curl -fsSL https://raw.githubusercontent.com/karanb192/claude-code-hooks/main/plugins/cache-tax/prices.json -o ~/.claude/prices.json
 ```
+
+Without `prices.json` next to it (or `CACHE_TAX_PRICES_FILE` pointing at one) the row still counts down and shows token counts, with `n/a` in place of dollars.
 
 ```sh
 # inside your status line script, where $input holds the JSON Claude Code piped in
@@ -92,9 +95,32 @@ All optional, set via environment variables:
 | `CACHE_TAX_BIG` | `50000` | Context size in tokens below which the guard stays quiet. |
 | `CACHE_TAX_BLOCK` | unset | `1` makes the guard refuse a cold prompt once (exit 2) instead of warning. The resend goes through. |
 | `CACHE_TAX_TTL` | auto | Force `5m` or `1h` when the transcript has no cache-write tier to infer from. |
-| `CACHE_TAX_PRICES` | list rates | JSON overriding per-family prices as `[cache read, 5m write, 1h write]` in $/MTok, e.g. `{"fable-5-1":[0.25,12.5,20]}`. |
+| `CACHE_TAX_PRICES` | unset | JSON overriding single families on top of `prices.json`, in $/MTok. Either `[cache read, 5m write, 1h write]`, e.g. `{"fable-5-1":[0.25,12.5,20]}`, or the same object shape `prices.json` uses (tiers included). |
+| `CACHE_TAX_PRICES_FILE` | `prices.json` beside the script | Path to a different price table, in the same format. |
 
-Built-in list rates (October 2026): Fable 5.1 and Mythos 5.1 `[0.25, 12.5, 20]`, Fable 5 and Mythos 5 `[1, 12.5, 20]`, Opus 5.5 `[0.2, 5, 8]`, Opus 5 and 4.5 to 4.8 `[0.5, 6.25, 10]`, Opus 4 and 4.1 `[1.5, 18.75, 30]`, Sonnet 5.5 `[0.1, 2.5, 4]`, Sonnet 5 `[0.2, 2.5, 4]`, Sonnet 4.x `[0.3, 3.75, 6]`, Haiku 5.5 `[0.01, 0.125, 0.2]` up to 100k prompt tokens and `[0.05, 0.625, 1]` above, Haiku 4.5 `[0.1, 1.25, 2]`, Haiku 3.5 `[0.08, 1, 1.6]`. Unknown models get token counts and no dollar figure. If you are on a subscription the dollars are what the same traffic would cost at API list price, which is the only public yardstick; how a cache write weighs against your plan limits is not documented.
+## Prices
+
+List rates live in [`prices.json`](prices.json), next to the script, with the date they took effect and the rate card they came from. As shipped: Claude API list prices effective **2026-10-07**, Standard tier, Global scope, in $/MTok as cache read / 5m write / 1h write:
+
+- Fable 5.1 and Mythos 5.1 `0.25 / 12.5 / 20`, Fable 5 and Mythos 5 `1 / 12.5 / 20`
+- Mythos Preview `2.50 / 31.25 / 50`. This deprecated model has no announced retirement date. These cache rates are derived from the [published $25/MTok input rate](https://www.anthropic.com/glasswing) and the [standard 0.1× read, 1.25× 5m-write and 2× 1h-write multipliers](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#pricing), not an explicit cache-price row. Its entry records both sources.
+- Opus 5.5 `0.20 / 5 / 8`, Opus 5 and 4.5-4.8 `0.50 / 6.25 / 10`
+- Opus 4 and 4.1 `1.50 / 18.75 / 30`. These two are retired on the Claude API and are not on the 2026-10-07 rate card. Their rates come from the pricing page, and their entries carry that page as their own `source`.
+- Sonnet 5.5 `0.10 / 2.5 / 4`, Sonnet 5 `0.20 / 2.5 / 4`, Sonnet 4.x `0.30 / 3.75 / 6`
+- Haiku 5.5 `0.01 / 0.125 / 0.20` up to 100k tokens of context and `0.05 / 0.625 / 1` past it; Haiku 4.5 `0.10 / 1.25 / 2`; Haiku 3.5 `0.08 / 1 / 1.6`
+
+`/cache-tax:status` prints the effective date it is using. Only explicitly listed model IDs and aliases are priced. The documented trailing [`[1m]` context option](https://code.claude.com/docs/en/model-config) is removed before matching; it does not change the model’s rate or force a context-price tier. Actual token counts still select the tier. Unknown versions, unlisted snapshots and unsupported retired models get token counts and no dollar figure. Bedrock IDs with `anthropic.` or `us.`, `eu.`, `apac.`, `global.` inference-profile prefixes (and the legacy `-v1`/`-v1:0` suffix) use the same Standard/Global Claude API yardstick, not the provider’s bill. If you are on a subscription the dollars are what the same traffic would cost at API list price, which is the only public yardstick; how a cache write weighs against your plan limits is not documented.
+
+If a contributing request has no price, its session dollar total shows `n/a`, rather than zero or a partial sum. Valid `CACHE_TAX_PRICES` overrides still work when the price file is missing or unreadable, and the card identifies that fallback. A known family override keeps its listed model aliases; a new override key matches that exact model ID only. An optional `models` array adds explicit aliases. Without a usable file, supply exact model IDs or a `models` list because the file’s family aliases are unavailable. Malformed rates or non-integer, non-positive, or non-finite `maxContext` thresholds are ignored, rather than coerced.
+
+### Updating prices
+
+1. Get the current rate card. Anthropic publishes it as a dated PDF ("Claude Model Pricing — List Prices by Platform") linked from the [pricing page](https://platform.claude.com/docs/en/about-claude/pricing). Use the **Claude API**, **Standard**, **Global** row of each model. The three columns cache-tax needs are **Cache hits & refreshes** (`read`), **5m cache writes** (`write5m`) and **1h cache writes** (`write1h`).
+2. Edit `prices.json`: set `effective` to the rate card's effective date (`YYYY-MM-DD`) and `source` to its URL, then change or add entries under `families`.
+3. A family key matches an exact model ID without the `claude-` prefix (`claude-opus-5-5` → `opus-5-5`). To group models or support dated snapshots and Google Cloud `@date` IDs, add a `models` array listing each exact ID, also without the `claude-` prefix. When present, that array replaces the key as the set of matching IDs; it is not a prefix or wildcard. Keep IDs unique across families. New versions need their own entry or an explicit addition to a same-price family. Give each entry a `name` for humans. If rates come from somewhere other than the top-level `source`, record the entry’s own source and any derivation.
+4. A model whose rate steps up with context size gets `tiers` instead of flat rates: each tier has the three rates plus an integer `maxContext`, the largest context in tokens it covers, and the last tier has no `maxContext`. Context means everything the request sends (input plus cache read plus cache write), the same figure the re-write is priced on. See `haiku-5-5`.
+5. Run `node --test plugins/cache-tax/tests/cache-tax.test.js`. It checks that every family parses, rates are ordered read ≤ 5m write ≤ 1h write, tiers ascend and end unbounded, and the date and source are filled in. Add a `priceFor` assertion for any family you added.
+6. Bump `version` in `.claude-plugin/plugin.json` so installed copies pick up the new table.
 
 ## How it decides
 
@@ -107,7 +133,7 @@ Hooks receive no token counts, so nothing here comes from the hook input except 
 - Claude Code only. It reads the transcript Claude Code writes and the fields Claude Code sends; nothing here runs under Codex, Cursor or a raw API client.
 - Needs node on PATH, like every plugin in this marketplace.
 - The status line row is wired by hand (plugins cannot ship one), so the countdown is only as live as your `refreshInterval`; the cold flip itself is event-driven and needs no timer.
-- Dollars are API list prices. On a subscription they are the yardstick, not the bill, and how a cache write weighs against the 5-hour and weekly limits is not documented anywhere I could find.
+- Dollars use Standard tier, Global scope API list prices. Batch discounts, Fast mode and regional inference premiums are not applied. On a subscription they are the yardstick, not the bill, and how a cache write weighs against the 5-hour and weekly limits is not documented anywhere I could find.
 - The guard reads the newest real turn in the transcript. A session whose last request was a subagent's is priced from that request, which can be smaller than the context you are about to send.
 - After a compaction the figure is a floor. The transcript records the tokens carried into the summary (`compactMetadata.postTokens`) but not the system prompt and tools that go in front of them; on one 562k session the row said `≥ $0.34` and the first message wrote 40k tokens, $0.80.
 - `/compact` is not a free exit from a cold cache. The compaction request sends the whole context to the model once more, and Claude Code does not write that request's usage to the transcript, so neither the guard nor the card's session totals see it. If the cache has lapsed and most of the context is stale, `/clear` plus a handoff note is the cheap way out.
@@ -119,7 +145,7 @@ Hooks receive no token counts, so nothing here comes from the hook input except 
 
 ## Data & privacy
 
-Reads the session transcript's usage blocks and timestamps, never message text. Writes a one-line JSON entry to `~/.claude/hooks-logs/<date>.jsonl` when it warns or blocks, and a tiny acknowledgement file under `~/.claude/cache-tax/` in block mode. No network calls (the script only uses `fs`, `path`, and `os`).
+Reads the session transcript's usage blocks and timestamps, never message text, plus its own `prices.json`. Writes a one-line JSON entry to `~/.claude/hooks-logs/<date>.jsonl` when it warns or blocks, and a tiny acknowledgement file under `~/.claude/cache-tax/` in block mode. No network calls (the script only uses `fs`, `path`, and `os`).
 
 ## Uninstall
 

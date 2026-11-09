@@ -1,0 +1,37 @@
+{
+  "effective": "2026-10-07",
+  "source": "https://assets.claude.com/1ef7a4a8e373004bc89d710b0a6f3f219323344f.pdf",
+  "basis": "Claude API, Standard tier, Global scope. USD per million tokens. See README 'Updating prices'.",
+  "families": {
+    "fable-5-1": { "name": "Claude Fable 5.1", "read": 0.25, "write5m": 12.5, "write1h": 20 },
+    "mythos-5-1": { "name": "Claude Mythos 5.1", "read": 0.25, "write5m": 12.5, "write1h": 20 },
+    "fable-5": { "name": "Claude Fable 5", "read": 1, "write5m": 12.5, "write1h": 20 },
+    "mythos-5": { "name": "Claude Mythos 5", "read": 1, "write5m": 12.5, "write1h": 20 },
+    "mythos-preview": {
+      "name": "Claude Mythos Preview (deprecated, retirement not yet announced)",
+      "source": "https://www.anthropic.com/glasswing",
+      "cacheSource": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching#pricing",
+      "basis": "Derived from $25/MTok input: cache read 0.1x, 5m write 1.25x, 1h write 2x. Standard Claude API rates, including contexts above 200k tokens.",
+      "read": 2.5, "write5m": 31.25, "write1h": 50
+    },
+    "opus-5-5": { "name": "Claude Opus 5.5", "read": 0.2, "write5m": 5, "write1h": 8 },
+    "opus-5": { "name": "Claude Opus 5", "read": 0.5, "write5m": 6.25, "write1h": 10 },
+    "opus-4": { "name": "Claude Opus 4.5 - 4.8", "models": ["opus-4-5", "opus-4-5-20251101", "opus-4-5@20251101", "opus-4-6", "opus-4-7", "opus-4-8"], "read": 0.5, "write5m": 6.25, "write1h": 10 },
+    "opus-4-1": { "models": ["opus-4-1", "opus-4-1-20250805", "opus-4-1@20250805"], "name": "Claude Opus 4.1 (retired on the Claude API)", "source": "https://docs.anthropic.com/en/docs/about-claude/pricing", "read": 1.5, "write5m": 18.75, "write1h": 30 },
+    "opus-4-0": { "name": "Claude Opus 4, alias id (retired on the Claude API)", "source": "https://docs.anthropic.com/en/docs/about-claude/pricing", "read": 1.5, "write5m": 18.75, "write1h": 30 },
+    "opus-4-2025": { "models": ["opus-4-20250514"], "name": "Claude Opus 4, dated id claude-opus-4-20250514 (retired on the Claude API)", "source": "https://docs.anthropic.com/en/docs/about-claude/pricing", "read": 1.5, "write5m": 18.75, "write1h": 30 },
+    "opus-4@": { "models": ["opus-4@20250514"], "name": "Claude Opus 4, Google Cloud id", "source": "https://docs.anthropic.com/en/docs/about-claude/pricing", "read": 1.5, "write5m": 18.75, "write1h": 30 },
+    "sonnet-5-5": { "name": "Claude Sonnet 5.5", "read": 0.1, "write5m": 2.5, "write1h": 4 },
+    "sonnet-5": { "name": "Claude Sonnet 5", "read": 0.2, "write5m": 2.5, "write1h": 4 },
+    "sonnet": { "name": "Claude Sonnet 4.x", "models": ["sonnet-4-0", "sonnet-4-20250514", "sonnet-4@20250514", "sonnet-4-5", "sonnet-4-5-20250929", "sonnet-4-5@20250929", "sonnet-4-6"], "read": 0.3, "write5m": 3.75, "write1h": 6 },
+    "haiku-5-5": {
+      "name": "Claude Haiku 5.5",
+      "tiers": [
+        { "maxContext": 100000, "read": 0.01, "write5m": 0.125, "write1h": 0.2 },
+        { "read": 0.05, "write5m": 0.625, "write1h": 1 }
+      ]
+    },
+    "3-5-haiku": { "name": "Claude Haiku 3.5", "models": ["3-5-haiku-20241022", "3-5-haiku@20241022", "3-5-haiku-latest"], "source": "https://docs.anthropic.com/en/docs/about-claude/pricing", "read": 0.08, "write5m": 1, "write1h": 1.6 },
+    "haiku": { "name": "Claude Haiku 4.5", "models": ["haiku-4-5", "haiku-4-5-20251001", "haiku-4-5@20251001"], "read": 0.1, "write5m": 1.25, "write1h": 2 }
+  }
+}

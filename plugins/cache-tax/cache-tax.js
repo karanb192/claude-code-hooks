@@ -23,8 +23,8 @@
  * Plus /cache-tax:status (--render) for the full card on demand.
  *
  * Everything is derived from the session transcript's own usage blocks or from
- * fields Claude Code sends. Prices are list rates and can be overridden.
- * No network calls. Nothing leaves the machine.
+ * fields Claude Code sends. Prices are list rates read from prices.json next to
+ * this script, and can be overridden. No network calls. Nothing leaves the machine.
  *
  * Setup as a plugin: /plugin install cache-tax@claude-code-hooks
  *
@@ -48,54 +48,105 @@ const BIG_TOKENS = Number(process.env.CACHE_TAX_BIG) || 50000;
 const BLOCK = /^(1|true|yes)$/i.test(String(process.env.CACHE_TAX_BLOCK || ''));
 const TAIL_BYTES = 4 * 1024 * 1024;
 
-// List prices, $ per million tokens: [cache read, 5m cache write, 1h cache write].
-// Override any family with CACHE_TAX_PRICES='{"fable-5-1":[0.25,12.5,20]}'.
-// Opus 4 and 4.1 list at three times Opus 4.5 and later; their keys cover the
-// dated, Bedrock, Google Cloud (@) and alias spellings and never match Opus 4.5+.
-const DEFAULT_PRICES = {
-  'fable-5-1': [0.25, 12.5, 20],
-  'mythos-5-1': [0.25, 12.5, 20],
-  'fable-5': [1.0, 12.5, 20],
-  'mythos-5': [1.0, 12.5, 20],
-  'opus-5-5': [0.2, 5, 8],
-  'opus-5': [0.5, 6.25, 10],
-  'opus-4-1': [1.5, 18.75, 30],
-  'opus-4-0': [1.5, 18.75, 30],
-  'opus-4-2025': [1.5, 18.75, 30],
-  'opus-4@': [1.5, 18.75, 30],
-  'opus-4': [0.5, 6.25, 10],
-  'sonnet-5-5': [0.1, 2.5, 4],
-  'sonnet-5': [0.2, 2.5, 4],
-  'sonnet': [0.3, 3.75, 6],
-  'haiku-5-5': [0.01, 0.125, 0.2],
-  '3-5-haiku': [0.08, 1, 1.6],
-  'haiku': [0.1, 1.25, 2],
-};
-// A request whose prompt, cache reads and writes included, is over 100k tokens pays these instead.
-const LONG_PROMPT_TOKENS = 100000;
-const LONG_PRICES = {
-  'haiku-5-5': [0.05, 0.625, 1],
-};
-function userPrices() {
-  try { return JSON.parse(process.env.CACHE_TAX_PRICES || '{}'); } catch (_) { return {}; }
-}
-function prices() {
-  return Object.assign({}, DEFAULT_PRICES, userPrices());
+// List prices live in prices.json next to this script ($ per million tokens,
+// with the effective date and source). CACHE_TAX_PRICES_FILE points at another
+// copy; CACHE_TAX_PRICES='{"fable-5-1":[0.25,12.5,20]}' overrides single families.
+const PRICES_FILE = process.env.CACHE_TAX_PRICES_FILE || path.join(__dirname, 'prices.json');
+
+function num(x) { return typeof x === 'number' && Number.isFinite(x) && x >= 0; }
+
+/**
+ * One family entry to a list of tiers, cheapest context first. Accepts the
+ * legacy [read, 5m write, 1h write] array, a flat {read, write5m, write1h}
+ * object, or {tiers: [{maxContext, read, write5m, write1h}, ...]} for models
+ * whose rate steps up past a context size. Returns null when malformed.
+ */
+function normalizeEntry(e) {
+  let tiers;
+  if (Array.isArray(e)) tiers = [{ read: e[0], write5m: e[1], write1h: e[2] }];
+  else if (e && Array.isArray(e.tiers)) tiers = e.tiers;
+  else if (e && typeof e === 'object') tiers = [e];
+  else return null;
+  const out = [];
+  for (const t of tiers) {
+    if (!t || !num(t.read) || !num(t.write5m) || !num(t.write1h)) return null;
+    const max = t.maxContext == null ? null : t.maxContext;
+    if (max != null && (!Number.isSafeInteger(max) || max <= 0)) return null;
+    out.push({ maxContext: max, read: t.read, write5m: t.write5m, write1h: t.write1h });
+  }
+  if (!out.length) return null;
+  out.sort((a, b) => (a.maxContext == null ? Infinity : a.maxContext) - (b.maxContext == null ? Infinity : b.maxContext));
+  return out;
 }
 
-// Longest key first so fable-5-1 wins over fable-5 and sonnet-5 over sonnet.
-function family(model) {
-  const m = String(model || '').toLowerCase();
-  const keys = Object.keys(prices()).sort((a, b) => b.length - a.length);
-  for (const k of keys) if (m.includes(k)) return k;
-  return null;
+let tableCache = null;
+// Strip known provider wrappers and Claude Code's context option, never model
+// versions, snapshot dates, or arbitrary bracketed model modifiers.
+function modelId(model) {
+  let id = String(model || '').toLowerCase().replace(/\[1m\]$/, '');
+  const bedrock = /^(?:(?:us|eu|apac|global)\.)?anthropic\.(?=claude-)/;
+  if (bedrock.test(id)) id = id.replace(bedrock, '').replace(/-v1(?::0)?$/, '');
+  return id.replace(/^claude-/, '');
 }
-function priceFor(model, promptTokens = 0) {
-  const f = family(model);
+function modelIds(key, entry) {
+  const ids = entry && Object.hasOwn(entry, 'models') ? entry.models : [key];
+  return Array.isArray(ids) ? ids.filter(id => typeof id === 'string' && id).map(modelId) : [];
+}
+/** Price tiers and exact model-to-family mappings, with source metadata. */
+function loadPriceTable() {
+  if (tableCache) return tableCache;
+  const t = { file: PRICES_FILE, effective: null, source: null, families: Object.create(null), models: Object.create(null), error: null };
+  try {
+    const raw = JSON.parse(fs.readFileSync(PRICES_FILE, 'utf8'));
+    t.effective = typeof raw.effective === 'string' ? raw.effective : null;
+    t.source = typeof raw.source === 'string' ? raw.source : null;
+    for (const [k, v] of Object.entries((raw && raw.families) || {})) {
+      const tiers = normalizeEntry(v);
+      if (tiers) {
+        const key = k.toLowerCase();
+        t.families[key] = tiers;
+        for (const id of modelIds(key, v)) t.models[id] = key;
+      }
+    }
+  } catch (e) { t.error = e.code || e.message; }
+  tableCache = t;
+  return t;
+}
+
+function pricing() {
+  const table = loadPriceTable();
+  const families = Object.assign(Object.create(null), table.families);
+  const models = Object.assign(Object.create(null), table.models);
+  let extra = {};
+  try { extra = JSON.parse(process.env.CACHE_TAX_PRICES || '{}'); } catch (_) { extra = {}; }
+  for (const [k, v] of Object.entries(extra || {})) {
+    const tiers = normalizeEntry(v);
+    if (tiers) {
+      const key = k.toLowerCase();
+      families[key] = tiers;
+      // Family overrides keep the table's aliases. New keys match exactly;
+      // an optional models list can add explicit aliases without wildcards.
+      if (!Object.hasOwn(table.families, key) || Object.hasOwn(v, 'models')) {
+        for (const id of modelIds(key, v)) models[id] = key;
+      }
+    }
+  }
+  return { families, models };
+}
+function prices() { return pricing().families; }
+
+function family(model) {
+  return pricing().models[modelId(model)] || null;
+}
+/** Rates for a model at a context size (tokens sent, cached or not). */
+function priceFor(model, ctx) {
+  const p = pricing();
+  const f = p.models[modelId(model)];
   if (!f) return null;
-  // An override of the family wins over its long-prompt row.
-  const p = promptTokens > LONG_PROMPT_TOKENS && LONG_PRICES[f] && !(f in userPrices()) ? LONG_PRICES[f] : prices()[f];
-  return { family: f, read: p[0], write5m: p[1], write1h: p[2] };
+  const tiers = p.families[f];
+  const n = Number(ctx) || 0;
+  const t = tiers.find(x => x.maxContext == null || n <= x.maxContext) || tiers[tiers.length - 1];
+  return { family: f, read: t.read, write5m: t.write5m, write1h: t.write1h };
 }
 
 // ---------- transcript ----------
@@ -181,13 +232,16 @@ function scanTranscript(transcriptPath) {
     if (u.requestId) seen.add(u.requestId);
     const pr = priceFor(u.model, u.ctx);
     t.requests++; t.write += u.write; t.read += u.read; t.model = u.model || t.model;
-    let wUsd = 0;
-    if (pr) {
-      wUsd = (u.w5 * pr.write5m + (u.write - u.w5) * pr.write1h) / 1e6;
-      t.writeUsd += wUsd; t.readUsd += u.read * pr.read / 1e6;
-    }
+    const wUsd = pr ? (u.w5 * pr.write5m + (u.write - u.w5) * pr.write1h) / 1e6 : null;
+    // An unpriced contribution makes that total unknown, not free. Keep null
+    // sticky so a later priced request cannot turn a partial sum into a total.
+    if (u.write) t.writeUsd = pr && t.writeUsd != null ? t.writeUsd + wUsd : null;
+    if (u.read) t.readUsd = pr && t.readUsd != null ? t.readUsd + u.read * pr.read / 1e6 : null;
     const full = prevCtx > 20000 && u.read < 0.5 * prevCtx && u.write > 0.5 * prevCtx;
-    if (full) { t.fullMisses++; t.fullMissUsd += wUsd; }
+    if (full) {
+      t.fullMisses++;
+      t.fullMissUsd = t.fullMissUsd != null && wUsd != null ? t.fullMissUsd + wUsd : null;
+    }
     prevCtx = u.ctx;
   }
   return t;
@@ -361,6 +415,12 @@ function renderCard(transcriptPath, nowMs) {
     lines.push(`session     ${t.requests} requests · writes ${fmtTok(t.write)} tok ${fmtUsd(t.writeUsd)} · reads ${fmtTok(t.read)} tok ${fmtUsd(t.readUsd)}`);
     lines.push(`full misses ${t.fullMisses} (${fmtUsd(t.fullMissUsd)}), each one a re-write of the whole prefix`);
   }
+  const pt = loadPriceTable();
+  lines.push(pt.error
+    ? Object.keys(prices()).length
+      ? `prices      file unavailable (${pt.file}: ${pt.error}); using CACHE_TAX_PRICES where matched`
+      : `prices      none loaded (${pt.file}: ${pt.error}), so unpriced dollar figures show n/a`
+    : `prices      list rates effective ${pt.effective || 'unknown'}, from ${path.basename(pt.file)}${process.env.CACHE_TAX_PRICES ? ' + CACHE_TAX_PRICES' : ''}`);
   lines.push(st.compacted
     ? 'advice      nothing to avoid here. The compaction request already sent the old context once more; from now on only the summary is in play.'
     : st.lapsed
@@ -415,7 +475,8 @@ if (require.main === module) {
   process.exitCode = main();
 } else {
   module.exports = {
-    family, priceFor, parseUsageLine, parseBoundaryLine, readLastUsage, scanTranscript, guessTranscript,
+    family, priceFor, prices, normalizeEntry, loadPriceTable, PRICES_FILE,
+    parseUsageLine, parseBoundaryLine, readLastUsage, scanTranscript, guessTranscript,
     tierOf, stateFrom, statusLine, guard, guardMessage, resume, renderCard,
     fmtUsd, fmtTok, fmtDur, BIG_TOKENS, TTL_SEC,
   };
