@@ -281,6 +281,31 @@ describe('Bash: disabling a test from the shell', () => {
   it('critical level does not block shell skips', () => {
     assert.strictEqual(checkTool('Bash', { command: "sed -i '' 's/test(/test.skip(/' math.test.js" }, 'critical', dir).blocked, false);
   });
+
+  it('blocks a replacement that finishes the marker with the text around it', () => {
+    block("sed -i 's/test/test.skip/' math.test.js");
+    block("sed -i 's/(/.skip(/' math.test.js");
+  });
+  it('blocks a redirect to a quoted or escaped path with spaces', () => {
+    const sub = path.join(dir, 'dir with spaces');
+    fs.mkdirSync(sub, { recursive: true });
+    fs.writeFileSync(path.join(sub, 'math.test.js'), JS_TEST);
+    block(`printf '%s\\n' "test.skip('addition', () => {});" > 'dir with spaces/math.test.js'`);
+    block(`printf '%s\\n' "test.skip('addition', () => {});" > dir\\ with\\ spaces/math.test.js`);
+  });
+  it('blocks sed -i reached through find and xargs with a glob', () =>
+    block("find . -name '*.test.js' | xargs sed -i 's/test(/test.skip(/'"));
+  it('judges each command on its own', () => {
+    allow("sed 's/test(/test.skip(/' math.test.js && sed -i 's/foo/bar/' source.js");
+    allow("echo 'it.skip(' > notes.txt && echo hi > math.test.js");
+    allow('npm test 2>&1 | tee test.log');
+    block("sed -i 's/test(/test.skip(/' math.test.js && cat math.test.js");
+  });
+  it('a run of backslashes with no closing delimiter stays fast', () => {
+    const start = Date.now();
+    allow("printf '%s\\n' 'sed -i s/" + '\\'.repeat(2000) + " math.test.js'");
+    assert.ok(Date.now() - start < 500, `took ${Date.now() - start} ms`);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

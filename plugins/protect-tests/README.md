@@ -21,10 +21,10 @@ Restart Claude Code, done. (Or from a shell: `claude plugin install protect-test
 | `Bash` | `mv` renames a test file to a disabled name (`.bak`, `.old`, `.orig`, `.disabled`, `.skip`, `.ignore`, `.tmp`, `~`) | `high` | `rename-test` |
 | `Edit` / `MultiEdit` | the edit adds a skip/xfail/ignore marker to an existing test file | `high` | `skip-test` |
 | `Write` | it rewrites an existing test file and the new content has more skip/xfail/ignore markers than the file on disk | `high` | `skip-test` |
-| `Bash` | `sed -i`, `perl -pi` or `ruby -pi` substitutes a marker in, or `>`, `>>` or `tee` writes one into a test file | `high` | `skip-test` |
+| `Bash` | `sed -i`, `perl -pi` or `ruby -pi` substitutes a marker into a test file named in the same command (a glob such as `find -name '*.test.js' \| xargs sed -i` counts), or `>`, `>>` or `tee` writes one into a test file | `high` | `skip-test` |
 | `Write` | a brand-new test file's content is already skipped/ignored | `strict` | `write-skipped-test` |
 
-Markers are counted, not just detected, so adding a second `it.skip(` to a file that already has one still counts; removing a skip is always allowed. For `Write` and shell redirects the hook reads the target file (relative paths resolve against the session's working directory; files over 2 MB are not read). It does not see every route: a script in another language (`python -c`, `node -e`), `cp` of a skipped file over a test, or a heredoc that creates a brand-new skipped file still pass at `high`.
+Markers are counted, not just detected, so adding a second `it.skip(` to a file that already has one still counts; removing a skip is always allowed. For `Write` and shell redirects the hook reads the target file (relative paths resolve against the session's working directory; files over 2 MB are not read). Each command joined by `;`, `&&`, `||` or `&` is judged on its own, so a read-only `sed` beside an unrelated `sed -i` is allowed. A replacement counts when it completes a marker with the text around it (`s/test/test.skip/` on `test(`). It does not see every route: a script in another language (`python -c`, `node -e`), `cp` of a skipped file over a test, or a heredoc that creates a brand-new skipped file still pass at `high`.
 
 Anything at or below the active safety level is denied with a reason Claude sees ("Fix the code, don't disable the test"); everything else passes through. On malformed input the hook fails open (emits `{}`), so it can never wedge a session.
 

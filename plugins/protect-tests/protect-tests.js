@@ -146,22 +146,57 @@ function readExisting(filePath, cwd) {
 // sed -i / perl -pi / ruby -pi edit files in place; their s/// replacement is
 // what lands in the file, so only the replacement side is compared.
 const IN_PLACE = /\b(sed\b[^|;&]*\s(-[a-zA-Z]*i|--in-place)|(perl|ruby)\b[^|;&]*\s-[a-zA-Z]*i)/;
-const SUBST = /\bs([/|#,:@!])((?:\\.|(?!\1).)*)\1((?:\\.|(?!\1).)*)\1/g;
-// > file, >> file, tee [-a] file: the command text is what gets written.
-const REDIRECT = /(>>?|\btee(?:\s+-a)?)\s*["']?([^\s"'|;&<>]+)/g;
+// [^\\] keeps the two alternatives disjoint: when both took a backslash, a run
+// of them with no closing delimiter backtracked exponentially.
+const SUBST = /\bs([/|#,:@!])((?:\\.|(?!\1)[^\\])*)\1((?:\\.|(?!\1)[^\\])*)\1/g;
+// > file, >> file, tee [-a] file; a quoted or escaped name keeps its spaces.
+const REDIRECT = /(>>?|\btee(?:\s+-a)?)\s*(?:"([^"]*)"|'([^']*)'|((?:\\.|[^\s"'|;&<>\\])+))/g;
+// A replacement can finish a marker with the text around it: s/test/test.skip/
+// turns `test(` into `test.skip(`, and s/(/.skip(/ turns `it(` into `it.skip(`.
+const MARKER_CONTEXT = ['', 'it', 'test', 'describe', 'context'];
+
+function substAddsMarker(pat, rep) {
+  return MARKER_CONTEXT.some(pre => ['', '('].some(post => addedMarker(pre + pat + post, pre + rep + post)));
+}
+
+// Commands joined by ; && || & or a newline run on their own, so each is judged
+// alone. A pipe stays inside one command: tee writes what came before it. A
+// heredoc's body is file text, not shell, so such a command stays whole.
+function shellCommands(cmd) {
+  if (cmd.includes('<<')) return [cmd];
+  const parts = [];
+  let start = 0;
+  let q = '';
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (ch === '\\' && q !== "'") { i++; continue; }
+    if (q) { if (ch === q) q = ''; continue; }
+    if (ch === '"' || ch === "'") { q = ch; continue; }
+    const or = ch === '|' && cmd[i + 1] === '|';
+    if (ch !== ';' && ch !== '&' && ch !== '\n' && !or) continue;
+    if (ch === '&' && (cmd[i - 1] === '>' || cmd[i + 1] === '>')) continue;
+    parts.push(cmd.slice(start, i));
+    if (or || (ch === '&' && cmd[i + 1] === '&')) i++;
+    start = i + 1;
+  }
+  parts.push(cmd.slice(start));
+  return parts;
+}
 
 function shellAddsMarker(cmd, cwd) {
-  const plain = cmd.replace(/\\(.)/g, '$1');
-  if (IN_PLACE.test(cmd)) {
-    for (const [, , pat, rep] of cmd.matchAll(SUBST)) {
-      const unesc = (s) => s.replace(/\\(.)/g, '$1');
-      if (addedMarker(unesc(pat), unesc(rep))) return true;
+  const unesc = (s) => s.replace(/\\(.)/g, '$1');
+  for (const part of shellCommands(cmd)) {
+    if (IN_PLACE.test(part) && (TEST_TOKEN.test(part) || TEST_NAME_GLOB.test(part))) {
+      for (const [, , pat, rep] of part.matchAll(SUBST)) {
+        if (substAddsMarker(unesc(pat), unesc(rep))) return true;
+      }
     }
-  }
-  for (const [, op, target] of cmd.matchAll(REDIRECT)) {
-    if (!TEST_PATH.test(target)) continue;
-    const existing = op.startsWith('>>') || op.includes('-a') ? '' : readExisting(target, cwd);
-    if (existing !== null && addedMarker(existing, plain)) return true;
+    for (const [, op, dq, sq, bare] of part.matchAll(REDIRECT)) {
+      const target = dq ?? sq ?? unesc(bare);
+      if (!TEST_PATH.test(target)) continue;
+      const existing = op.startsWith('>>') || op.includes('-a') ? '' : readExisting(target, cwd);
+      if (existing !== null && addedMarker(existing, unesc(part))) return true;
+    }
   }
   return false;
 }
@@ -178,10 +213,13 @@ function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL, cwd = u
   if (toolName === 'Bash') {
     const cmd = toolInput.command || '';
     if (dropsTestSuite(cmd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
-    if (!TEST_TOKEN.test(cmd)) return allow();
-    if (DELETE_VERB.test(cmd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
-    if (RENAME_VERB.test(cmd) && DISABLED_DEST.test(cmd))
-      return deny('high', 'rename-test', 'renaming a test file to a disabled name');
+    if (TEST_TOKEN.test(cmd)) {
+      if (DELETE_VERB.test(cmd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
+      if (RENAME_VERB.test(cmd) && DISABLED_DEST.test(cmd))
+        return deny('high', 'rename-test', 'renaming a test file to a disabled name');
+    }
+    // Runs without the TEST_TOKEN gate: it finds its own test target per command,
+    // which a glob (find -name '*.test.js' | xargs sed -i) never puts in TEST_TOKEN.
     if (shellAddsMarker(cmd, cwd))
       return deny('high', 'skip-test', 'adding a skip/xfail/ignore marker to a test file from the shell');
     return allow();
