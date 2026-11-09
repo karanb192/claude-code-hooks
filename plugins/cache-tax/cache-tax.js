@@ -80,9 +80,10 @@ function normalizeEntry(e) {
 }
 
 let tableCache = null;
-// Strip only known provider wrappers, never model versions or snapshot dates.
+// Strip known provider wrappers and Claude Code's context option, never model
+// versions, snapshot dates, or arbitrary bracketed model modifiers.
 function modelId(model) {
-  let id = String(model || '').toLowerCase();
+  let id = String(model || '').toLowerCase().replace(/\[1m\]$/, '');
   const bedrock = /^(?:(?:us|eu|apac|global)\.)?anthropic\.(?=claude-)/;
   if (bedrock.test(id)) id = id.replace(bedrock, '').replace(/-v1(?::0)?$/, '');
   return id.replace(/^claude-/, '');

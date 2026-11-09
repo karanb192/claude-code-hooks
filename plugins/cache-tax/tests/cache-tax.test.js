@@ -114,6 +114,29 @@ describe('pricing', () => {
       assert.strictEqual(priceFor(id, 100000), null, String(id));
     }
   });
+  it('normalizes the documented trailing 1M context option before provider wrappers', () => {
+    for (const id of [
+      'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-5-5', 'claude-fable-5-1',
+      'anthropic.claude-opus-4-6-v1', 'us.anthropic.claude-opus-4-6-v1:0',
+      'global.anthropic.claude-opus-5-5',
+    ]) {
+      assert.deepStrictEqual(priceFor(`${id}[1m]`, 400000), priceFor(id, 400000), id);
+      assert.strictEqual(family(`${id}[1m]`), family(id), id);
+    }
+    assert.deepStrictEqual(priceFor('CLAUDE-OPUS-4-6[1M]'), priceFor('claude-opus-4-6'));
+    for (const id of [
+      'claude-opus-99[1m]', 'claude-opus-4-999[1m]', 'claude-opus-5-5[2m]',
+      'claude-opus-5-5[fast]', 'claude-opus-5-5[]', 'claude-opus-5-5[1m][1m]',
+      'claude-opus-5-5[1m]-extra', 'claude-opus-5-5[1m', 'claude-opus-[1m]5-5',
+    ]) assert.strictEqual(priceFor(id, 400000), null, id);
+  });
+  it('uses actual tokens for price tiers, not the 1M context option', () => {
+    for (const ctx of [99999, 100000, 100001, 1000000]) {
+      assert.deepStrictEqual(priceFor('claude-haiku-5-5[1m]', ctx), priceFor('claude-haiku-5-5', ctx));
+    }
+    assert.strictEqual(priceFor('claude-haiku-5-5[1m]', 100000).write1h, 0.2);
+    assert.strictEqual(priceFor('claude-haiku-5-5[1m]', 100001).write1h, 1);
+  });
   it('prices Sonnet 5 below Sonnet 4.x', () => {
     assert.deepStrictEqual([priceFor('claude-sonnet-5').read, priceFor('claude-sonnet-5').write5m, priceFor('claude-sonnet-5').write1h], [0.2, 2.5, 4]);
     assert.deepStrictEqual([priceFor('claude-sonnet-4-6').read, priceFor('claude-sonnet-4-6').write5m, priceFor('claude-sonnet-4-6').write1h], [0.3, 3.75, 6]);
@@ -263,6 +286,25 @@ describe('price overrides and a missing table', () => {
         assert.strictEqual(priceFor('claude-sonnet-4-5').write1h, 3);
       } finally { delete process.env.CACHE_TAX_PRICES; }
     }
+  });
+  it('applies family and exact model overrides with the 1M context option', () => {
+    process.env.CACHE_TAX_PRICES = JSON.stringify({
+      'opus-4': [1, 2, 3], 'claude-opus-5-5[1m]': [4, 5, 6],
+      custom: { read: 7, write5m: 8, write1h: 9, models: ['my-gateway-model[1m]'] },
+    });
+    try {
+      assert.strictEqual(priceFor('claude-opus-4-6[1m]').write1h, 3);
+      assert.strictEqual(priceFor('claude-opus-5-5[1m]').write1h, 6);
+      assert.strictEqual(priceFor('claude-opus-5-5').write1h, 6);
+      assert.strictEqual(priceFor('my-gateway-model[1m]').write1h, 9);
+      assert.strictEqual(priceFor('my-gateway-model').write1h, 9);
+    } finally { delete process.env.CACHE_TAX_PRICES; }
+    const r = run({ model: { id: 'claude-opus-4-6[1m]' }, prompt_cache: { ...pc, warm: false, expires_at: 0 } }, {
+      CACHE_TAX_PRICES_FILE: path.join(tmp, 'missing-1m-prices.json'),
+      CACHE_TAX_PRICES: '{"opus-4-6":[1,2,3]}',
+    }, ['--statusline']);
+    assert.strictEqual(r.code, 0);
+    assert.match(r.out, /400k = \$1\.20$/);
   });
   it('rejects malformed context thresholds without coercion or exceptions', () => {
     for (const maxContext of [{ toString: 'oops' }, {}, [], [100000], true, false, '100000', 'Infinity', 0, -1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
@@ -419,6 +461,19 @@ describe('transcript parsing', () => {
     assert.strictEqual(line.code, 0);
     assert.strictEqual(line.out, 'cache COLD · next msg re-writes 100k = n/a');
   });
+  it('prices 1M-suffixed transcript usage and mixed session totals', () => {
+    const p = writeTranscript(tmp, [
+      { ts: 1000, model: 'claude-opus-5-5', write: 100000, read: 1000, input: 0, id: 'a' },
+      { ts: 2000, model: 'claude-opus-5-5[1m]', write: 100000, read: 1000, input: 0, id: 'b' },
+    ]);
+    const t = scanTranscript(p);
+    assert.strictEqual(t.writeUsd, 1.6);
+    assert.strictEqual(t.readUsd, 0.0004);
+    const r = run({}, {}, ['--render', '--transcript', p]);
+    assert.strictEqual(r.code, 0);
+    assert.match(r.out, /writes 200k tok \$1\.60/);
+    assert.doesNotMatch(r.out, /n\/a/);
+  });
   it('does not mark absent cache usage as unpriced spending', () => {
     const p = writeTranscript(tmp, [
       { ts: 1000, model: 'unpriced-model', input: 1000, id: 'a' },
@@ -473,6 +528,13 @@ describe('status line', () => {
     const now = Date.now();
     const line = statusLine({ model: { id: 'claude-opus-5' }, prompt_cache: { warm: false, ttl: '1h', expires_at: now / 1000 - 5, recache_tokens_if_cold: 100000 } }, now);
     assert.match(line, /^cache COLD · next msg re-writes 100k = \$1\.00$/);
+  });
+  it('prices cold native 1M-context status lines (integration)', () => {
+    for (const [id, cost] of [['claude-opus-5-5[1m]', '$3.20'], ['claude-opus-4-6[1m]', '$4.00']]) {
+      const r = run({ model: { id }, prompt_cache: { warm: false, ttl: '1h', expires_at: 0, recache_tokens_if_cold: 400000 } }, {}, ['--statusline']);
+      assert.strictEqual(r.code, 0);
+      assert.strictEqual(r.out, `cache COLD · next msg re-writes 400k = ${cost}`);
+    }
   });
   it('falls back to the transcript', () => {
     const now = Date.now();
