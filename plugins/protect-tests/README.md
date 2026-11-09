@@ -24,7 +24,11 @@ Restart Claude Code, done. (Or from a shell: `claude plugin install protect-test
 | `Bash` | `sed -i`, `perl -pi` or `ruby -pi` substitutes a marker into a test file named in the same command (a glob such as `find -name '*.test.js' \| xargs sed -i` counts), or `>`, `>>` or `tee` writes one into a test file | `high` | `skip-test` |
 | `Write` | a brand-new test file's content is already skipped/ignored | `strict` | `write-skipped-test` |
 
-Markers are counted, not just detected, so adding a second `it.skip(` to a file that already has one still counts; removing a skip is always allowed. For `Write` and shell redirects the hook reads the target file (relative paths resolve against the session's working directory; files over 2 MB are not read). Each command joined by `;`, `&&`, `||` or `&` is judged on its own, so a read-only `sed` beside an unrelated `sed -i` is allowed; a `{ }` or `( )` group, or a pipe continued on the next line, counts as one command. Search text is not output, so a redirect that removes a skip (`sed 's/test.skip(/test(/' a.test.js > b.test.js`) is allowed. A replacement counts when it completes a marker with the text around it (`s/test/test.skip/` on `test(`). It does not see every route: a script in another language (`python -c`, `node -e`), `cp` of a skipped file over a test, or a heredoc that creates a brand-new skipped file still pass at `high`.
+Markers are counted, not just detected, so adding a second `it.skip(` to a file that already has one still counts. Direct edits that remove skips are allowed. For `Write` and shell redirects the hook reads the target file (relative paths resolve against the session's working directory; files over 2 MB are not read). Each complete command joined by `;`, `&&`, `||` or `&` is judged on its own. Groups and continued pipelines, including a comment after `|`, keep their output with the destination. Literal braces in command arguments do not join unrelated commands.
+
+For a small, literal `sed` substitution, `perl -pe` substitution, or `grep` filter with one source file and one redirect or `tee` destination, the hook reads the source and compares the resulting content. This allows a command that removes all skips while still denying a positive `grep` that copies skipped tests. Output inference supports a restricted pattern syntax and ASCII text, with limits on command length, matching work and output size. Unsupported commands use the command-text heuristic, so they may be conservatively denied. Search-looking text inside `printf` arguments or heredocs is always treated as literal content, not stripped away.
+
+An in-place replacement counts when it completes a marker with the text around it (`s/test/test.skip/` on `test(`). This remains a guardrail, not a shell evaluator or sandbox: arbitrary language scripts, `cp` of a skipped file over a test, and a heredoc that creates a brand-new skipped file still pass at `high`.
 
 Anything at or below the active safety level is denied with a reason Claude sees ("Fix the code, don't disable the test"); everything else passes through. On malformed input the hook fails open (emits `{}`), so it can never wedge a session.
 
@@ -50,7 +54,7 @@ One optional environment variable:
 
 ## Data & privacy
 
-Blocked calls and parse errors are logged as JSONL to `~/.claude/hooks-logs/YYYY-MM-DD.jsonl` (deny id, level, tool name, session id, cwd, permission mode; no commands or file contents, though a parse error's message can quote the first few characters of a malformed payload). The script only uses `fs` and `path`, reads only the test file a call is about to change, and nothing leaves your machine.
+Blocked calls and parse errors are logged as JSONL to `~/.claude/hooks-logs/YYYY-MM-DD.jsonl` (deny id, level, tool name, session id, cwd, permission mode; no commands or file contents, though a parse error's message can quote the first few characters of a malformed payload). The script reads the target test file and, for supported literal shell transformations, the source file. It never runs the proposed command, and nothing leaves your machine.
 
 ## Uninstall
 

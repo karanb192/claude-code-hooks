@@ -156,6 +156,39 @@ describe('Integration: verdicts through the pack', () => {
     assert.match(reasonOf(output), /\[skip-test\]/);
   });
 
+  it('protect-tests: shell output cannot hide skips in search-looking literal text', async () => {
+    const dir = fs.mkdtempSync(path.join(TMP_HOME, 'shell-output-'));
+    fs.writeFileSync(path.join(dir, 'math.test.js'), "test('a', () => {});\n");
+    fs.writeFileSync(path.join(dir, 'source.js'), "test.skip('a', () => {});\n");
+    const emit = `printf '%s\\n' "test.skip('a', () => {});"`;
+    for (const command of [
+      `${emit} | # continue the same pipeline\n tee math.test.js`,
+      `{ ${emit}; } > math.test.js`,
+      "cat > math.test.js <<'EOF'\n// s/\ntest.skip('a', () => {});\n//x/\nEOF",
+      "cat > math.test.js <<'EOF'\n// grep\ntest.skip('a', () => {});\nEOF",
+      "grep 'test.skip(' source.js > math.test.js",
+    ]) {
+      const { output } = await runHook(payload('Bash', { command }, { cwd: dir }));
+      assert.strictEqual(decisionOf(output), 'deny', command);
+      assert.match(reasonOf(output), /\[skip-test\]/);
+    }
+  });
+
+  it('protect-tests: known unskip output and unrelated literal braces are allowed', async () => {
+    const dir = fs.mkdtempSync(path.join(TMP_HOME, 'shell-unskip-'));
+    fs.writeFileSync(path.join(dir, 'math.test.js'), "test('a', () => {});\n");
+    fs.writeFileSync(path.join(dir, 'one-skip.test.js'), "test.skip('a', () => {});\n");
+    for (const command of [
+      "sed 's/test.skip(/test(/g' one-skip.test.js > math.test.js",
+      "grep -v 'test.skip(' one-skip.test.js > math.test.js",
+      "perl -pe 's/test\\.skip\\(/test(/' one-skip.test.js > math.test.js",
+      "printf '%s\\n' { 'test.skip(' > notes.txt; echo hi > math.test.js",
+    ]) {
+      const { output } = await runHook(payload('Bash', { command }, { cwd: dir }));
+      assert.deepStrictEqual(output, {}, command);
+    }
+  });
+
   it('git-safety: push to main denied', async () => {
     const { output } = await runHook(payload('Bash', { command: 'git push origin main' }));
     assert.strictEqual(decisionOf(output), 'deny');
