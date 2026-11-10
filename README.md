@@ -37,6 +37,7 @@ A growing collection of tested, documented hooks. Every one installs as a one-co
 - [Testing](#-testing)
 - [Token Diet](#-token-diet)
 - [Configuration Reference](#-configuration-reference)
+- [Looking for mods?](#-looking-for-mods)
 - [Contributing](#-contributing)
 - [License](#-license)
 
@@ -345,6 +346,14 @@ See the [official Claude Code hooks documentation](https://code.claude.com/docs/
 - Input/output JSON formats
 - Matcher patterns
 - Environment variables
+
+---
+
+## 🧩 Looking for mods?
+
+The hooks here are scripts that run on Claude Code's hook events. Mods are the newer plugin form: JavaScript or TypeScript functions that can also change the interface, from Claude Code 2.1.287.
+
+[Awesome Claude Code Mods](https://github.com/karanb192/awesome-claude-code-mods) catalogues thousands of them and records what each one can read, write, run or send over the network. Browse it at [mods.aidojo.si](https://mods.aidojo.si/). The mod form of cache-tax lives at [karanb192/cache-tax](https://github.com/karanb192/cache-tax).
 
 ---
 
