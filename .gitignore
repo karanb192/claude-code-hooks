@@ -145,3 +145,6 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .gstack/
+
+# Eval runs write timestamped results here (the committed record is evals/RESULTS.md)
+**/evals/results/
