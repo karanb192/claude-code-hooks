@@ -57,6 +57,7 @@ function run(payload, env = {}, args = []) {
 
 describe('pricing', () => {
   it('maps explicit model ids to their price families', () => {
+    assert.strictEqual(family('claude-fable-5-2'), 'fable-5-2');
     assert.strictEqual(family('claude-fable-5-1'), 'fable-5-1');
     assert.strictEqual(family('claude-fable-5'), 'fable-5');
     assert.strictEqual(family('claude-opus-5'), 'opus-5');
@@ -67,6 +68,7 @@ describe('pricing', () => {
   });
   it('prices every active canonical model and the deprecated Preview model', () => {
     const rows = [
+      ['fable-5-2', 0.2, 10, 16], ['mythos-5-2', 0.2, 10, 16],
       ['fable-5-1', 0.25, 12.5, 20], ['mythos-5-1', 0.25, 12.5, 20],
       ['fable-5', 1, 12.5, 20], ['mythos-5', 1, 12.5, 20],
       ['opus-5-5', 0.2, 5, 8], ['opus-5', 0.5, 6.25, 10],
@@ -102,7 +104,7 @@ describe('pricing', () => {
   it('does not guess prices for unknown versions, snapshots, providers or retired models', () => {
     for (const id of [
       'claude-sonnet-99', 'claude-haiku-99', 'claude-opus-4-999', 'claude-opus-5-foo',
-      'claude-fable-5-2', 'claude-mythos-preview-2', 'claude-mythos-preview-20260601',
+      'claude-fable-5-3', 'claude-mythos-preview-2', 'claude-mythos-preview-20260601',
       'claude-3-haiku-20240307', 'claude-3-opus-20240229', 'claude-sonnet-4-7',
       'claude-opus-4-5-20990101', 'claude-opus-4-5@20990101', 'claude-opus-4-5-latest',
       'claude-opus-5-5-v1', 'anthropic.claude-opus-5-5-v99:0',

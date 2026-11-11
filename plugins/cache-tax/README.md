@@ -102,6 +102,7 @@ All optional, set via environment variables:
 
 List rates live in [`prices.json`](prices.json), next to the script, with the date they took effect and the rate card they came from. As shipped: Claude API list prices effective **2026-10-07**, Standard tier, Global scope, in $/MTok as cache read / 5m write / 1h write:
 
+- Fable 5.2 and Mythos 5.2 `0.20 / 10 / 16`. These two are newer than the 2026-10-07 rate card. Their rates come from the [pricing page](https://platform.claude.com/docs/en/about-claude/pricing), and their entries carry that page as their own `source`.
 - Fable 5.1 and Mythos 5.1 `0.25 / 12.5 / 20`, Fable 5 and Mythos 5 `1 / 12.5 / 20`
 - Mythos Preview `2.50 / 31.25 / 50`. This deprecated model has no announced retirement date. These cache rates are derived from the [published $25/MTok input rate](https://www.anthropic.com/glasswing) and the [standard 0.1× read, 1.25× 5m-write and 2× 1h-write multipliers](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#pricing), not an explicit cache-price row. Its entry records both sources.
 - Opus 5.5 `0.20 / 5 / 8`, Opus 5 and 4.5-4.8 `0.50 / 6.25 / 10`

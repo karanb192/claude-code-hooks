@@ -3,6 +3,8 @@
   "source": "https://assets.claude.com/1ef7a4a8e373004bc89d710b0a6f3f219323344f.pdf",
   "basis": "Claude API, Standard tier, Global scope. USD per million tokens. See README 'Updating prices'.",
   "families": {
+    "fable-5-2": { "name": "Claude Fable 5.2", "source": "https://platform.claude.com/docs/en/about-claude/pricing", "read": 0.2, "write5m": 10, "write1h": 16 },
+    "mythos-5-2": { "name": "Claude Mythos 5.2", "source": "https://platform.claude.com/docs/en/about-claude/pricing", "read": 0.2, "write5m": 10, "write1h": 16 },
     "fable-5-1": { "name": "Claude Fable 5.1", "read": 0.25, "write5m": 12.5, "write1h": 20 },
     "mythos-5-1": { "name": "Claude Mythos 5.1", "read": 0.25, "write5m": 12.5, "write1h": 20 },
     "fable-5": { "name": "Claude Fable 5", "read": 1, "write5m": 12.5, "write1h": 20 },
