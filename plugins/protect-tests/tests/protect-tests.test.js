@@ -9,6 +9,8 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const { checkTool } = require('../protect-tests.js');
@@ -201,6 +203,125 @@ describe('Edit: legitimate edits are allowed', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Unit Tests - disabling an existing test without Edit: a whole-file Write, a
+// shell in-place edit, or a redirect. These read the file on disk, so they run
+// against a real temp project.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const JS_TEST = "const { add } = require('./math');\ntest('add works', () => {\n  expect(add(2, 2)).toBe(4);\n});\n";
+const JS_TEST_ONE_SKIP = "test.skip('old', () => {});\ntest('add works', () => {\n  expect(add(2, 2)).toBe(4);\n});\n";
+const PY_TEST = 'def test_a():\n    assert 1 == 1\n';
+
+function tempProject() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'protect-tests-'));
+  fs.writeFileSync(path.join(dir, 'math.test.js'), JS_TEST);
+  fs.writeFileSync(path.join(dir, 'one-skip.test.js'), JS_TEST_ONE_SKIP);
+  fs.writeFileSync(path.join(dir, 'test_x.py'), PY_TEST);
+  return dir;
+}
+
+describe('Write: rewriting an existing test file', () => {
+  const dir = tempProject();
+  const check = (input, level) => checkTool('Write', input, level, dir);
+
+  it('blocks a full rewrite that turns test( into test.skip(', () => {
+    const r = check({ file_path: 'math.test.js', content: JS_TEST.replace("test('add", "test.skip('add") });
+    assert.strictEqual(r.blocked, true);
+    assert.strictEqual(r.id, 'skip-test');
+    assert.strictEqual(r.level, 'high');
+  });
+  it('blocks it with an absolute path too', () => {
+    const r = checkTool('Write', { file_path: path.join(dir, 'math.test.js'), content: JS_TEST.replace("test('add", "xit('add") });
+    assert.strictEqual(r.id, 'skip-test');
+  });
+  it('blocks adding a second skip to a file that already has one', () => {
+    const r = check({ file_path: 'one-skip.test.js', content: JS_TEST_ONE_SKIP.replace("test('add", "test.skip('add") });
+    assert.strictEqual(r.id, 'skip-test');
+  });
+  it('allows a rewrite that only changes test bodies', () => {
+    assert.strictEqual(check({ file_path: 'math.test.js', content: JS_TEST.replace('toBe(4)', 'toEqual(4)') }).blocked, false);
+  });
+  it('allows a rewrite that removes a skip', () => {
+    assert.strictEqual(check({ file_path: 'one-skip.test.js', content: JS_TEST_ONE_SKIP.replace('test.skip(', 'test(') }).blocked, false);
+  });
+  it('critical level does not block the rewrite', () => {
+    assert.strictEqual(check({ file_path: 'math.test.js', content: JS_TEST.replace("test('add", "test.skip('add") }, 'critical').blocked, false);
+  });
+  it('a brand-new skipped test file is still strict-only', () => {
+    assert.strictEqual(check({ file_path: 'new.test.js', content: "test.skip('x', () => {});" }).blocked, false);
+    assert.strictEqual(check({ file_path: 'new.test.js', content: "test.skip('x', () => {});" }, 'strict').id, 'write-skipped-test');
+  });
+});
+
+describe('Bash: disabling a test from the shell', () => {
+  const dir = tempProject();
+  const block = (command) => {
+    const r = checkTool('Bash', { command }, undefined, dir);
+    assert.strictEqual(r.blocked, true, `Expected BLOCKED: ${command}`);
+    assert.strictEqual(r.id, 'skip-test');
+  };
+  const allow = (command) => {
+    const r = checkTool('Bash', { command }, undefined, dir);
+    assert.strictEqual(r.blocked, false, `Expected ALLOWED but got '${r.id}': ${command}`);
+  };
+
+  it("blocks sed -i '' s/test(/test.skip(/", () => block("sed -i '' 's/test(/test.skip(/' math.test.js"));
+  it('blocks GNU sed -i with an escaped dot', () => block("sed -i 's/test(/test\\.skip(/' math.test.js"));
+  it('blocks sed -i.bak turning it( into xit(', () => block("sed -i.bak 's/^it(/xit(/' src/auth.test.js"));
+  it('blocks perl -pi adding @pytest.mark.skip', () => block("perl -pi -e 's/^def test_a/\\@pytest.mark.skip\\ndef test_a/' test_x.py"));
+  it('blocks a heredoc rewrite of an existing test file with a skip', () =>
+    block(`cat > math.test.js <<'EOF'\n${JS_TEST.replace("test('add", "test.skip('add")}EOF`));
+  it('blocks appending a skipped test with >>', () => block(`echo "test.skip('later', () => {});" >> math.test.js`));
+  it('blocks tee -a into a test file', () => block(`echo "xit('later', () => {});" | tee -a math.test.js`));
+
+  it('allows sed -i that removes a skip', () => allow("sed -i '' 's/test.skip(/test(/' one-skip.test.js"));
+  it('allows sed without -i (it only prints)', () => allow("sed 's/test(/test.skip(/' math.test.js"));
+  it('allows a heredoc rewrite with no new markers', () => allow(`cat > math.test.js <<'EOF'\n${JS_TEST}EOF`));
+  it('allows sed -i on a non-test file', () => allow("sed -i '' 's/test(/test.skip(/' src/app.js"));
+  it('critical level does not block shell skips', () => {
+    assert.strictEqual(checkTool('Bash', { command: "sed -i '' 's/test(/test.skip(/' math.test.js" }, 'critical', dir).blocked, false);
+  });
+
+  it('blocks a replacement that finishes the marker with the text around it', () => {
+    block("sed -i 's/test/test.skip/' math.test.js");
+    block("sed -i 's/(/.skip(/' math.test.js");
+  });
+  it('blocks a redirect to a quoted or escaped path with spaces', () => {
+    const sub = path.join(dir, 'dir with spaces');
+    fs.mkdirSync(sub, { recursive: true });
+    fs.writeFileSync(path.join(sub, 'math.test.js'), JS_TEST);
+    block(`printf '%s\\n' "test.skip('addition', () => {});" > 'dir with spaces/math.test.js'`);
+    block(`printf '%s\\n' "test.skip('addition', () => {});" > dir\\ with\\ spaces/math.test.js`);
+  });
+  it('blocks sed -i reached through find and xargs with a glob', () =>
+    block("find . -name '*.test.js' | xargs sed -i 's/test(/test.skip(/'"));
+  it('judges each command on its own', () => {
+    allow("sed 's/test(/test.skip(/' math.test.js && sed -i 's/foo/bar/' source.js");
+    allow("echo 'it.skip(' > notes.txt && echo hi > math.test.js");
+    allow('npm test 2>&1 | tee test.log');
+    block("sed -i 's/test(/test.skip(/' math.test.js && cat math.test.js");
+  });
+  it('a group or a pipe that continues on the next line is one command', () => {
+    block(`printf '%s\\n' "test.skip('addition', () => {});" |\n  tee math.test.js`);
+    block(`{ echo "// header"; echo "test.skip('addition', () => {});"; } > math.test.js`);
+    block(`(echo "// header"; echo "test.skip('addition', () => {});") > math.test.js`);
+    block(`{ echo a; echo "test.skip('addition', () => {});"; } | tee math.test.js`);
+  });
+  it('search text in a redirect is not output', () => {
+    fs.writeFileSync(path.join(dir, 'fixed.test.js'), "test('c', () => {});\n");
+    allow("sed 's/test.skip(/test(/' one-skip.test.js > fixed.test.js");
+    allow("grep -v 'test.skip(' one-skip.test.js > fixed.test.js");
+    allow("perl -pe 's/test\\.skip\\(/test(/' one-skip.test.js > fixed.test.js");
+    block("sed 's/test(/test.skip(/' math.test.js > fixed.test.js");
+  });
+  it('a run of backslashes with no closing delimiter stays fast', () => {
+    const start = Date.now();
+    allow("printf '%s\\n' 'sed -i s/" + '\\'.repeat(2000) + " math.test.js'");
+    assert.ok(Date.now() - start < 500, `took ${Date.now() - start} ms`);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Safety levels
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -280,5 +401,15 @@ describe('Integration (stdin/stdout)', () => {
   it('fails open on malformed input', async () => {
     const out = await runHook({ tool_name: 'Bash' });
     assert.deepStrictEqual(out, {});
+  });
+  it('resolves a relative Write path against the payload cwd', async () => {
+    const dir = tempProject();
+    const out = await runHook({
+      cwd: dir,
+      tool_name: 'Write',
+      tool_input: { file_path: 'math.test.js', content: JS_TEST.replace("test('add", "test.skip('add") },
+    });
+    assert.strictEqual(out.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(out.hookSpecificOutput.permissionDecisionReason, /\[skip-test\]/);
   });
 });

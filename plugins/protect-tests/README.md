@@ -2,7 +2,7 @@
 
 > Stops "fake green": blocks an agent from making a suite pass by deleting, renaming-away, or skip-disabling tests instead of fixing the code.
 
-A `PreToolUse` hook fires before every `Bash`, `Edit`, `MultiEdit`, and `Write` call and denies the ones that remove or disable tests: `rm` / `git rm` of a test file or test directory, `mv` of a test file to a disabled name (`.bak`, `.disabled`, ...), an edit that introduces a skip/xfail/ignore marker into an existing test, and (at the `strict` level) writing a brand-new test file that is already skipped. Test paths and skip markers are matched across pytest, unittest, jest/mocha/vitest, Go, JUnit/TestNG, NUnit/MSTest, RSpec, and Rust. It does NOT block writing new, real tests, refactor-renaming a test to another test name, or editing test bodies: only removal and disabling.
+A `PreToolUse` hook fires before every `Bash`, `Edit`, `MultiEdit`, and `Write` call and denies the ones that remove or disable tests: `rm` / `git rm` of a test file or test directory, `mv` of a test file to a disabled name (`.bak`, `.disabled`, ...), an edit that introduces a skip/xfail/ignore marker into an existing test (through `Edit`, a whole-file `Write`, or a shell in-place edit or redirect such as `sed -i`, `perl -pi`, `>`, `>>` or `tee`), and (at the `strict` level) writing a brand-new test file that is already skipped. Test paths and skip markers are matched across pytest, unittest, jest/mocha/vitest, Go, JUnit/TestNG, NUnit/MSTest, RSpec, and Rust. It does NOT block writing new, real tests, refactor-renaming a test to another test name, or editing test bodies: only removal and disabling.
 
 ## Install
 
@@ -20,7 +20,15 @@ Restart Claude Code, done. (Or from a shell: `claude plugin install protect-test
 | `Bash` | `rm` / `unlink` / `shred` / `trash` / `git rm` targets a test file or test directory (`tests/` or a bare `tests`), `find` deletes test files (`-delete`, `-exec rm`), or `mv` moves tests into `/tmp`, `$TMPDIR`, `~/.Trash` or `/dev/null` | `critical` | `delete-test` |
 | `Bash` | `mv` renames a test file to a disabled name (`.bak`, `.old`, `.orig`, `.disabled`, `.skip`, `.ignore`, `.tmp`, `~`) | `high` | `rename-test` |
 | `Edit` / `MultiEdit` | the edit adds a skip/xfail/ignore marker to an existing test file | `high` | `skip-test` |
-| `Write` | the new test file's content is already skipped/ignored | `strict` | `write-skipped-test` |
+| `Write` | it rewrites an existing test file and the new content has more skip/xfail/ignore markers than the file on disk | `high` | `skip-test` |
+| `Bash` | `sed -i`, `perl -pi` or `ruby -pi` substitutes a marker into a test file named in the same command (a glob such as `find -name '*.test.js' \| xargs sed -i` counts), or `>`, `>>` or `tee` writes one into a test file | `high` | `skip-test` |
+| `Write` | a brand-new test file's content is already skipped/ignored | `strict` | `write-skipped-test` |
+
+Markers are counted, not just detected, so adding a second `it.skip(` to a file that already has one still counts. Direct edits that remove skips are allowed. For `Write` and shell redirects the hook reads the target file (relative paths resolve against the session's working directory; files over 2 MB are not read). Each complete command joined by `;`, `&&`, `||` or `&` is judged on its own. Groups and continued pipelines, including a comment after `|`, keep their output with the destination. Literal braces in command arguments do not join unrelated commands.
+
+For a small, literal `sed` substitution, `perl -pe` substitution, or `grep` filter with one source file and one redirect or `tee` destination, the hook reads the source and compares the resulting content. This allows a command that removes all skips while still denying a positive `grep` that copies skipped tests. Output inference supports a restricted pattern syntax and ASCII text, with limits on command length, matching work and output size. Unsupported commands use the command-text heuristic, so they may be conservatively denied. Search-looking text inside `printf` arguments or heredocs is always treated as literal content, not stripped away.
+
+An in-place replacement counts when it completes a marker with the text around it (`s/test/test.skip/` on `test(`). This remains a guardrail, not a shell evaluator or sandbox: arbitrary language scripts, `cp` of a skipped file over a test, and a heredoc that creates a brand-new skipped file still pass at `high`.
 
 Anything at or below the active safety level is denied with a reason Claude sees ("Fix the code, don't disable the test"); everything else passes through. On malformed input the hook fails open (emits `{}`), so it can never wedge a session.
 
@@ -29,8 +37,8 @@ Anything at or below the active safety level is denied with a reason Claude sees
 | Level | Blocks |
 |-------|--------|
 | `critical` | deleting test files or whole test directories (rm / git rm) |
-| `high` (default) | + renaming a test file to a disabled name, + adding a skip/xfail/ignore marker to an existing test |
-| `strict` | + writing a whole test file that is already skipped |
+| `high` (default) | + renaming a test file to a disabled name, + adding a skip/xfail/ignore marker to an existing test, by any of Edit, Write or a shell edit |
+| `strict` | + writing a whole new test file that is already skipped |
 
 ## Configuration
 
@@ -46,7 +54,7 @@ One optional environment variable:
 
 ## Data & privacy
 
-Blocked calls and parse errors are logged as JSONL to `~/.claude/hooks-logs/YYYY-MM-DD.jsonl` (deny id, level, tool name, session id, cwd, permission mode; no commands or file contents, though a parse error's message can quote the first few characters of a malformed payload). The script only uses `fs` and `path`, so nothing leaves your machine.
+Blocked calls and parse errors are logged as JSONL to `~/.claude/hooks-logs/YYYY-MM-DD.jsonl` (deny id, level, tool name, session id, cwd, permission mode; no commands or file contents, though a parse error's message can quote the first few characters of a malformed payload). The script reads the target test file and, for supported literal shell transformations, the source file. It never runs the proposed command, and nothing leaves your machine.
 
 ## Uninstall
 
