@@ -1,0 +1,14 @@
+{
+  "session_id": "00000000-0000-7000-8000-000000000001",
+  "turn_id": "00000000-0000-7000-8000-000000000002",
+  "transcript_path": null,
+  "cwd": "__CWD__",
+  "hook_event_name": "PreToolUse",
+  "model": "codex-model",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "mcp__docs__search",
+  "tool_input": {
+    "query": "hooks"
+  },
+  "tool_use_id": "exec-00000000-0000-4000-8000-000000000015"
+}

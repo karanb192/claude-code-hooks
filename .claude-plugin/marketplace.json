@@ -304,7 +304,7 @@
     {
       "name": "guard-pack",
       "source": "./plugins/guard-pack",
-      "description": "All seven guard hooks in one Node process: subagent-spawn-cap, config-guard, block-dangerous-commands, protect-secrets, protect-tests, git-safety, and case-insensitive-guard, first blocking verdict wins. One ~35 ms Node startup per tool call instead of seven. Do not install alongside the individual guard plugins.",
+      "description": "All seven guard hooks in one Node process: subagent-spawn-cap, config-guard, block-dangerous-commands, protect-secrets, protect-tests, git-safety, and case-insensitive-guard, first blocking verdict wins. One ~35 ms Node startup per tool call instead of seven. Do not install alongside the individual guard plugins. Also runs in Codex CLI, file edits included.",
       "category": "security",
       "tags": [
         "security",
@@ -312,7 +312,8 @@
         "guardrails",
         "pretooluse",
         "latency",
-        "subagents"
+        "subagents",
+        "codex"
       ]
     }
   ]

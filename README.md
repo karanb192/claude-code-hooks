@@ -5,7 +5,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml/badge.svg)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
-[![Tests](https://img.shields.io/badge/tests-1949%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-2309%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
 
 **🌐 [Live site & catalog](https://karanb192.github.io/claude-code-hooks/)**
 
@@ -168,7 +168,7 @@ This repo is a **Claude Code plugin marketplace**, so you can install a single h
 | [standup-autopilot](plugins/standup-autopilot) | Writes your daily standup from what your agents actually did across repos: captures tasks, tests, PRs, and blockers from session transcripts and re-injects yesterday's open blockers next session | `/standup-autopilot:standup` renders today's card on demand |
 | [dead-end-registry](plugins/dead-end-registry) | Remembers approaches you tried and reverted (reason + estimated token cost) and warns before you retry them: a prompt-submit card plus an ask-before-edit guard | `/dead-end-registry:dead-ends` renders the registry on demand |
 | [bounty-board](plugins/bounty-board) | Prices your repo's TODO/FIXME/HACK/skip debt as aging XP bounties, injects the top 3 as opportunistic side quests, and verifies + pays out bounties you genuinely clear | `/bounty-board:board` renders the board on demand |
-| [guard-pack](plugins/guard-pack) | **All seven guards below in one Node process**: one ~35 ms startup per tool call instead of seven. The first deny wins and a later deny outranks an earlier ask, in that guard's own format. Do not install alongside the individual guards. | `HOOK_SAFETY_LEVEL` applies to the six pattern guards uniformly; `HOOK_ASK_*`, `CONFIG_GUARD_ALLOW`, and `SPAWN_CAP_*` pass through |
+| [guard-pack](plugins/guard-pack) | **All seven guards below in one Node process**: one ~35 ms startup per tool call instead of seven. The first deny wins and a later deny outranks an earlier ask, in that guard's own format. Do not install alongside the individual guards. Also runs in Codex CLI from 1.3.0, edits included; see [its README](plugins/guard-pack#codex-cli). | `HOOK_SAFETY_LEVEL` applies to the six pattern guards uniformly; `HOOK_ASK_*`, `CONFIG_GUARD_ALLOW`, and `SPAWN_CAP_*` pass through |
 | [block-dangerous-commands](plugins/block-dangerous-commands) | Blocks dangerous shell commands (rm -rf ~, fork bombs, curl\|sh, force push to main) before they run | `HOOK_SAFETY_LEVEL` picks critical/high/strict (default high); `HOOK_ASK_*` prompts instead of denying |
 | [protect-secrets](plugins/protect-secrets) | Prevents reading, modifying, or exfiltrating sensitive files (.env, SSH keys, cloud creds, keystores), including feeding them to an external model CLI or model API, by denying or asking before the tool call runs | `HOOK_SAFETY_LEVEL` (critical/high/strict, default high), `HOOK_ASK_CRITICAL/HIGH/STRICT` ask mode; `/plugin install protect-secrets@claude-code-hooks` |
 | [git-safety](plugins/git-safety) | Branch-aware git guardrails + destructive gh CLI protection: blocks pushes to main/master, protected-branch deletion, direct changes on a protected branch, and gh pr merge/close, issue close, release/repo delete | `HOOK_SAFETY_LEVEL` = `critical`/`high`/`strict` (default `high`); `/plugin install git-safety@claude-code-hooks` |
@@ -209,13 +209,14 @@ Then open `/hooks` in Codex and approve the plugin's hooks. Codex skips any hook
 
 | On Codex | Plugins | Why |
 | --- | --- | --- |
+| Native support | guard-pack 1.3.0 and later | Checks native file-edit patches and shell commands; asks become blocks. See [coverage and limits](plugins/guard-pack#codex-cli) |
 | Works | block-dangerous-commands, git-safety, case-insensitive-guard | They check shell commands only, and Codex sends those in the same shape Claude Code does |
 | Shell commands only | protect-secrets, protect-tests, config-guard, guard-pack 1.2.0 and earlier | Codex makes every file edit through one `apply_patch` tool that these plugins don't read, so a test turned into `test.skip` or a new `.env.production` gets through |
 | Claude Code only for now | Every other plugin | They rely on Claude Code transcripts, its edit events, or events Codex doesn't have (`Notification`, `ConfigChange`, `InstructionsLoaded`, the status line) |
 
 Two more things change under Codex.
 
-- **Don't turn on ask mode.** Codex has no "ask" answer for hooks. It treats one as an error and runs the command, so a guard set to ask (`HOOK_ASK_*`) stops guarding.
+- **Ask mode needs an adapter.** guard-pack 1.3.0 and later converts asks to blocks. The standalone guards still return an unsupported "ask" answer: Codex treats it as an error and runs the command, so leave `HOOK_ASK_*` off for those plugins.
 - **Reads are shell commands.** Codex has no Read or Grep tool. It reads files with `cat`, `rg` and the like, so protect-secrets catches a read only when the command names the file.
 
 ---
