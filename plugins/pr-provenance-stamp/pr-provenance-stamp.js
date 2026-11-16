@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * PR Provenance Stamp - PreToolUse (Bash) + PostToolUse (Edit|MultiEdit|Write|Bash) Hook
+ * PR Provenance Stamp - PreToolUse (Bash) + PostToolUse (Edit|MultiEdit|Write|Bash) + PostToolUseFailure (Bash) Hook
  *
  * Embeds a reviewer-facing provenance receipt into the PR body when Claude runs
  * `gh pr create` (or `glab mr create`). PostToolUse hooks maintain a per-session
  * ledger under ~/.claude/pr-provenance-stamp/<session_id>.json: a tool-call
  * counter, agent-authored line count, and every test/typecheck command with its
- * real exit code. When `gh pr create` fires, the PreToolUse branch reads the
+ * result (PostToolUseFailure supplies the exit code of a failed one). When `gh pr create` fires, the PreToolUse branch reads the
  * transcript for the real prompt count / token+dollar spend / models, asks git
  * for the branch's total added lines to derive a TRUTHFUL agent-vs-human split,
  * then rewrites the `--body` argument via hookSpecificOutput.updatedInput,
@@ -69,6 +69,10 @@
  *   "hooks": {
  *     "PostToolUse": [{
  *       "matcher": "Edit|MultiEdit|Write|Bash",
+ *       "hooks": [{ "type": "command", "command": "node /path/to/pr-provenance-stamp.js", "async": true }]
+ *     }],
+ *     "PostToolUseFailure": [{
+ *       "matcher": "Bash",
  *       "hooks": [{ "type": "command", "command": "node /path/to/pr-provenance-stamp.js", "async": true }]
  *     }],
  *     "PreToolUse": [{
@@ -228,14 +232,26 @@ function extractTestResult(command, toolResponse) {
       .replace(/\bfail(?:ed|ing|ures?)?[:\s]+0\b/gi, '')
       .replace(/\b(?:errors?)[:\s]+0\b/gi, '')
       .replace(/\b0\s+errors?\b/gi, '');
-    if (/\b(FAIL|failed|failing|error:|Error:|not ok)\b/.test(cleaned)) exit = 1;
+    if (/\b(FAIL|FAILED|failed|failing|error:|Error:|ERROR|not ok)\b|\b[1-9]\d*\s+errors?\b/.test(cleaned)) exit = 1;
     else if (blob.trim() !== '') exit = 0;
   }
   // Collapse whitespace (multi-line commands would break the markdown list the
   // cmd is rendered into) and redact secret-looking material: this string ends
   // up in a PUBLIC PR body.
-  const cmd = redactSecrets(command.trim().replace(/\s+/g, ' ')).slice(0, 200);
-  return { cmd, exit, ok: exit === 0 };
+  return { cmd: testCommandLabel(command), exit, ok: exit === 0 };
+}
+
+function testCommandLabel(command) {
+  return redactSecrets(command.trim().replace(/\s+/g, ' ')).slice(0, 200);
+}
+
+// Claude Code reports a non-zero Bash exit as PostToolUseFailure, whose `error`
+// starts with "Exit code N". The rest of the string is display text.
+function exitCodeFromFailure(error, isInterrupt) {
+  if (isInterrupt === true) return 130;
+  const m = typeof error === 'string' ? /^\s*Exit code (\d+)/.exec(error) : null;
+  const code = m ? Number(m[1]) : NaN;
+  return Number.isInteger(code) && code > 0 ? code : 1;
 }
 
 /** Apply a single PostToolUse event to the ledger, returning the mutated ledger. */
@@ -250,6 +266,17 @@ function applyPostToolUse(ledger, toolName, toolInput, toolResponse) {
   } else if (toolName === 'Bash') {
     const test = extractTestResult(toolInput && toolInput.command, toolResponse);
     if (test) ledger.tests.push(test);
+  }
+  return ledger;
+}
+
+/** Apply a PostToolUseFailure event: a test command that failed is recorded red. */
+function applyPostToolUseFailure(ledger, toolName, toolInput, error, isInterrupt) {
+  ledger.tool_calls = (ledger.tool_calls || 0) + 1;
+  const command = toolInput && toolInput.command;
+  if (toolName === 'Bash' && typeof command === 'string' && TEST_CMD_RE.test(command)) {
+    const exit = exitCodeFromFailure(error, isInterrupt);
+    ledger.tests.push({ cmd: testCommandLabel(command), exit, ok: false });
   }
   return ledger;
 }
@@ -862,6 +889,15 @@ function handlePostToolUse(data, dir = STATE_DIR) {
   return {};
 }
 
+function handlePostToolUseFailure(data, dir = STATE_DIR) {
+  const { tool_name, tool_input, error, is_interrupt, session_id } = data;
+  if (tool_name !== 'Bash') return {};
+  const ledger = loadLedger(session_id, dir);
+  applyPostToolUseFailure(ledger, tool_name, tool_input, error, is_interrupt);
+  saveLedger(ledger, dir);
+  return {};
+}
+
 function handlePreToolUse(data, dir = STATE_DIR, runGit = defaultRunGit) {
   const { tool_name, tool_input, session_id, transcript_path, cwd } = data;
   if (tool_name !== 'Bash') return {};
@@ -926,6 +962,7 @@ async function main() {
     let out = {};
     if (event === 'PreToolUse') out = handlePreToolUse(data);
     else if (event === 'PostToolUse') out = handlePostToolUse(data);
+    else if (event === 'PostToolUseFailure') out = handlePostToolUseFailure(data);
     else {
       // Fallback: infer from presence of tool_response (PostToolUse has it).
       if (Object.prototype.hasOwnProperty.call(data, 'tool_response')) out = handlePostToolUse(data);
@@ -1012,6 +1049,8 @@ if (require.main === module) {
     redactSecrets,
     extractTestResult,
     applyPostToolUse,
+    applyPostToolUseFailure,
+    exitCodeFromFailure,
     normalizeModel,
     priceFor,
     parseTranscript,
@@ -1030,6 +1069,7 @@ if (require.main === module) {
     totalBranchAddedLines,
     rewriteBodyArg,
     handlePostToolUse,
+    handlePostToolUseFailure,
     handlePreToolUse,
     findLatestLedger,
     renderCli,

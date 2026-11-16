@@ -2,7 +2,7 @@
 
 > Stamps a provenance receipt (prompts, estimated spend, tests run with exit codes, and a truthful agent-authored line split) into your PR body on `gh pr create`.
 
-A PostToolUse hook keeps a per-session ledger: tool-call count, agent-authored line count, and every test/typecheck/lint command with its real exit code. When Claude runs `gh pr create` (or `glab mr create`), a PreToolUse (Bash) hook reads the session transcript for the real prompt count, estimated token/dollar spend, and models, asks git for the branch's total added lines to derive an agent-vs-human split, then appends a one-line receipt to the PR `--body`. The hook never approves the command itself: it returns `ask`, so Claude Code shows you the rewritten command, receipt included, and you approve it. This means a stamped `gh pr create` prompts even when a permission rule would have allowed it. If the command builds its body with a heredoc, `$(...)`, backticks, or process substitution, the hook defers and leaves the command untouched rather than risk corrupting it.
+A PostToolUse hook keeps a per-session ledger: tool-call count, agent-authored line count, and every test/typecheck/lint command with whether it passed. A command that exits non-zero is recorded from Claude Code's PostToolUseFailure event with the exit code it reports; when a pipe hides the exit code (`pytest | tail -3`), the test runner's own summary decides. When Claude runs `gh pr create` (or `glab mr create`), a PreToolUse (Bash) hook reads the session transcript for the real prompt count, estimated token/dollar spend, and models, asks git for the branch's total added lines to derive an agent-vs-human split, then appends a one-line receipt to the PR `--body`. The hook never approves the command itself: it returns `ask`, so Claude Code shows you the rewritten command, receipt included, and you approve it. This means a stamped `gh pr create` prompts even when a permission rule would have allowed it. If the command builds its body with a heredoc, `$(...)`, backticks, or process substitution, the hook defers and leaves the command untouched rather than risk corrupting it.
 
 ## Install
 
@@ -17,7 +17,8 @@ Restart Claude Code, done. (Or from a shell: `claude plugin install pr-provenanc
 
 | Event | Runs | What happens |
 |-------|------|--------------|
-| PostToolUse (`Edit\|MultiEdit\|Write\|Bash`) | async (zero added latency) | Updates the session ledger: tool-call count, agent-authored line count, and each test/typecheck command with its real exit code. |
+| PostToolUse (`Edit\|MultiEdit\|Write\|Bash`) | async (zero added latency) | Updates the session ledger: tool-call count, agent-authored line count, and each test/typecheck command that exited zero, checked against the runner's summary for failures a pipe hid. |
+| PostToolUseFailure (`Bash`) | async (zero added latency) | Records a test/typecheck command that exited non-zero as failed, with the exit code Claude Code reports. |
 | PreToolUse (`Bash`) | sync | On `gh pr create` / `glab mr create`, rewrites the `--body` to append the receipt (prompt count, est. spend, test tally, agent-vs-human line split). Defers on unsafe shell constructs. |
 
 `/pr-provenance-stamp:provenance` renders the current session's receipt exactly as it would be stamped into a PR body, without creating one.
