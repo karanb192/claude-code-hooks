@@ -1168,3 +1168,84 @@ describe('Integration: --render CLI', () => {
     }
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Failed test runs must not be stamped green (issue #79)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Failed test runs are recorded red', () => {
+  it('a failing run recorded from PostToolUseFailure is not hidden by a later green run', () => {
+    let L = emptyLedger('s');
+    L = mod.applyPostToolUseFailure(L, 'Bash', { command: 'pytest' }, 'Exit code 1\n1 failed, 2 passed', false);
+    L = applyPostToolUse(L, 'Bash', { command: 'pytest -k smoke' }, { stdout: '3 passed in 0.10s', stderr: '', interrupted: false });
+    const line = mod.renderSummaryLine(mod.buildProvenance(L, null));
+    assert.ok(line.includes('tests 1/2'), line);
+    assert.ok(!line.includes('green'), line);
+  });
+
+  it('reads the exit code from the first line of the failure', () => {
+    let L = emptyLedger('s');
+    L = mod.applyPostToolUseFailure(L, 'Bash', { command: 'npm test' }, "Exit code 2\nError: Cannot find module 'express'", false);
+    assert.deepStrictEqual(L.tests, [{ cmd: 'npm test', exit: 2, ok: false }]);
+  });
+
+  it('counts an interrupted test run as 130', () => {
+    assert.strictEqual(mod.exitCodeFromFailure('anything', true), 130);
+  });
+
+  it('still records a failure whose error text has no exit code line', () => {
+    assert.strictEqual(mod.exitCodeFromFailure('Command timed out', false), 1);
+    assert.strictEqual(mod.exitCodeFromFailure(undefined, false), 1);
+  });
+
+  it('ignores failed non-test commands but still counts the tool call', () => {
+    let L = emptyLedger('s');
+    L = mod.applyPostToolUseFailure(L, 'Bash', { command: 'ls missing-dir' }, 'Exit code 1', false);
+    assert.deepStrictEqual(L.tests, []);
+    assert.strictEqual(L.tool_calls, 1);
+  });
+
+  it('redacts secrets in a failed command, same as a passing one', () => {
+    let L = emptyLedger('s');
+    L = mod.applyPostToolUseFailure(L, 'Bash', { command: 'API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456 npm test' }, 'Exit code 1', false);
+    assert.ok(!L.tests[0].cmd.includes('sk-abcdefghijklmnopqrstuvwxyz123456'), L.tests[0].cmd);
+  });
+
+  it('flags a pytest collection error hidden behind a pipe', () => {
+    const r = extractTestResult('pytest | tail -3', { stdout: 'ERROR tests/test_x.py\n!!!!!!!! Interrupted: 1 error during collection !!!!!!!!\n========= 1 error in 0.12s =========', stderr: '', interrupted: false });
+    assert.strictEqual(r.ok, false);
+  });
+
+  it('flags unittest FAILED (errors=1)', () => {
+    const r = extractTestResult('python -m unittest', { stdout: '', stderr: 'E\n======\nERROR: test_a (t.T)\nTraceback...\nZeroDivisionError: division by zero\n---\nRan 1 test in 0.000s\n\nFAILED (errors=1)', interrupted: false });
+    assert.strictEqual(r.ok, false);
+  });
+
+  it('keeps zero-error summaries green', () => {
+    assert.strictEqual(extractTestResult('pytest', { stdout: '5 passed, 0 errors in 0.2s' }).ok, true);
+    assert.strictEqual(extractTestResult('python -m unittest', { stdout: 'Ran 3 tests in 0.001s\n\nOK' }).ok, true);
+    assert.strictEqual(extractTestResult('npm test', { stdout: 'tests 12\npass 12\nfail 0' }).ok, true);
+  });
+});
+
+describe('Integration: PostToolUseFailure through main()', () => {
+  it('routes a PostToolUseFailure payload to the ledger, not to the PreToolUse branch', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'pps-79-'));
+    try {
+      const payload = { session_id: 'fail-79', hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_input: { command: 'pytest' }, error: 'Exit code 1\n1 failed', is_interrupt: false };
+      const out = await new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [path.join(__dirname, '..', 'pr-provenance-stamp.js')], { env: { ...process.env, HOME: home, USERPROFILE: home } });
+        let stdout = '';
+        child.stdout.on('data', (c) => (stdout += c));
+        child.on('error', reject);
+        child.on('close', () => resolve(stdout));
+        child.stdin.end(JSON.stringify(payload));
+      });
+      assert.strictEqual(out.trim(), '{}');
+      const ledger = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'pr-provenance-stamp', 'fail-79.json'), 'utf8'));
+      assert.deepStrictEqual(ledger.tests, [{ cmd: 'pytest', exit: 1, ok: false }]);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
