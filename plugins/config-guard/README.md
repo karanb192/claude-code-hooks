@@ -13,6 +13,19 @@ A `PreToolUse` hook fires before every `Bash`, `Edit`, `MultiEdit`, and `Write` 
 
 Restart Claude Code, done. (Or from a shell: `claude plugin install config-guard@claude-code-hooks`.)
 
+## Codex CLI
+
+```sh
+codex plugin marketplace add karanb192/claude-code-hooks
+codex plugin add config-guard@claude-code-hooks
+```
+
+Open `/hooks` in Codex and approve this plugin. Re-approve after every update; Codex skips unapproved or changed hooks. Do not install it alongside [guard-pack](../guard-pack#codex-cli), which includes this guard.
+
+This entry point checks `Bash` and native `apply_patch` calls. Patch files are checked individually; unreadable patches are blocked. Shell patches must use a plain command with a quoted heredoc. Literal searches and commit messages mentioning `apply_patch` pass. See [the shared adapter's limits](../guard-pack#codex-cli), including shell sessions and dynamically constructed commands.
+
+Export configuration variables before launching Codex. An ask-mode match becomes a block because Codex hooks cannot ask. Logs stay in `~/.claude/hooks-logs/` with `host: "codex"`, including on Codex-only machines.
+
 ## What it does
 
 | Event | Matcher | What happens |
@@ -23,9 +36,9 @@ Three safety levels, each including the previous:
 
 | Level | Protects |
 |-------|----------|
-| `critical` | The enforcement chain: `.claude/settings.json`, `.claude/settings.local.json`, `managed-settings.json`, anything under `.claude/hooks/`, `hooks.json` manifests. |
-| `high` (default) | Plus the config supply chain: `.mcp.json`, `.claude-plugin/`, and `claude config set\|add\|remove`, `claude mcp add\|add-json\|add-from-claude-desktop\|remove`, `claude plugin install\|uninstall\|enable\|disable\|update\|marketplace` (list/get forms stay allowed). |
-| `strict` | Plus instruction files that steer the agent: `CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/`, `.claude/agents/`, `.claude/commands/`. |
+| `critical` | The enforcement chain: `.claude/settings.json`, `.claude/settings.local.json`, `managed-settings.json`, anything under `.claude/hooks/`, `hooks.json` manifests, `.codex/config.toml`, `.codex/plugins/` and the corresponding paths under a custom `CODEX_HOME`. Deleting the Codex home itself also counts. |
+| `high` (default) | Plus the config supply chain: `.mcp.json`, `.claude-plugin/`, `.codex-plugin/`, Claude config/mcp/plugin write commands, and `codex plugin add\|remove`, `codex plugin marketplace add\|remove\|upgrade`, `codex mcp add\|remove`, `codex features enable\|disable`. List/get forms stay allowed. |
+| `strict` | Plus instruction files that steer the agent: `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `AGENTS.override.md`, `.claude/rules/`, `.claude/agents/`, `.claude/commands/`. |
 
 ## Configuration
 

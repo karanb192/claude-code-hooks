@@ -220,12 +220,20 @@ async function main() {
   }
 }
 
+function evaluateCodexSpawn(event, env = process.env, now = Date.now()) {
+  const deny = parsePositiveInt(env.SPAWN_CAP_DENY, DEFAULT_DENY);
+  const result = evaluateSpawn({ ...event, session_id: event.session_id ? `codex-${event.session_id}` : undefined },
+    { ...env, SPAWN_CAP_ASK: String(deny), SPAWN_CAP_DENY: String(deny) }, now);
+  if (result.reason) result.reason = result.reason.replace('in the settings.json env block and restart', 'in the hook environment and restart');
+  return result;
+}
+
 if (require.main === module) {
   main();
 } else {
   module.exports = {
     SPAWN_TOOLS, DEFAULT_ASK, DEFAULT_ASK_STEP, DEFAULT_DENY, EMOJIS, STATE_DIR,
     isSpawnTool, readThresholds, parsePositiveInt, sessionFile, displayPath, countLines,
-    pruneStale, shouldAsk, buildReason, evaluateSpawn,
+    pruneStale, shouldAsk, buildReason, evaluateSpawn, evaluateCodexSpawn,
   };
 }

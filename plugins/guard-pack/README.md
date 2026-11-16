@@ -21,7 +21,7 @@ Restart Claude Code, done.
 
 ## Codex CLI
 
-From 1.3.0 the pack also runs in Codex CLI.
+From 1.3.0 the pack also runs in Codex CLI. Version 1.4.0 adds the spawn cap and Codex configuration protection; each of the seven guards also has its own Codex entry point.
 
 ```
 codex plugin marketplace add karanb192/claude-code-hooks
@@ -35,16 +35,16 @@ What changes under Codex:
 - **Edits are checked through the patch.** The pack reads Codex's native `apply_patch` input and checks each file as Claude Code's `Write` (new file), `Edit` (changed file) or a shell `rm` / `mv` (deleted or moved file). A patch it cannot read is blocked with `[unreadable-patch]`. A moved file also gets a destination Write check using its added lines; this conservative approximation can reject a move onto an existing test file.
 - **Shell patches accept only literal quoted heredocs.** Use plain `apply_patch <<'EOF'` or `applypatch <<'EOF'`, with the full patch and closing delimiter on separate lines. Multiple such commands on separate lines are supported. Detected patch calls using other forms, including wrappers, expansions, pipes and file redirection, are blocked. Detection recognises common command positions, quoting and wrappers; it is not a shell interpreter and cannot resolve aliases or dynamically constructed command names. Prefer the native patch tool.
 - **Ask becomes a block.** Codex hooks cannot ask, so a guard set to ask (`HOOK_ASK_*`) blocks, and its reason says why.
-- **Six guards, not seven.** The subagent spawn cap is not registered on Codex yet.
+- **Seven guards, with a per-thread spawn budget.** `spawn_agent` is counted without an ask tier: `SPAWN_CAP_DENY=60` permits the first 59 calls and denies the 60th. Resuming a thread keeps its count; nested threads have separate budgets. Parallel calls can overshoot the threshold. See [the cap's Codex policy](../subagent-spawn-cap#codex-cli).
 - **Reads are shell commands.** Codex has no Read or Grep tool, so protect-secrets sees a read only when the command names the file.
 - **Typing into an open shell is not checked.** Codex does not send hooks the input it types into a shell session it already started, so a command entered that way runs unchecked.
-- **Codex's own config is only partly covered.** config-guard blocks writes to any `hooks.json`, `.codex/hooks.json` included, but not to `~/.codex/config.toml` or to the installed plugin folder. Codex switches the pack off when any file in that folder changes, so an agent allowed to write outside the workspace could turn it off. Codex's default `workspace-write` sandbox does not allow those writes.
+- **Codex configuration is protected.** config-guard checks `.codex/config.toml`, installed plugins under `.codex/plugins/`, and a custom `CODEX_HOME`. It also checks `.codex-plugin/` manifests at `high` and `AGENTS.md` / `AGENTS.override.md` at `strict`. Native patches resolve paths against the event's working directory and follow symlinks. Shell checks remain text-based, with [known limits](../config-guard#known-limits).
 
 The answer to Codex is exit code 2 with the reason on stderr, which Codex treats as a block. As on Claude Code, a crash in the pack lets the tool run. Log lines from Codex carry `"host":"codex"` in `~/.claude/hooks-logs/`, creating that directory even on a Codex-only setup. Checked live on Codex CLI 0.169.0 through a marketplace install, and the patch reader against Codex's own patch engine: [bench/codex-live/RESULTS.md](../../bench/codex-live/RESULTS.md).
 
 ## Configuration
 
-The pack adds no configuration of its own; the guards' env vars pass straight through because the modules read them directly:
+The pack adds no configuration of its own; the guards' env vars pass straight through because the modules read them directly. Export them before launching Codex. The ask cadence below applies to Claude Code; Codex uses the deny-only policy above:
 
 - `HOOK_SAFETY_LEVEL` = `critical` | `high` | `strict`: applies to the six pattern guards uniformly (each falls back to its own default on an invalid value). Want different levels per guard? Install the individual guard plugins instead. `subagent-spawn-cap` does not read it; see its own knobs below.
 - `HOOK_ASK_CRITICAL` / `HOOK_ASK_HIGH` / `HOOK_ASK_STRICT` = `true`: ask instead of deny, for the guards that support ask mode (config-guard, block-dangerous-commands, protect-secrets, case-insensitive-guard). protect-tests and git-safety always deny.

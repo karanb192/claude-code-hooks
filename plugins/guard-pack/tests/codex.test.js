@@ -216,12 +216,13 @@ describe('host.codexCalls()', () => {
       { tool: 'Edit', input: { file_path: 'b', old_string: 'y', new_string: 'z' } },
       { tool: 'Bash', input: { command: "mv -- 'b' 'c'" } },
       { tool: 'Write', input: { file_path: 'c', content: 'z' } },
+      { tool: 'Write', input: { file_path: 'd', content: '' } },
       { tool: 'Bash', input: { command: "rm -- 'd'" } },
     ]);
   });
 
   it('quotes paths so a crafted name stays one argument', () => {
-    const [call] = host.codexCalls({ tool_name: 'apply_patch', tool_input: { command: "*** Begin Patch\n*** Delete File: a'; echo b\n*** End Patch" } });
+    const [, call] = host.codexCalls({ tool_name: 'apply_patch', tool_input: { command: "*** Begin Patch\n*** Delete File: a'; echo b\n*** End Patch" } });
     assert.strictEqual(call.input.command, "rm -- 'a'\\''; echo b'");
   });
 
@@ -319,9 +320,9 @@ describe('Codex manifest', () => {
     assert.strictEqual(codex.version, claude.version);
   });
 
-  it('registers the Codex host on Bash and apply_patch', () => {
+  it('registers the Codex host on shell, patch and spawn tools', () => {
     const [group] = hooks.hooks.PreToolUse;
-    assert.strictEqual(group.matcher, 'Bash|apply_patch');
+    assert.strictEqual(group.matcher, 'Bash|apply_patch|spawn_agent');
     assert.ok(group.hooks[0].command.endsWith('--host codex'), group.hooks[0].command);
     assert.ok(group.hooks[0].command.includes('${PLUGIN_ROOT}/guard-pack.js'));
     assert.ok(!group.hooks[0].async);

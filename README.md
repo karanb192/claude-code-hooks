@@ -5,7 +5,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml/badge.svg)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
-[![Tests](https://img.shields.io/badge/tests-2309%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-2339%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
 
 **🌐 [Live site & catalog](https://karanb192.github.io/claude-code-hooks/)**
 
@@ -209,14 +209,13 @@ Then open `/hooks` in Codex and approve the plugin's hooks. Codex skips any hook
 
 | On Codex | Plugins | Why |
 | --- | --- | --- |
-| Native support | guard-pack 1.3.0 and later | Checks native file-edit patches and shell commands; asks become blocks. See [coverage and limits](plugins/guard-pack#codex-cli) |
-| Works | block-dangerous-commands, git-safety, case-insensitive-guard | They check shell commands only, and Codex sends those in the same shape Claude Code does |
-| Shell commands only | protect-secrets, protect-tests, config-guard, guard-pack 1.2.0 and earlier | Codex makes every file edit through one `apply_patch` tool that these plugins don't read, so a test turned into `test.skip` or a new `.env.production` gets through |
+| Native support | [guard-pack](plugins/guard-pack#codex-cli) 1.4.0 and all seven current standalone guards | Shell and native patch checks; asks become blocks. The pack also includes Codex config protection and a deny-only, per-thread spawn budget. Install the pack or individual guards, not both |
+| Older versions | guard-pack 1.3.x | Shell and native patches, without the Codex spawn cap or full config-path coverage. Older standalone guards have no native patch adapter and do not safely support ask mode |
 | Claude Code only for now | Every other plugin | They rely on Claude Code transcripts, its edit events, or events Codex doesn't have (`Notification`, `ConfigChange`, `InstructionsLoaded`, the status line) |
 
 Two more things change under Codex.
 
-- **Ask mode needs an adapter.** guard-pack 1.3.0 and later converts asks to blocks. The standalone guards still return an unsupported "ask" answer: Codex treats it as an error and runs the command, so leave `HOOK_ASK_*` off for those plugins.
+- **Ask becomes block.** The current pack and standalone guards convert ask-mode matches into blocks. The spawn cap ignores ask settings and uses `SPAWN_CAP_DENY`; see [its Codex policy](plugins/subagent-spawn-cap#codex-cli).
 - **Reads are shell commands.** Codex has no Read or Grep tool. It reads files with `cat`, `rg` and the like, so protect-secrets catches a read only when the command names the file.
 
 ---
