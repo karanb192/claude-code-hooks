@@ -1,6 +1,6 @@
 # claude-code-hooks
 
-🪝 Guardrails for Claude Code and Codex CLI. A 22-plugin Claude Code marketplace, with native Codex support in [guard-pack](plugins/guard-pack#codex-cli).
+🪝 Guardrails for Claude Code and Codex CLI. Browse the 22-plugin marketplace and check [host compatibility](#-using-codex).
 
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
