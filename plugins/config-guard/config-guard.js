@@ -132,13 +132,15 @@ const INPLACE_EDIT   = /\b(sed|gsed)\s+[^|;&]*-i\b|\bperl\s+[^|;&]*-\w*i\b|\bgaw
 // `claude plugin install` registers arbitrary hooks and skills, so it is a
 // config write in everything but name; list/get/read forms stay allowed.
 const CLAUDE_CLI_WRITE = /\bclaude\s+(config\s+(set|add|remove|rm)|mcp\s+(add|add-json|add-from-claude-desktop|remove|rm)|plugin\s+(install|uninstall|enable|disable|update|marketplace\s+(add|remove|rm|update)))\b/i;
-const CODEX_CLI_WRITE = /\bcodex\s+(?:plugin\s+(?:add|remove|marketplace\s+(?:add|remove|upgrade))|mcp\s+(?:add|remove)|features\s+(?:enable|disable))\b/i;
+const CLI_VALUE = '(?:"[^"\\n]*"|\'[^\'\\n]*\'|[^\\s"\';|&]+)';
+const CODEX_OPTION = `(?:--(?:profile|cd|model|config|sandbox|ask-for-approval|enable|disable|add-dir|image|local-provider|remote|remote-auth-token-env)(?:=|\\s+)${CLI_VALUE}|-[pCmcsai]\\s*${CLI_VALUE}|--(?:search|no-alt-screen|oss|strict-config|approve-for-me|dangerously-bypass-approvals-and-sandbox|dangerously-bypass-hook-trust|worktree|no-daemon|full-auto))`;
+const CODEX_CLI_WRITE = new RegExp(`\\bcodex(?:\\s+${CODEX_OPTION})*\\s+(?:plugin\\s+(?:add|remove|marketplace\\s+(?:add|remove|upgrade))|mcp\\s+(?:add|remove)|features\\s+(?:enable|disable))\\b`, 'i');
 
 const CODEX_HOME = path.resolve(process.env.CODEX_HOME || path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.codex'));
 const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const codexPrefix = `(?:\\.codex|\\$CODEX_HOME|\\$\\{CODEX_HOME\\}|${escapeRegex(CODEX_HOME.replace(/\\/g, '/'))})`;
 BASH_TOKENS.push(
-  { level: 'critical', id: 'codex-config', regex: new RegExp(`(?:^|[\\s'"/=])${codexPrefix}(?:/config\\.toml|/plugins(?:/[^\\s'";|&]*)?)?(?=[\\s'";|&]|$)`, 'i'), reason: 'Codex configuration and installed plugins control hook enforcement' },
+  { level: 'critical', id: 'codex-config', regex: new RegExp(`(?:^|[\\s'"/=])${codexPrefix}(?:/config\\.toml|/plugins(?:/[^\\s'";|&]*)?|/\\*?)?(?=[\\s'";|&]|$)`, 'i'), reason: 'Codex configuration and installed plugins control hook enforcement' },
   { level: 'high', id: 'codex-plugin-manifest', regex: /\.codex-plugin([/\s'"]|$)/i, reason: 'Codex plugin manifests register hooks' },
   { level: 'strict', id: 'agents-md', regex: /(^|[\s'"/=])AGENTS(?:\.override)?\.md(?=[\s'";|&]|$)/i, reason: 'AGENTS.md instructions steer the agent' },
 );
@@ -168,12 +170,12 @@ function redirectsInto(cmd, tokenRegex) {
 function resolveCandidates(filePath) {
   const candidates = [filePath];
   try {
-    candidates.push(fs.realpathSync(filePath));
+    candidates.push(fs.realpathSync.native(filePath));
   } catch {
     let ancestor = path.dirname(filePath);
     while (true) {
       try {
-        candidates.push(path.join(fs.realpathSync(ancestor), path.relative(ancestor, filePath)));
+        candidates.push(path.join(fs.realpathSync.native(ancestor), path.relative(ancestor, filePath)));
         break;
       } catch {}
       const parent = path.dirname(ancestor);

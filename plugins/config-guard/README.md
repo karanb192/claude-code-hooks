@@ -1,6 +1,6 @@
 # config-guard
 
-> Who guards the guards: blocks the agent from tampering with its own guardrail configuration, so no other hook can be switched off from inside a session.
+> Blocks writes to the configuration files that register guardrails, including the hook scripts and installed Codex plugins.
 
 A `PreToolUse` hook fires before every `Bash`, `Edit`, `MultiEdit`, and `Write` call and denies any mutation of the files that wire your guardrails: settings files that register hooks and permissions, the hook scripts themselves, `hooks.json` manifests, `.mcp.json`, and plugin config. Reads always pass (agents legitimately read settings); only writes, in-place edits, moves, copies onto, symlink swaps, and deletes are stopped, plus the `claude config set`, `claude mcp add`, and `claude plugin install` CLI forms that rewrite agent config without naming a settings path. Creating a protected file that does not exist yet also counts as mutation: that was the CVE-2026-25725 persistence vector, and the Aug 2026 CHAINDROP npm worm hid its payload in `.claude/settings.json` the same way. Edit/MultiEdit/Write paths are resolved through symlinks before checking, so a write through `ln -s ~/.claude /tmp/x` is still caught.
 
@@ -59,6 +59,8 @@ Ask mode is strictly per level and opt-in: everything defaults to deny.
 Deliberately not a full shell parser: a mutation verb and a protected path in the same Bash command block it even if the verb technically targets another argument. Interpreter one-liners (`python -c "open(...).write(...)"`), `git checkout/restore` of a config path, `chmod`, and paths built from variables (`"$DIR/settings.json"`) are not caught. Shell command strings are matched as text, so a Bash redirect through a symlinked directory is not resolved. PreToolUse only sees the agent's own tool calls; out-of-band changes are covered by its sibling [config-watch](https://github.com/karanb192/claude-code-hooks) (ConfigChange event) in the root repo.
 
 Starting a child agent with per-run config overrides, such as `codex exec -c features.hooks=false`, `codex --disable hooks exec`, or `claude --settings`, is not blocked by the CLI-write patterns. Keep the agent's sandbox and permission controls in place; this hook is not a boundary against arbitrary code execution.
+
+The protected Codex set is listed above. Other files, including `.codex/rules/*.rules` and additional profile configuration files, are not included. Shell deletion forms such as `find ... -delete` are also outside the mutation patterns.
 
 ## Data & privacy
 

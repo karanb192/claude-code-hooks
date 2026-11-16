@@ -100,6 +100,12 @@ describe('literal shell patch mentions', () => {
 
 describe('Codex configuration protection', () => {
   for (const name of ['config-guard', 'guard-pack']) {
+    it(`${name}: resolves custom-home case variants on a case-insensitive filesystem`, (t) => {
+      const alias = codexHome.toUpperCase();
+      if (!fs.existsSync(alias)) return t.skip('case-sensitive filesystem');
+      blocked(run(name, patch(`*** Add File: ${alias}/config.toml`, '+x = true')), 'codex-config');
+      blocked(run(name, patch(`*** Add File: ${alias}/plugins/new/guard.js`, '+x')), 'codex-config');
+    });
     it(`${name}: checks native add, update, move and delete paths in the event cwd`, () => {
       for (const event of [
         patch('*** Add File: .codex/config.toml', '+x = true'),
@@ -113,10 +119,10 @@ describe('Codex configuration protection', () => {
       blocked(run(name, patch(`*** Delete File: ${codexHome}/plugins/guard.js`)), 'codex-config');
     });
     it(`${name}: stops literal shell mutations and CLI config writes but allows reads`, () => {
-      for (const command of ['echo x > ~/.codex/config.toml', 'rm -rf ~/.codex/plugins/cache', 'rm -rf "$CODEX_HOME"', 'echo x > "${CODEX_HOME}/config.toml"', `rm '${codexHome}/plugins/data/installed.json'`, 'codex plugin remove config-guard@claude-code-hooks', 'codex plugin marketplace upgrade', 'codex mcp add demo -- node server.js', 'codex features disable hooks']) {
+      for (const command of ['echo x > ~/.codex/config.toml', 'rm -rf ~/.codex/plugins/cache', 'rm -rf ~/.codex/', 'rm -rf ~/.codex/*', 'rm -rf $HOME/.codex/', 'rm -rf ./.codex/', 'rm -rf "$CODEX_HOME/"', 'rm -rf "${CODEX_HOME}"/*', `rm -rf '${codexHome}/'`, 'rm -rf "$CODEX_HOME"', 'echo x > "${CODEX_HOME}/config.toml"', `rm '${codexHome}/plugins/data/installed.json'`, 'codex plugin remove config-guard@claude-code-hooks', 'codex --profile p plugin remove guard-pack', 'codex -p "my profile" --strict-config plugin remove guard-pack', 'codex --profile=p plugin marketplace upgrade', 'codex -ptest -c "some.key=true" plugin remove guard-pack', 'codex --cd=/tmp --disable hooks plugin remove guard-pack', 'codex plugin marketplace upgrade', 'codex mcp add demo -- node server.js', 'codex features disable hooks']) {
         blocked(run(name, shell(command)), command.startsWith('codex ') ? 'codex-cli-config' : 'codex-config');
       }
-      for (const command of ['cat ~/.codex/config.toml', 'codex plugin marketplace list', 'codex features list', 'mv notes.codex notes.txt']) allowed(run(name, shell(command)));
+      for (const command of ['cat ~/.codex/config.toml', 'codex plugin marketplace list', 'codex --profile p plugin marketplace list', 'codex features list', 'mv notes.codex notes.txt']) allowed(run(name, shell(command)));
     });
     it(`${name}: respects levels and the config override`, () => {
       const manifest = patch('*** Add File: .codex-plugin/plugin.json', '+{}');
