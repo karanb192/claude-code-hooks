@@ -1,6 +1,6 @@
 # claude-code-hooks
 
-🪝 Ready-to-use hooks for Claude Code, shipped as a 22-plugin installable marketplace: safety, automation, notifications, and more.
+🪝 Guardrails for Claude Code and Codex CLI. A 22-plugin Claude Code marketplace, with native Codex support in [guard-pack](plugins/guard-pack#codex-cli).
 
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -9,7 +9,27 @@
 
 **🌐 [Live site & catalog](https://karanb192.github.io/claude-code-hooks/)**
 
-Claude Code and agents like it run shell commands, edit files, and install packages on their own. claude-code-hooks enforces least privilege on that autonomy at runtime: every tool call passes through a `PreToolUse` or `PostToolUse` hook that allows, denies, or modifies it, with the reason fed back to the agent. Hooks run outside the model as separate processes, so prompt injection can't talk its way past them. The safety set blocks `.env` and secret exfiltration, `curl | sh`, `rm -rf`, force pushes to main, and tampering with the hook config itself; the rest of the catalog handles automation and notifications. Every hook is [mapped against the OWASP LLM Top 10 2026](docs/owasp-llm-top-10-2026.md).
+Before an agent runs a shell command or edits a file, these hooks check the action against rules outside the model. The [guard pack](plugins/guard-pack) blocks matched secret reads, dangerous commands, test disabling and destructive Git operations. A blocked call returns a reason to the agent. The [coverage limits](plugins/guard-pack#codex-cli) matter: hooks only see the events their host sends, and pattern checks are not a sandbox. The catalog also includes Claude Code automation, notifications and observability, with an [OWASP mapping](docs/owasp-llm-top-10-2026.md).
+
+**Start with guard-pack. Choose your agent:**
+
+Claude Code, inside a session:
+
+```text
+/plugin marketplace add karanb192/claude-code-hooks
+/plugin install guard-pack@claude-code-hooks
+```
+
+Restart Claude Code after installing.
+
+Codex CLI, from a shell:
+
+```sh
+codex plugin marketplace add karanb192/claude-code-hooks
+codex plugin add guard-pack@claude-code-hooks
+```
+
+Open `/hooks` in Codex and approve the pack. Approve it again after updates; Codex skips unapproved or changed hooks. Do not install the pack alongside its individual guards. See the [Codex compatibility table](#-using-codex) before choosing other plugins.
 
 ### 🎬 Quick Demo
 
