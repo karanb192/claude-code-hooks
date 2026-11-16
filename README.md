@@ -5,7 +5,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml/badge.svg)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
-[![Tests](https://img.shields.io/badge/tests-2294%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-2309%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
 
 **🌐 [Live site & catalog](https://karanb192.github.io/claude-code-hooks/)**
 
@@ -209,13 +209,14 @@ Then open `/hooks` in Codex and approve the plugin's hooks. Codex skips any hook
 
 | On Codex | Plugins | Why |
 | --- | --- | --- |
+| Native support | guard-pack 1.3.0 and later | Checks native file-edit patches and shell commands; asks become blocks. See [coverage and limits](plugins/guard-pack#codex-cli) |
 | Works | block-dangerous-commands, git-safety, case-insensitive-guard | They check shell commands only, and Codex sends those in the same shape Claude Code does |
 | Shell commands only | protect-secrets, protect-tests, config-guard, guard-pack 1.2.0 and earlier | Codex makes every file edit through one `apply_patch` tool that these plugins don't read, so a test turned into `test.skip` or a new `.env.production` gets through |
 | Claude Code only for now | Every other plugin | They rely on Claude Code transcripts, its edit events, or events Codex doesn't have (`Notification`, `ConfigChange`, `InstructionsLoaded`, the status line) |
 
 Two more things change under Codex.
 
-- **Don't turn on ask mode.** Codex has no "ask" answer for hooks. It treats one as an error and runs the command, so a guard set to ask (`HOOK_ASK_*`) stops guarding.
+- **Ask mode needs an adapter.** guard-pack 1.3.0 and later converts asks to blocks. The standalone guards still return an unsupported "ask" answer: Codex treats it as an error and runs the command, so leave `HOOK_ASK_*` off for those plugins.
 - **Reads are shell commands.** Codex has no Read or Grep tool. It reads files with `cat`, `rg` and the like, so protect-secrets catches a read only when the command names the file.
 
 ---

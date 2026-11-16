@@ -237,6 +237,55 @@ describe('host.codexCalls()', () => {
     }
   });
 
+  it('keeps an End Patch context line inside the shell heredoc', async () => {
+    const command = "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: a.js\n@@\n keep\n *** End Patch\n*** Add File: .env.production\n+PLACEHOLDER=1\n*** End Patch\nEOF";
+    const r = await run({ tool_name: 'Bash', tool_input: { command }, cwd: WORK });
+    assert.strictEqual(r.code, 2);
+    assert.match(r.stderr, /\[env-file\]/);
+  });
+
+  it('allows literal marker text and shell metacharacters in a quoted heredoc', async () => {
+    const command = 'applypatch <<"PATCH"\n*** Begin Patch\n*** Add File: notes.md\n+*** End Patch\n+$HOME `date` $(date)\n*** End Patch\nPATCH';
+    const r = await run({ tool_name: 'Bash', tool_input: { command }, cwd: WORK });
+    assert.strictEqual(r.code, 0, r.stderr);
+    assert.strictEqual(host.patchBlocks(command)[0].split('\n').length, 5);
+  });
+
+  it('refuses a file-fed patch even beside an unrelated literal block', async () => {
+    const patch = "<<'EOF'\n*** Begin Patch\n*** Add File: harmless.md\n+ok\n*** End Patch\nEOF";
+    for (const command of [`apply_patch ${patch}\napply_patch < other.patch`, `cat ${patch}\napply_patch "$(cat other.patch)"`]) {
+      const r = await run({ tool_name: 'Bash', tool_input: { command }, cwd: WORK });
+      assert.strictEqual(r.code, 2, command);
+      assert.match(r.stderr, /\[unreadable-patch\]/);
+    }
+  });
+
+  it('refuses shell expansion and early heredoc termination', async () => {
+    for (const command of [
+      'TARGET=.env.production; apply_patch <<EOF\n*** Begin Patch\n*** Add File: $TARGET\n+X=1\n*** End Patch\nEOF',
+      'apply_patch "*** Begin Patch\n*** Add File: $TARGET\n+X=1\n*** End Patch"',
+      "apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: a\n+x\nEOF\n*** End Patch\nEOF",
+      "apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: a\n+x\n*** End Patch\nEOF\ncat other.patch | apply_patch",
+    ]) {
+      const r = await run({ tool_name: 'Bash', tool_input: { command }, cwd: WORK });
+      assert.strictEqual(r.code, 2, command);
+      assert.match(r.stderr, /\[unreadable-patch\]/);
+    }
+  });
+
+  it('refuses detected patch calls in shell control flow and wrappers', async () => {
+    for (const command of [
+      "bash -lc 'apply_patch < p.txt'", 'if true; then apply_patch < p.txt; fi',
+      'for x in 1; do apply_patch < p.txt; done', '{ apply_patch < p.txt; }', '! apply_patch < p.txt',
+      "'apply_patch' < p.txt", '\\apply_patch < p.txt', "ap'ply_'patch < p.txt",
+      'apply_\\\npatch < p.txt', 'X=1 apply_patch < p.txt', 'env X=1 apply_patch < p.txt',
+    ]) {
+      const r = await run({ tool_name: 'Bash', tool_input: { command }, cwd: WORK });
+      assert.strictEqual(r.code, 2, command);
+      assert.match(r.stderr, /\[unreadable-patch\]/);
+    }
+  });
+
   it('does not treat patch text in an ordinary command as a patch', () => {
     for (const command of ['grep -rn "*** Begin Patch" src/', 'grep apply_patch src/', 'echo applypatch-notes > x']) {
       assert.deepStrictEqual(host.codexCalls({ tool_name: 'Bash', tool_input: { command } }), [{ tool: 'Bash', input: { command } }], command);

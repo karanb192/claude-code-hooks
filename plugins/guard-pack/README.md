@@ -32,14 +32,15 @@ Then open `/hooks` in Codex and approve guard-pack. Codex skips a hook nobody ha
 
 What changes under Codex:
 
-- **Edits are checked through the patch.** Codex makes every file edit through one `apply_patch` tool. The pack reads the patch and checks each file as Claude Code's `Write` (new file), `Edit` (changed file) or a shell `rm` / `mv` (deleted or moved file), so the same rules apply. The patch is read the way Codex's own parser reads it, and a patch it cannot read is blocked with `[unreadable-patch]` instead of being let through. A shell command that runs `apply_patch` or `applypatch` is checked too: every patch written inline in it is read, and one whose patch is not inline (`applypatch < p.txt`) is blocked.
+- **Edits are checked through the patch.** The pack reads Codex's native `apply_patch` input and checks each file as Claude Code's `Write` (new file), `Edit` (changed file) or a shell `rm` / `mv` (deleted or moved file). A patch it cannot read is blocked with `[unreadable-patch]`. A moved file also gets a destination Write check using its added lines; this conservative approximation can reject a move onto an existing test file.
+- **Shell patches accept only literal quoted heredocs.** Use plain `apply_patch <<'EOF'` or `applypatch <<'EOF'`, with the full patch and closing delimiter on separate lines. Multiple such commands on separate lines are supported. Detected patch calls using other forms, including wrappers, expansions, pipes and file redirection, are blocked. Detection recognises common command positions, quoting and wrappers; it is not a shell interpreter and cannot resolve aliases or dynamically constructed command names. Prefer the native patch tool.
 - **Ask becomes a block.** Codex hooks cannot ask, so a guard set to ask (`HOOK_ASK_*`) blocks, and its reason says why.
 - **Six guards, not seven.** The subagent spawn cap is not registered on Codex yet.
 - **Reads are shell commands.** Codex has no Read or Grep tool, so protect-secrets sees a read only when the command names the file.
 - **Typing into an open shell is not checked.** Codex does not send hooks the input it types into a shell session it already started, so a command entered that way runs unchecked.
 - **Codex's own config is only partly covered.** config-guard blocks writes to any `hooks.json`, `.codex/hooks.json` included, but not to `~/.codex/config.toml` or to the installed plugin folder. Codex switches the pack off when any file in that folder changes, so an agent allowed to write outside the workspace could turn it off. Codex's default `workspace-write` sandbox does not allow those writes.
 
-The answer to Codex is exit code 2 with the reason on stderr, which Codex treats as a block. As on Claude Code, a crash in the pack lets the tool run. Log lines from Codex carry `"host":"codex"`. Checked live on Codex CLI 0.169.0 through a marketplace install, and the patch reader against Codex's own patch engine: [bench/codex-live/RESULTS.md](../../bench/codex-live/RESULTS.md).
+The answer to Codex is exit code 2 with the reason on stderr, which Codex treats as a block. As on Claude Code, a crash in the pack lets the tool run. Log lines from Codex carry `"host":"codex"` in `~/.claude/hooks-logs/`, creating that directory even on a Codex-only setup. Checked live on Codex CLI 0.169.0 through a marketplace install, and the patch reader against Codex's own patch engine: [bench/codex-live/RESULTS.md](../../bench/codex-live/RESULTS.md).
 
 ## Configuration
 

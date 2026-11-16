@@ -163,24 +163,25 @@ function callsForOps(ops) {
   return calls;
 }
 
-// Codex puts apply_patch and applypatch on the shell's PATH. This finds either
-// name where a shell would run it: at the start of a command, after a
-// separator, inside $( ) or backticks, behind sudo/env/xargs and similar, or as
-// the script of sh -c / bash -c.
-const RUNS_APPLY_PATCH = /(?:^|[;&|(\n`]|\$\(|-c\s+['"])\s*(?:(?:sudo|env|exec|command|nohup|xargs|time|nice)\s+(?:-\S+\s+)*)*(?:[\w./~-]*\/)?(?:apply_patch|applypatch)(?=$|[\s;&|)<>'"`])/m;
+// Detection is conservative, not a shell interpreter. Only the literal
+// heredoc grammar below can supply patch text without shell evaluation.
+const RUNS_APPLY_PATCH = /(?:^|[;&|(\n`{!]|\b(?:then|do|else|elif)\s+|-[a-zA-Z]*c\s+)\s*(?:(?:[A-Za-z_]\w*=[^\s;]*|(?:sudo|env|exec|command|nohup|xargs|time|nice)(?:\s+-\S+)*)\s+)*(?:[\w./~-]*\/)?(?:apply_patch|applypatch)(?=$|[\s;&|)<>'"`])/m;
 
-// Every *** Begin Patch ... *** End Patch block in a shell command, in order.
+// Consume the entire command as literal, quoted heredocs. Patch marker text
+// inside file content must never delimit the shell's input.
 function patchBlocks(command) {
   const blocks = [];
-  let from = 0;
-  for (;;) {
-    const s = command.indexOf(BEGIN, from);
-    if (s < 0) return blocks;
-    const e = command.indexOf(END, s);
-    if (e < 0) { blocks.push(command.slice(s)); return blocks; }
-    blocks.push(command.slice(s, e + END.length));
-    from = e + END.length;
+  let rest = command.replace(/^[ \t\n]+/, '');
+  while (rest) {
+    const start = /^(?:apply_patch|applypatch)[ \t]+<<[ \t]*(['"])([A-Za-z_]\w*)\1[ \t]*\n/.exec(rest);
+    if (!start) return null;
+    const lines = rest.slice(start[0].length).split('\n');
+    const end = lines.indexOf(start[2]);
+    if (end < 0) return null;
+    blocks.push(lines.slice(0, end).join('\n'));
+    rest = lines.slice(end + 1).join('\n').replace(/^[ \t\n]+/, '');
   }
+  return blocks;
 }
 
 // Returns a list of { tool, input } calls to check, or a list holding
@@ -191,9 +192,10 @@ function codexCalls(event) {
   if (tool === 'Bash') {
     const calls = [{ tool: 'Bash', input }];
     const command = typeof input.command === 'string' ? input.command : '';
-    if (!RUNS_APPLY_PATCH.test(command)) return calls;
+    const names = command.replace(/\\\r?\n/g, '').replace(/['"\\]/g, '');
+    if (!RUNS_APPLY_PATCH.test(names)) return calls;
     const blocks = patchBlocks(command);
-    if (blocks.length === 0) return [...calls, { unreadable: true }];
+    if (!blocks || blocks.length === 0) return [...calls, { unreadable: true }];
     for (const block of blocks) {
       const parsed = parsePatch(block);
       if (!parsed.ok) return [...calls, { unreadable: true }];
@@ -209,7 +211,7 @@ function codexCalls(event) {
   return [];
 }
 
-const UNREADABLE_REASON = '[unreadable-patch] guard-pack could not read this patch in full, so it cannot check the edit. Write the patch inline as plain apply_patch text, or make the edit yourself.';
+const UNREADABLE_REASON = '[unreadable-patch] guard-pack could not read this patch in full, so it cannot check the edit. Use the native apply_patch tool or a plain apply_patch command with a quoted heredoc, or make the edit yourself.';
 
 const ASK_ON_CODEX = ' This guard is set to ask, and Codex hooks cannot ask, so it is blocked. Run it yourself if you meant it.';
 
