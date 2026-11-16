@@ -20,6 +20,19 @@ The live spawn event used `tool_name: "collaborationspawn_agent"`. The adapter a
 
 The full local test suite passed 2,343 tests with Ruff available. Nested whole-tree budgeting, Windows Codex, the desktop app and cloud tasks were not tested. Shell heredoc patch handling is covered by local tests, not this live run.
 
+Runner stdout summary:
+
+```text
+block-dangerous-commands: trusted; install PASS
+protect-secrets: trusted; install PASS
+protect-tests: trusted; live skip-test PASS
+git-safety: trusted; install PASS
+config-guard: trusted; live codex-config PASS
+case-insensitive-guard: trusted; install PASS
+subagent-spawn-cap: trusted; live spawn-cap PASS
+codex-cli 0.169.0: 0 standalone failures
+```
+
 ## guard-pack 1.4.0
 
 Re-run on 2026-11-16 with the updated `node bench/codex-live/run.mjs`, Codex CLI 0.169.0, macOS, after the standalone runner changes and config-path fixes.
@@ -39,6 +52,13 @@ guard-pack 1.4.0 was installed from this checkout with `codex plugin marketplace
 | chmod 777 notes.txt after a plugin file changed (hook status: modified) | ran (mode 777) | ran (mode 777) |
 
 All 9 rows match. guard-pack's own log for the run, which the script reads from its throwaway HOME, has the six blocks and the ask: `chmod-777, cat-env, delete-test, git-reset-hard, skip-test, env-file, ask:chmod-777`. So each block came from the hook, not from the model declining to try.
+
+Runner stdout summary:
+
+```text
+All 9 rows match.
+guard-pack log (host codex): chmod-777, cat-env, delete-test, git-reset-hard, skip-test, env-file, ask:chmod-777
+```
 
 The last row is Codex behaviour, not a guard-pack bug. Codex re-hashes the plugin folder before every hook run and skips the hook once anything in it changes, until the user approves it again in `/hooks`. Every guard-pack update therefore needs a fresh approval on Codex.
 

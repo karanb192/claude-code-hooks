@@ -125,6 +125,7 @@ describe('Codex configuration protection', () => {
       for (const command of ['cat ~/.codex/config.toml', 'codex plugin marketplace list', 'codex --profile p plugin marketplace list', 'codex features list', 'mv notes.codex notes.txt']) allowed(run(name, shell(command)));
     });
     it(`${name}: respects levels and the config override`, () => {
+      blocked(run(name, shell('codex --yolo plugin remove guard-pack')), 'codex-cli-config');
       const manifest = patch('*** Add File: .codex-plugin/plugin.json', '+{}');
       blocked(run(name, manifest), 'codex-plugin-manifest');
       allowed(run(name, manifest, { HOOK_SAFETY_LEVEL: 'critical' }));

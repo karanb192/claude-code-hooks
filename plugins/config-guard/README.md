@@ -32,7 +32,7 @@ Export configuration variables before launching Codex. An ask-mode match becomes
 |-------|---------|--------------|
 | PreToolUse | `Bash\|Edit\|MultiEdit\|Write` | Checks the target path (Edit/MultiEdit/Write) or command string (Bash) against the protected set for the active safety level; returns `permissionDecision: "deny"` (or `"ask"` in ask mode) with the pattern id and reason, `{}` otherwise. |
 
-Three safety levels, each including the previous:
+Three safety levels, each including the previous. Native file paths are normalized and resolved; shell paths use text matching with the limits below.
 
 | Level | Protects |
 |-------|----------|
@@ -61,6 +61,10 @@ Deliberately not a full shell parser: a mutation verb and a protected path in th
 Starting a child agent with per-run config overrides, such as `codex exec -c features.hooks=false`, `codex --disable hooks exec`, or `claude --settings`, is not blocked by the CLI-write patterns. Keep the agent's sandbox and permission controls in place; this hook is not a boundary against arbitrary code execution.
 
 The protected Codex set is listed above. Other files, including `.codex/rules/*.rules` and additional profile configuration files, are not included. Shell deletion forms such as `find ... -delete` are also outside the mutation patterns.
+
+Shell paths must use conventional spellings. Home-directory deletion with a trailing `/` or `/*` is checked, but partial globs, brace expansion, repeated slashes and dot segments are not normalized: `~/.codex/plugin*`, `~/.codex/conf*.toml`, `~/.codex/{config.toml,x}`, `~/.codex/./plugins` and `~/.codex//config.toml` can pass. Native patch paths are normalized separately and do not have this shell-spelling limitation.
+
+CLI-write checks recognize the documented Codex 0.169.0 global options and its `--yolo` alias. They do not parse quoted command/subcommand words or unknown future flags. Because they scan command text, literal searches, printed text and commit messages that contain `codex plugin add` or a similar write command can be refused. The Claude CLI patterns have the same text-matching limits.
 
 ## Data & privacy
 
