@@ -1,0 +1,15 @@
+{
+  "session_id": "example-thread",
+  "turn_id": "example-turn",
+  "transcript_path": "/example/sessions/rollout.jsonl",
+  "cwd": "/example/work",
+  "hook_event_name": "PreToolUse",
+  "model": "example-model",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "collaborationspawn_agent",
+  "tool_input": {
+    "task_name": "example_task",
+    "message": "Inspect example.txt"
+  },
+  "tool_use_id": "example-call"
+}

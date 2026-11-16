@@ -49,7 +49,7 @@ describe('isolated Codex plugin installations', () => {
       assert.equal(manifest.name, name);
       const groups = JSON.parse(fs.readFileSync(path.join(dir, manifest.hooks))).hooks.PreToolUse;
       assert.equal(groups.length, 1);
-      assert.equal(groups[0].matcher, name === 'subagent-spawn-cap' ? 'spawn_agent' : 'Bash|apply_patch');
+      assert.equal(groups[0].matcher, name === 'subagent-spawn-cap' ? 'spawn_agent|collaborationspawn_agent' : 'Bash|apply_patch');
       assert.equal(groups[0].hooks[0].command, 'node "${PLUGIN_ROOT}/codex.js"');
       allowed(run(name, shell('cat notes.txt')));
       allowed(run(name, { tool_name: 'mcp__demo__read', tool_input: {} }));
@@ -116,7 +116,7 @@ describe('Codex configuration protection', () => {
       for (const command of ['echo x > ~/.codex/config.toml', 'rm -rf ~/.codex/plugins/cache', 'rm -rf "$CODEX_HOME"', 'echo x > "${CODEX_HOME}/config.toml"', `rm '${codexHome}/plugins/data/installed.json'`, 'codex plugin remove config-guard@claude-code-hooks', 'codex plugin marketplace upgrade', 'codex mcp add demo -- node server.js', 'codex features disable hooks']) {
         blocked(run(name, shell(command)), command.startsWith('codex ') ? 'codex-cli-config' : 'codex-config');
       }
-      for (const command of ['cat ~/.codex/config.toml', 'codex plugin marketplace list', 'codex features list']) allowed(run(name, shell(command)));
+      for (const command of ['cat ~/.codex/config.toml', 'codex plugin marketplace list', 'codex features list', 'mv notes.codex notes.txt']) allowed(run(name, shell(command)));
     });
     it(`${name}: respects levels and the config override`, () => {
       const manifest = patch('*** Add File: .codex-plugin/plugin.json', '+{}');
@@ -132,6 +132,12 @@ describe('Codex configuration protection', () => {
 
 describe('Codex spawn budget', () => {
   for (const name of ['subagent-spawn-cap', 'guard-pack']) {
+    it(`${name}: counts the collaboration namespace spelling in the same thread`, () => {
+      const fixture = JSON.parse(fs.readFileSync(path.join(root, 'plugins/guard-pack/tests/fixtures/codex-0.169.0/spawn-agent.json')));
+      const event = { ...fixture, session_id: `namespaced-${name}` };
+      allowed(run(name, { ...event, tool_name: 'spawn_agent' }, { SPAWN_CAP_DENY: '2' }));
+      blocked(run(name, event, { SPAWN_CAP_DENY: '2' }), 'spawn-cap');
+    });
     it(`${name}: ignores ask tiers, denies at the configured number and preserves the count on resume`, () => {
       const event = spawn(`budget-${name}`);
       const env = { SPAWN_CAP_ASK: '1', SPAWN_CAP_DENY: '3' };

@@ -224,7 +224,7 @@ function patchBlocks(command) {
 function codexCalls(event) {
   const tool = event && event.tool_name;
   const input = (event && event.tool_input) || {};
-  if (tool === 'spawn_agent') return [{ tool: 'Agent', input }];
+  if (tool === 'spawn_agent' || tool === 'collaborationspawn_agent') return [{ tool: 'Agent', input }];
   if (tool === 'Bash') {
     const calls = [{ tool: 'Bash', input }];
     const command = typeof input.command === 'string' ? input.command : '';

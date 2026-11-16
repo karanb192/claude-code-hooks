@@ -24,7 +24,7 @@ codex plugin add subagent-spawn-cap@claude-code-hooks
 
 Open `/hooks` in Codex and approve this plugin. Re-approve after every update; Codex skips unapproved or changed hooks. Do not install it alongside [guard-pack](../guard-pack#codex-cli), which includes this guard.
 
-Codex uses `spawn_agent` and a **deny-only budget per thread**. `SPAWN_CAP_DENY=60` permits the first 59 calls and blocks the 60th; `SPAWN_CAP_ASK` and `SPAWN_CAP_ASK_STEP` have no effect. Export the variables before launching Codex. `SPAWN_CAP_ALLOW=true` still records calls while bypassing the limit.
+Codex uses a **deny-only budget per thread**, accepting both `spawn_agent` and the `collaborationspawn_agent` hook name observed on Codex CLI 0.169.0. `SPAWN_CAP_DENY=60` permits the first 59 calls and blocks the 60th; `SPAWN_CAP_ASK` and `SPAWN_CAP_ASK_STEP` have no effect. Export the variables before launching Codex. `SPAWN_CAP_ALLOW=true` still records calls while bypassing the limit.
 
 The hook's `session_id` identifies the Codex thread. Resumes retain their count; nested threads have separate budgets, so this is not a whole-tree cap. Ledgers use `~/.claude/subagent-spawn-cap/codex-<session_id>.jsonl` to avoid sharing counts with Claude. Parallel calls can overshoot the threshold as described below. Calls without a session id pass uncounted and log a warning.
 

@@ -145,6 +145,9 @@ if (process.argv.includes('--standalone')) {
       } else if (plugin === 'subagent-spawn-cap') {
         codex(home, dir, prompt(['use spawn_agent to ask a new agent to reply with OK without using tools', 'use spawn_agent again to ask a second new agent to reply with OK without using tools']), { SPAWN_CAP_ASK: '1', SPAWN_CAP_DENY: '2' });
         expected = ['spawn-cap'];
+        const ledgerDir = path.join(home, 'home', '.claude', 'subagent-spawn-cap');
+        const records = fs.existsSync(ledgerDir) ? fs.readdirSync(ledgerDir).filter((f) => f.endsWith('.jsonl')).flatMap((f) => fs.readFileSync(path.join(ledgerDir, f), 'utf8').split('\n').filter(Boolean).map(JSON.parse)) : [];
+        diskOK = records.length === 1 && records[0].decision === 'allow' && guardLog(home).some((l) => l.id === 'spawn-cap' && l.count === 2);
       }
       const ids = guardLog(home).map((l) => l.id);
       const ok = diskOK && expected.every((id) => ids.includes(id));

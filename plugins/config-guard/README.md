@@ -58,6 +58,8 @@ Ask mode is strictly per level and opt-in: everything defaults to deny.
 
 Deliberately not a full shell parser: a mutation verb and a protected path in the same Bash command block it even if the verb technically targets another argument. Interpreter one-liners (`python -c "open(...).write(...)"`), `git checkout/restore` of a config path, `chmod`, and paths built from variables (`"$DIR/settings.json"`) are not caught. Shell command strings are matched as text, so a Bash redirect through a symlinked directory is not resolved. PreToolUse only sees the agent's own tool calls; out-of-band changes are covered by its sibling [config-watch](https://github.com/karanb192/claude-code-hooks) (ConfigChange event) in the root repo.
 
+Starting a child agent with per-run config overrides, such as `codex exec -c features.hooks=false`, `codex --disable hooks exec`, or `claude --settings`, is not blocked by the CLI-write patterns. Keep the agent's sandbox and permission controls in place; this hook is not a boundary against arbitrary code execution.
+
 ## Data & privacy
 
 Logs decisions (pattern id, tool, truncated target, session id) to `~/.claude/hooks-logs/`. No network calls; everything stays on your local machine.
