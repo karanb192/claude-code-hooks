@@ -32,6 +32,7 @@ A growing collection of tested, documented hooks. Every one installs as a one-co
 
 - [Hooks](#-hooks)
 - [Install as a plugin](#-install-as-a-plugin)
+- [Using Codex?](#-using-codex)
 - [Quick Start](#-quick-start)
 - [Safety Levels](#-safety-levels)
 - [Testing](#-testing)
@@ -192,6 +193,30 @@ Earlier versions shipped the standalone scripts under `hook-scripts/`; that dire
 
 - **Your `settings.json` points into a clone of this repo** (for example `node ~/repos/claude-code-hooks/hook-scripts/pre-tool-use/block-dangerous-commands.js`). After you pull, that path no longer exists, and Claude Code treats a failing hook command as a non-blocking error: the guard stops enforcing without any visible sign. Fix it now, not later: install the plugin, or repoint the command at `plugins/<name>/<name>.js`.
 - **You copied a script to a stable location** (like `~/.claude/hooks/`). Your copy keeps working untouched. If you install the plugin version, remove the manual `settings.json` registration first, or the hook runs twice on every matching event: double latency, double log entries, double denials.
+
+---
+
+## 🤖 Using Codex?
+
+These plugins were written for Claude Code. Codex CLI reads the same marketplace, so they install there too, but most of them only partly work. Unless a plugin's own README says it supports Codex, expect the behaviour below. It was measured live on Codex CLI 0.167.1 for block-dangerous-commands, protect-secrets and protect-tests, and the other rows follow from what each plugin reads. The Codex side was rechecked against the 0.169.0 source.
+
+```
+codex plugin marketplace add karanb192/claude-code-hooks
+codex plugin add <name>@claude-code-hooks
+```
+
+Then open `/hooks` in Codex and approve the plugin's hooks. Codex skips any hook you have not approved, and it stops running them again whenever the plugin's files change, so approve again after each update.
+
+| On Codex | Plugins | Why |
+| --- | --- | --- |
+| Works | block-dangerous-commands, git-safety, case-insensitive-guard | They check shell commands only, and Codex sends those in the same shape Claude Code does |
+| Shell commands only | protect-secrets, protect-tests, config-guard, guard-pack 1.2.0 and earlier | Codex makes every file edit through one `apply_patch` tool that these plugins don't read, so a test turned into `test.skip` or a new `.env.production` gets through |
+| Claude Code only for now | Every other plugin | They rely on Claude Code transcripts, its edit events, or events Codex doesn't have (`Notification`, `ConfigChange`, `InstructionsLoaded`, the status line) |
+
+Two more things change under Codex.
+
+- **Don't turn on ask mode.** Codex has no "ask" answer for hooks. It treats one as an error and runs the command, so a guard set to ask (`HOOK_ASK_*`) stops guarding.
+- **Reads are shell commands.** Codex has no Read or Grep tool. It reads files with `cat`, `rg` and the like, so protect-secrets catches a read only when the command names the file.
 
 ---
 
