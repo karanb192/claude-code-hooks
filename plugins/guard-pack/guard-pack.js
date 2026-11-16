@@ -28,6 +28,10 @@
  * manual registration of any of the seven): every duplicated guard runs
  * twice on each matching tool call. Logs to: ~/.claude/hooks-logs/
  *
+ * Codex CLI: .codex-plugin/plugin.json registers hooks/codex-hooks.json, which
+ * runs this script with --host codex on Bash and apply_patch; lib/host.js turns
+ * each patch into Claude-shaped Write/Edit/rm/mv calls for the same guards.
+ *
  * Setup (plugin, recommended):
  *   /plugin marketplace add karanb192/claude-code-hooks
  *   /plugin install guard-pack@claude-code-hooks
@@ -38,6 +42,7 @@ const fs = require('fs');
 const path = require('path');
 
 const LIB = path.join(__dirname, 'lib');
+const host = require('./lib/host');
 const LOG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.claude', 'hooks-logs');
 
 const envBool = (key) => process.env[key] === 'true';
@@ -168,9 +173,50 @@ function evaluate(toolName, toolInput, cwd, event) {
   return ask;
 }
 
+// Codex: check every Claude-shaped call a patch or command turns into, then
+// answer with exit 2 and the reason on stderr. Codex cannot ask, so an ask
+// verdict is sent as a block that says so.
+function codexVerdict(data) {
+  let ask = null;
+  for (const call of host.codexCalls(data)) {
+    if (call.unreadable) return { reason: host.UNREADABLE_REASON, decision: 'deny', id: 'unreadable-patch', tool: data.tool_name };
+    if (!PACK_TOOLS.includes(call.tool)) continue;
+    const v = evaluate(call.tool, call.input, data.cwd, { ...data, tool_name: call.tool, tool_input: call.input });
+    if (!v) continue;
+    const hit = { ...v, tool: call.tool };
+    if (!v.ask) return { hit, decision: 'deny' };
+    ask = ask || hit;
+  }
+  return ask ? { hit: ask, decision: 'ask' } : null;
+}
+
+function runCodex(input) {
+  let answer = host.codexAnswer('');
+  try {
+    const data = JSON.parse(input);
+    const r = codexVerdict(data);
+    if (r) {
+      const { session_id, cwd, permission_mode } = data;
+      if (r.hit) {
+        const v = r.hit;
+        log({ level: r.decision === 'ask' ? 'ASK' : 'BLOCKED', host: 'codex', guard: v.guard, id: v.id, priority: v.level, decision: 'deny', tool: data.tool_name, checked: v.tool, ...(v.log || {}), session_id, cwd, permission_mode });
+        answer = host.codexAnswer(`${v.emojis[v.level]} ${v.reason} (via guard-pack)${r.decision === 'ask' ? host.ASK_ON_CODEX : ''}`);
+      } else {
+        log({ level: 'BLOCKED', host: 'codex', id: r.id, decision: 'deny', tool: r.tool, session_id, cwd, permission_mode });
+        answer = host.codexAnswer(r.reason);
+      }
+    }
+  } catch (e) {
+    log({ level: 'ERROR', host: 'codex', error: e.message });
+  }
+  if (answer.stderr) process.stderr.write(answer.stderr);
+  process.exitCode = answer.exitCode;
+}
+
 async function main() {
   let input = '';
   for await (const chunk of process.stdin) input += chunk;
+  if (host.hostFromArgv(process.argv) === 'codex') return runCodex(input);
 
   try {
     const data = JSON.parse(input);
@@ -198,5 +244,5 @@ async function main() {
 if (require.main === module) {
   main();
 } else {
-  module.exports = { GUARDS, PACK_TOOLS, evaluate };
+  module.exports = { GUARDS, PACK_TOOLS, evaluate, codexVerdict };
 }

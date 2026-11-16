@@ -19,6 +19,27 @@ Restart Claude Code, done.
 
 **Do not install the pack alongside the individual guard plugins** (or a manual `settings.json` registration of any of the seven): every duplicated guard runs twice on each matching tool call, with double latency, double denials, and for the spawn cap a double-counted budget. Pick one or the other.
 
+## Codex CLI
+
+From 1.3.0 the pack also runs in Codex CLI.
+
+```
+codex plugin marketplace add karanb192/claude-code-hooks
+codex plugin add guard-pack@claude-code-hooks
+```
+
+Then open `/hooks` in Codex and approve guard-pack. Codex skips a hook nobody has approved, and it skips the pack again after every update until you approve the new version.
+
+What changes under Codex:
+
+- **Edits are checked through the patch.** Codex makes every file edit through one `apply_patch` tool. The pack reads the patch and checks each file as Claude Code's `Write` (new file), `Edit` (changed file) or a shell `rm` / `mv` (deleted or moved file), so the same rules apply. A patch it cannot read is blocked with `[unreadable-patch]` instead of being let through. A patch run from the shell (`apply_patch <<'EOF'`) is checked the same way.
+- **Ask becomes a block.** Codex hooks cannot ask, so a guard set to ask (`HOOK_ASK_*`) blocks, and its reason says why.
+- **Six guards, not seven.** The subagent spawn cap is not registered on Codex yet.
+- **Reads are shell commands.** Codex has no Read or Grep tool, so protect-secrets sees a read only when the command names the file.
+- **Codex's own config is only partly covered.** config-guard blocks writes to any `hooks.json`, `.codex/hooks.json` included, but not to `~/.codex/config.toml`.
+
+The answer to Codex is exit code 2 with the reason on stderr, which Codex treats as a block. As on Claude Code, a crash in the pack lets the tool run. Log lines from Codex carry `"host":"codex"`. Checked live on Codex CLI 0.169.0 through a marketplace install: [bench/codex-live/RESULTS.md](../../bench/codex-live/RESULTS.md).
+
 ## Configuration
 
 The pack adds no configuration of its own; the guards' env vars pass straight through because the modules read them directly:
