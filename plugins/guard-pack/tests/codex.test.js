@@ -152,7 +152,7 @@ describe('host.parsePatch()', () => {
   });
 
   it('reads a move', () => {
-    const r = host.parsePatch(p('*** Update File: a.js', '*** Move to: b.js'));
+    const r = host.parsePatch(p('*** Update File: a.js', '*** Move to: b.js', '@@', '-x', '+y'));
     assert.strictEqual(r.ops[0].moveTo, 'b.js');
   });
 
@@ -162,8 +162,8 @@ describe('host.parsePatch()', () => {
     assert.deepStrictEqual(r.ops[0].added, ['y']);
   });
 
-  it('finds the patch inside a heredoc wrapper', () => {
-    assert.strictEqual(host.parsePatch(`apply_patch <<'EOF'\n${p('*** Delete File: a.js')}\nEOF\n`).ok, true);
+  it('accepts the heredoc wrapper Codex accepts', () => {
+    assert.strictEqual(host.parsePatch(`<<'EOF'\n${p('*** Delete File: a.js')}\nEOF\n`).ok, true);
   });
 
   it('refuses text it cannot read in full', () => {
@@ -172,8 +172,35 @@ describe('host.parsePatch()', () => {
     assert.strictEqual(host.parsePatch(p()).ok, false);
     assert.strictEqual(host.parsePatch('*** Begin Patch\n*** Add File: a\n+x').ok, false);
     assert.strictEqual(host.parsePatch(p('*** Move to: b.js')).ok, false);
+    assert.strictEqual(host.parsePatch(p('*** Update File: a.js', '*** Move to: b.js')).ok, false, 'Codex rejects an update with no change lines');
+    assert.strictEqual(host.parsePatch(p('*** Update File: a.js', '@@')).ok, false, 'Codex rejects an empty chunk');
+    assert.strictEqual(host.parsePatch(`${p('*** Delete File: a')}\nmore`).ok, false, 'End Patch must be the last line');
     assert.strictEqual(host.parsePatch(p('stray line', '*** Add File: a', '+x')).ok, false);
     assert.strictEqual(host.parsePatch(undefined).ok, false);
+  });
+});
+
+describe('host.parsePatch() splits lines the way Codex does', () => {
+  const p = (...lines) => ['*** Begin Patch', ...lines, '*** End Patch'].join('\n');
+  const paths = (r) => r.ops.map((o) => o.path);
+
+  it('sees a header that starts with U+0085, which Codex trims', () => {
+    assert.deepStrictEqual(paths(host.parsePatch(p('*** Add File: notes.md', '+hi', '\u0085*** Add File: .env.production', '+K=1'))), ['notes.md', '.env.production']);
+  });
+
+  it('treats a space-prefixed End Patch inside an update as context, as Codex does', () => {
+    assert.deepStrictEqual(paths(host.parsePatch(p('*** Update File: a.js', '@@', ' *** End Patch', '*** Add File: .env', '+x'))), ['a.js', '.env']);
+  });
+
+  it('treats a space-prefixed header inside an update as context', () => {
+    const r = host.parsePatch(p('*** Update File: a.js', '@@', ' *** Update File: b.js', '-x', '+y'));
+    assert.deepStrictEqual(paths(r), ['a.js']);
+    assert.deepStrictEqual(r.ops[0].added, ['y']);
+  });
+
+  it('allows a blank line after End of File but nothing else except a new chunk', () => {
+    assert.strictEqual(host.parsePatch(p('*** Update File: a', '@@', '-x', '+y', '*** End of File', '', '@@', '-z', '+w')).ok, true);
+    assert.strictEqual(host.parsePatch(p('*** Update File: a', '@@', '-x', '*** End of File', '+late')).ok, false);
   });
 });
 
@@ -196,6 +223,24 @@ describe('host.codexCalls()', () => {
   it('quotes paths so a crafted name stays one argument', () => {
     const [call] = host.codexCalls({ tool_name: 'apply_patch', tool_input: { command: "*** Begin Patch\n*** Delete File: a'; echo b\n*** End Patch" } });
     assert.strictEqual(call.input.command, "rm -- 'a'\\''; echo b'");
+  });
+
+  it('checks every patch block in a shell command', () => {
+    const cmd = `apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: a.md\n+x\n*** End Patch\nEOF\napply_patch <<'EOF'\n*** Begin Patch\n*** Add File: .env.production\n+K=1\n*** End Patch\nEOF`;
+    const files = host.codexCalls({ tool_name: 'Bash', tool_input: { command: cmd } }).filter((c) => c.tool === 'Write').map((c) => c.input.file_path);
+    assert.deepStrictEqual(files, ['a.md', '.env.production']);
+  });
+
+  it('refuses a shell apply_patch whose patch is not inline', () => {
+    for (const command of ['applypatch < p.txt', 'apply_patch "$(cat /tmp/p.txt)"', 'cat p.txt | apply_patch', "sh -c 'apply_patch < p.txt'", '/usr/local/bin/apply_patch < p.txt']) {
+      assert.ok(host.codexCalls({ tool_name: 'Bash', tool_input: { command } }).some((c) => c.unreadable), command);
+    }
+  });
+
+  it('does not treat patch text in an ordinary command as a patch', () => {
+    for (const command of ['grep -rn "*** Begin Patch" src/', 'grep apply_patch src/', 'echo applypatch-notes > x']) {
+      assert.deepStrictEqual(host.codexCalls({ tool_name: 'Bash', tool_input: { command } }), [{ tool: 'Bash', input: { command } }], command);
+    }
   });
 
   it('has no opinion on other tools', () => {

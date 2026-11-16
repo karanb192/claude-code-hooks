@@ -7,6 +7,12 @@
  * tool, apply_patch, whose tool_input.command is the whole patch text. Each
  * file in a patch becomes a Write (added file), an Edit (changed file, removed
  * lines as old_string, added lines as new_string) or an rm / mv shell call.
+ *
+ * parsePatch follows Codex's own parser (codex-rs/apply-patch, parser.rs and
+ * streaming_parser.rs at rust-v0.169.0) line for line, including which lines
+ * are fully trimmed and which only lose trailing whitespace. A reader that
+ * splits a patch differently from Codex can be shown one file while Codex
+ * writes another, so anything it does not read exactly is refused.
  */
 
 const HOSTS = ['claude', 'codex'];
@@ -19,42 +25,124 @@ function hostFromArgv(argv) {
 
 const BEGIN = '*** Begin Patch';
 const END = '*** End Patch';
-const FILE_MARKERS = [['*** Add File:', 'add'], ['*** Update File:', 'update'], ['*** Delete File:', 'delete']];
-const MOVE = '*** Move to:';
-const isIgnoredMarker = (t) => t === '*** End of File' || t.startsWith('*** Environment ID:');
+const ADD = '*** Add File: ';
+const UPDATE = '*** Update File: ';
+const DELETE = '*** Delete File: ';
+const MOVE = '*** Move to: ';
+const ENV_ID = '*** Environment ID: ';
+const EOF_MARKER = '*** End of File';
 
-// Returns { ok: true, ops } or { ok: false } when the text is not a patch
-// guard-pack can read in full. Markers may carry surrounding whitespace, as
-// Codex's own parser allows.
+// Rust's str::trim uses the Unicode White_Space property, which includes
+// U+0085 and excludes U+FEFF; JavaScript's trim differs on both.
+const WS = '\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000';
+const LEAD = new RegExp(`^[${WS}]+`);
+const TRAIL = new RegExp(`[${WS}]+$`);
+const trimEnd = (s) => s.replace(TRAIL, '');
+const trim = (s) => trimEnd(s).replace(LEAD, '');
+
+// Rust's str::lines: split on \n, drop one trailing \r per line, no final empty line.
+function rustLines(s) {
+  if (s === '') return [];
+  const lines = s.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines.map((l) => (l.endsWith('\r') ? l.slice(0, -1) : l));
+}
+
+const strictOk = (lines) => lines.length > 0 && trim(lines[0]) === BEGIN && trim(lines[lines.length - 1]) === END;
+
+function patchLines(text) {
+  const lines = rustLines(trim(text));
+  if (strictOk(lines)) return lines;
+  const [first] = lines;
+  const last = lines[lines.length - 1];
+  if (lines.length >= 4 && (first === '<<EOF' || first === "<<'EOF'" || first === '<<"EOF"') && last.endsWith('EOF')) {
+    const inner = lines.slice(1, -1);
+    if (strictOk(inner)) return inner;
+  }
+  return null;
+}
+
+// Returns { ok: true, ops } or { ok: false } for anything Codex itself would
+// reject or that this reader cannot follow exactly.
 function parsePatch(text) {
   if (typeof text !== 'string') return { ok: false };
-  const lines = text.split(/\r?\n/);
-  const start = lines.findIndex((l) => l.trim() === BEGIN);
-  if (start < 0) return { ok: false };
+  const lines = patchLines(text);
+  if (!lines) return { ok: false };
+
   const ops = [];
+  let mode = 'start';
   let op = null;
-  let ended = false;
-  for (let i = start + 1; i < lines.length; i++) {
-    const raw = lines[i];
-    const t = raw.trim();
-    if (t === END) { ended = true; break; }
-    if (t.startsWith('***')) {
-      const file = FILE_MARKERS.find(([m]) => t.startsWith(m));
-      if (file) { op = { kind: file[1], path: t.slice(file[0].length).trim(), added: [], removed: [] }; ops.push(op); continue; }
-      if (t.startsWith(MOVE)) {
-        if (!op || op.kind !== 'update') return { ok: false };
-        op.moveTo = t.slice(MOVE.length).trim();
-        continue;
-      }
-      if (isIgnoredMarker(t)) continue;
+  let envSeen = false;
+  // Update hunks keep Codex's chunk list: a chunk is empty until it gets a
+  // context, added or removed line.
+  const lastChunk = () => op.chunks[op.chunks.length - 1];
+  const updateIsEmpty = () => mode === 'update' && (op.chunks.length === 0 || !lastChunk().lines);
+  const header = (t) => {
+    if (mode === 'started' && t.startsWith(ENV_ID)) {
+      if (envSeen || trim(t.slice(ENV_ID.length)) === '') return 'bad';
+      envSeen = true;
+      return 'ok';
+    }
+    for (const [marker, kind] of [[END, 'end'], [ADD, 'add'], [DELETE, 'delete'], [UPDATE, 'update']]) {
+      if (kind === 'end' ? t !== END : !t.startsWith(marker)) continue;
+      if (updateIsEmpty()) return 'bad';
+      if (kind === 'end') { mode = 'ended'; return 'ok'; }
+      op = { kind, path: t.slice(marker.length), added: [], removed: [], chunks: [] };
+      if (!op.path) return 'bad';
+      ops.push(op);
+      mode = kind;
+      return 'ok';
+    }
+    return 'none';
+  };
+  const chunk = () => { if (op.chunks.length === 0) op.chunks.push({ lines: false, eof: false }); const c = lastChunk(); c.lines = true; return c; };
+
+  for (const [i, line] of lines.entries()) {
+    if (mode === 'start') { if (trim(line) !== BEGIN) return { ok: false }; mode = 'started'; continue; }
+    // Codex hands the final line to finish(), which trims it fully before
+    // comparing it with End Patch, whatever mode the parser is in.
+    if (i === lines.length - 1 && trim(line) === END) {
+      if (mode !== 'ended' && updateIsEmpty()) return { ok: false };
+      mode = 'ended';
+      continue;
+    }
+    if (mode === 'ended') { if (trim(line) !== '') return { ok: false }; continue; }
+    if (mode !== 'update') {
+      const h = header(trim(line));
+      if (h === 'bad') return { ok: false };
+      if (h === 'ok') continue;
+      if (mode === 'add' && line.startsWith('+')) { op.added.push(line.slice(1)); continue; }
       return { ok: false };
     }
-    if (!op) { if (t === '') continue; return { ok: false }; }
-    if (raw.startsWith('+')) op.added.push(raw.slice(1));
-    else if (raw.startsWith('-')) op.removed.push(raw.slice(1));
+    // Update hunk: only trailing whitespace is ignored, so " *** End Patch" is a
+    // context line here, exactly as in Codex.
+    const u = trimEnd(line);
+    const h = header(u);
+    if (h === 'bad') return { ok: false };
+    if (h === 'ok') continue;
+    const last = op.chunks.length ? lastChunk() : null;
+    if (last && last.eof) {
+      if (u === '') continue;
+      if (u !== '@@' && !u.startsWith('@@ ')) return { ok: false };
+    }
+    if (op.chunks.length === 0 && op.moveTo === undefined && u.startsWith(MOVE)) { op.moveTo = u.slice(MOVE.length); continue; }
+    if (u === '@@' || u.startsWith('@@ ')) {
+      if (last && !last.lines) return { ok: false };
+      op.chunks.push({ lines: false, eof: false });
+      continue;
+    }
+    if (u === EOF_MARKER) {
+      if (last && !last.lines) return { ok: false };
+      if (last) last.eof = true;
+      continue;
+    }
+    if (line === '' || line.startsWith(' ')) { chunk(); continue; }
+    if (line.startsWith('+')) { chunk(); op.added.push(line.slice(1)); continue; }
+    if (line.startsWith('-')) { chunk(); op.removed.push(line.slice(1)); continue; }
+    return { ok: false };
   }
-  if (!ended || ops.length === 0 || ops.some((o) => !o.path)) return { ok: false };
-  return { ok: true, ops };
+  if (mode !== 'ended' || ops.length === 0) return { ok: false };
+  return { ok: true, ops: ops.map(({ chunks, ...o }) => (o.moveTo === undefined ? (delete o.moveTo, o) : o)) };
 }
 
 const shellQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
@@ -75,27 +163,41 @@ function callsForOps(ops) {
   return calls;
 }
 
-// A shell command can run apply_patch itself (apply_patch <<'EOF' ... EOF).
-// Returns the patch text when the command carries one, else null.
-function embeddedPatch(command) {
-  if (typeof command !== 'string') return null;
-  const s = command.indexOf(BEGIN);
-  if (s < 0) return null;
-  const e = command.indexOf(END, s);
-  return e < 0 ? command.slice(s) : command.slice(s, e + END.length);
+// Codex puts apply_patch and applypatch on the shell's PATH. This finds either
+// name where a shell would run it: at the start of a command, after a
+// separator, inside $( ) or backticks, behind sudo/env/xargs and similar, or as
+// the script of sh -c / bash -c.
+const RUNS_APPLY_PATCH = /(?:^|[;&|(\n`]|\$\(|-c\s+['"])\s*(?:(?:sudo|env|exec|command|nohup|xargs|time|nice)\s+(?:-\S+\s+)*)*(?:[\w./~-]*\/)?(?:apply_patch|applypatch)(?=$|[\s;&|)<>'"`])/m;
+
+// Every *** Begin Patch ... *** End Patch block in a shell command, in order.
+function patchBlocks(command) {
+  const blocks = [];
+  let from = 0;
+  for (;;) {
+    const s = command.indexOf(BEGIN, from);
+    if (s < 0) return blocks;
+    const e = command.indexOf(END, s);
+    if (e < 0) { blocks.push(command.slice(s)); return blocks; }
+    blocks.push(command.slice(s, e + END.length));
+    from = e + END.length;
+  }
 }
 
-// Returns a list of { tool, input } calls to check, or [{ unreadable: true }]
-// when an edit cannot be read. An empty list means no opinion.
+// Returns a list of { tool, input } calls to check, or a list holding
+// { unreadable: true } when an edit cannot be read. An empty list means no opinion.
 function codexCalls(event) {
   const tool = event && event.tool_name;
   const input = (event && event.tool_input) || {};
   if (tool === 'Bash') {
     const calls = [{ tool: 'Bash', input }];
-    const patch = embeddedPatch(input.command);
-    if (patch !== null) {
-      const parsed = parsePatch(patch);
-      calls.push(...(parsed.ok ? callsForOps(parsed.ops) : [{ unreadable: true }]));
+    const command = typeof input.command === 'string' ? input.command : '';
+    if (!RUNS_APPLY_PATCH.test(command)) return calls;
+    const blocks = patchBlocks(command);
+    if (blocks.length === 0) return [...calls, { unreadable: true }];
+    for (const block of blocks) {
+      const parsed = parsePatch(block);
+      if (!parsed.ok) return [...calls, { unreadable: true }];
+      calls.push(...callsForOps(parsed.ops));
     }
     return calls;
   }
@@ -107,7 +209,7 @@ function codexCalls(event) {
   return [];
 }
 
-const UNREADABLE_REASON = '[unreadable-patch] guard-pack could not read this apply_patch input, so it cannot check the edit. Update guard-pack, or make the edit yourself.';
+const UNREADABLE_REASON = '[unreadable-patch] guard-pack could not read this patch in full, so it cannot check the edit. Write the patch inline as plain apply_patch text, or make the edit yourself.';
 
 const ASK_ON_CODEX = ' This guard is set to ask, and Codex hooks cannot ask, so it is blocked. Run it yourself if you meant it.';
 
@@ -117,4 +219,4 @@ function codexAnswer(reason) {
   return reason ? { exitCode: 2, stderr: reason.trim() + '\n', stdout: '' } : { exitCode: 0, stderr: '', stdout: '' };
 }
 
-module.exports = { HOSTS, hostFromArgv, parsePatch, callsForOps, embeddedPatch, codexCalls, codexAnswer, UNREADABLE_REASON, ASK_ON_CODEX };
+module.exports = { HOSTS, hostFromArgv, parsePatch, callsForOps, patchBlocks, codexCalls, codexAnswer, RUNS_APPLY_PATCH, UNREADABLE_REASON, ASK_ON_CODEX };

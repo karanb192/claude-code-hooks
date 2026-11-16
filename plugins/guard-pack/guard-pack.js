@@ -15,8 +15,9 @@
  * skipped so one broken guard can never switch off the other six
  * (fail-open per guard, same convention as the standalone hooks).
  *
- * The guard scripts in lib/ are byte-identical copies of the individual
- * plugin scripts; a repo test pins them, so they cannot drift. All the
+ * The seven guard scripts in lib/ are byte-identical copies of the individual
+ * plugin scripts; a repo test pins them, so they cannot drift. lib/host.js is
+ * the pack's own Codex adapter, not a copy. All the
  * guards' env vars pass straight through, since the modules read them
  * directly: HOOK_SAFETY_LEVEL (the six pattern guards uniformly),
  * HOOK_ASK_CRITICAL / HOOK_ASK_HIGH / HOOK_ASK_STRICT, CONFIG_GUARD_ALLOW,
