@@ -1279,6 +1279,15 @@ describe('When the exit status may be hidden', () => {
     }
   });
 
+  it('applies the same rule to a quoted script that holds the test command', () => {
+    for (const cmd of ["sh -c 'npm test || true'", 'bash -lc "pytest | tail -3"', "ssh build 'cd app; npm test'"]) {
+      assert.strictEqual(mod.exitStatusMayBeHidden(cmd), true, cmd);
+    }
+    for (const cmd of ["sh -c 'npm test'", 'bash -lc "cd app && pytest -q"']) assert.strictEqual(mod.exitStatusMayBeHidden(cmd), false, cmd);
+    assert.deepStrictEqual(extractTestResult("sh -c 'node --test x.test.js >/dev/null 2>&1 || true'", out('')),
+      { cmd: "sh -c 'node --test x.test.js >/dev/null 2>&1 || true'", exit: null, ok: false });
+  });
+
   it('treats pipes, ;, ||, background, extra lines, substitutions and ! as hiding it', () => {
     for (const cmd of ['pytest | tail -3', 'npm test 2>&1 | tail -20', 'npm test || true', 'npm test; echo done', 'npm test &',
       'npm test\necho done', 'echo $(pytest)', 'echo "$(pytest)"', 'echo `pytest`', '! npm test', 'cd api && ! npm test']) {
@@ -1349,6 +1358,19 @@ describe('A zero exit is a pass unless the runner says otherwise', () => {
       const r = extractTestResult('npm test', out(`collected\n${line}\ndone`));
       assert.deepStrictEqual({ ok: r.ok, inferred: r.inferred }, { ok: false, inferred: true }, runner);
     }
+  });
+
+  it('does not read a runner summary out of a test name or a log line', () => {
+    for (const text of ['✔ handles BUILD FAILURE responses\n# fail 0', 'test error TS1234: ... ok\nOK',
+      'handles BUILD FAILURE responses passed\nlog: saw error TS1234: in the fixture', 'retried after 5 examples, 1 failure was reported upstream',
+      'note (2 errors, 0 warnings) was the old count']) {
+      assert.deepStrictEqual(extractTestResult('npm test', out(text)), { cmd: 'npm test', exit: 0, ok: true }, text);
+    }
+  });
+
+  it('reads coloured output', () => {
+    assert.strictEqual(extractTestResult('npm test | tail -5', out('\x1b[31m  1 failing\x1b[0m')).ok, false);
+    assert.strictEqual(extractTestResult('npm test | tail -5', out('\x1b[32m  5 passing\x1b[0m (12ms)')).ok, true);
   });
 
   it('does not count a TAP todo or skip as a failure', () => {

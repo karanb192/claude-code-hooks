@@ -32,12 +32,12 @@ Claude Code tells a hook the exit code only when a command fails, so the receipt
 | The command exited non-zero, or timed out | `exit N ✗`, with the code Claude Code reports |
 | The command exited zero | `exit 0 ✓`, whatever words its output contains |
 | The command exited zero but the runner's own summary reports failures (a script that swallows the status, such as `eslint . \|\| true`) | `failures in its output ✗` |
-| The command line can hide the runner's status (a pipe, `;`, `\|\|`, `&`, a second line, a substitution or `!`) | Decided by the output: `failures in its output ✗`, `passed per its output ✓` when the runner's passing summary is there, otherwise `result not captured` |
+| The command line can hide the runner's status (a pipe, `;`, `\|\|`, `&`, a second line, a substitution or `!`, also inside a quoted script such as `sh -c 'npm test \|\| true'`) | Decided by the output: `failures in its output ✗`, `passed per its output ✓` when the runner's passing summary is there, otherwise `result not captured` |
 | The command ran in the background, so no result reached the hook | `result not captured` |
 
 A run whose result was not captured counts as neither green nor failing: `tests 3/3 green, 1 not captured`.
 
-The summaries recognised are those of pytest, unittest, jest, vitest, mocha, `node --test`, `go test`, `cargo test`, rspec, eslint, tsc and Maven. When the status is hidden, a failure is also read from words such as `FAILED` or `error:` on any line the runner did not mark as passed. The check sees only what the pipe let through: `npm test | head -5` usually cuts the summary off and reads as not captured. Prefer `npm test 2>&1 | tail -20`, or no pipe at all.
+The summaries recognised are those of pytest, unittest, jest, vitest, mocha, `node --test`, `go test`, `cargo test`, rspec, eslint, tsc and Maven, matched only at the start of a line. A line the runner marked as passed is never read as a failure, so a passing test named "handles BUILD FAILURE" stays green. When the status is hidden, a failure is also read from words such as `FAILED` or `error:` on any other line. The check sees only what the pipe let through: `npm test | head -5` usually cuts the summary off and reads as not captured. Prefer `npm test 2>&1 | tail -20`, or no pipe at all.
 
 ## Configuration
 

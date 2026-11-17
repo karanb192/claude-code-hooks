@@ -232,8 +232,9 @@ function redactSecrets(s) {
     .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b/g, '[redacted]');
 }
 
-// A runner's own verdict that tests failed. Line-anchored summaries only, so a
-// test NAME or log line that merely contains "error" or "failed" never matches.
+// A runner's own verdict that tests failed. Every pattern is anchored to the
+// start of a line, so a test name or log line that merely contains "error" or
+// "BUILD FAILURE" never matches.
 const RUNNER_FAILED = new RegExp([
   String.raw`^(?:=+ )?(?:\d+ [a-z]+, )*[1-9]\d* (?:failed|errors?)\b.*\bin [\d.]+s`, // pytest
   String.raw`^FAILED \((?:failures|errors)=`,                                         // unittest
@@ -242,11 +243,11 @@ const RUNNER_FAILED = new RegExp([
   String.raw`^(?:#|ℹ) fail [1-9]`,                                                    // node --test
   String.raw`^--- FAIL:|^\s*FAIL\b`,                                                  // go test, jest
   String.raw`^test result: FAILED`,                                                   // cargo test
-  String.raw`^not ok\b(?!.*#\s*(?:TODO|SKIP)\b)`,                                      // TAP
-  String.raw`\b\d+ examples?, [1-9]\d* failures?\b`,                                  // rspec
-  String.raw`\([1-9]\d* errors?, \d+ warnings?\)`,                                    // eslint
-  String.raw`\berror TS\d+:|^Found [1-9]\d* errors?\b`,                               // tsc
-  String.raw`\bBUILD FAILURE\b|\bTests run: \d+, Failures: (?:[1-9]|\d+, Errors: [1-9])`,  // maven
+  String.raw`^not ok\b(?!.*#\s*(?:TODO|SKIP)\b)`,                                     // TAP
+  String.raw`^\d+ examples?, [1-9]\d* failures?\b`,                                   // rspec
+  String.raw`^✖ \d+ problems? \([1-9]\d* errors?, \d+ warnings?\)`,                   // eslint
+  String.raw`^(?:\S+\(\d+,\d+\): |\S+:\d+:\d+ - )?error TS\d+:|^Found [1-9]\d* errors?\b`, // tsc
+  String.raw`^(?:\[\w+\] )?(?:BUILD FAILURE\b|Tests run: \d+, Failures: (?:[1-9]|\d+, Errors: [1-9]))`, // maven
 ].join('|'), 'm');
 
 // A runner's own verdict on the whole run: the only evidence of a pass when the
@@ -259,21 +260,20 @@ const RUNNER_PASSED = new RegExp([
   String.raw`^(?:#|ℹ) fail 0\b`,                                      // node --test
   String.raw`^ok\s+\S+\s+(?:[\d.]+s|\(cached\))`,                     // go test
   String.raw`^test result: ok\.`,                                     // cargo test
-  String.raw`\b\d+ examples?, 0 failures\b`,                          // rspec
-  String.raw`\(0 errors, \d+ warnings?\)`,                            // eslint
+  String.raw`^\d+ examples?, 0 failures\b`,                           // rspec
+  String.raw`^✖ \d+ problems? \(0 errors, \d+ warnings?\)`,           // eslint
   String.raw`^Found 0 errors\b`,                                      // tsc
-  String.raw`\bBUILD SUCCESS\b`,                                      // maven
+  String.raw`^(?:\[\w+\] )?BUILD SUCCESS\b`,                          // maven
 ].join('|'), 'm');
 
-// Looser failure words, trusted only when the exit status is hidden. Lines a
-// runner marked as passed (or as a TAP todo/skip, which does not fail a run)
-// are skipped: their text is a test name, not a result.
+// A line the runner marked as passed, or as a TAP todo/skip (which does not
+// fail a run). Its text is a test name, never evidence of a failure.
 const PASS_LINE = /^\s*(?:[✓✔√]|ok\b|PASS(?:ED)?\b|--- PASS\b)|\bPASSED\s*(?:\[\s*\d+%\s*\]\s*)?$|\.\.\.\s+ok\s*$|#\s*(?:TODO|SKIP)\b/;
+// Looser failure words, trusted only when the exit status is hidden.
 const FAILURE_WORDS = /\b(FAIL|FAILED|failed|failing|error:|Error:|ERROR|not ok)\b|\b[1-9]\d*\s+errors?\b|command not found|No such file or directory/;
 
-function outputHasFailureWords(text) {
-  return text.split('\n').some((line) => {
-    if (PASS_LINE.test(line)) return false;
+function outputHasFailureWords(lines) {
+  return lines.some((line) => {
     // "0 failed", "0 failing" and node --test's "fail 0" are not failures.
     const cleaned = line
       .replace(/\b0\s+(?:tests?\s+)?fail(?:ed|ing|ures?)?\b/gi, '')
@@ -284,16 +284,22 @@ function outputHasFailureWords(text) {
   });
 }
 
+const HIDES_STATUS = /[|;&\n`]|\$\(|(?:^|\s)!\s/;
+const withoutChainsAndRedirects = (s) => s.replace(/\d*[<>]&\d*-?|&>>?/g, ' ').replace(/&&/g, ' ');
+
 // True when the command line's exit status may not be the test runner's: a
 // pipe, `;`, `||`, a background `&`, a second line, a substitution or a leading
-// `!` can each replace it. `&&` chains and fd redirects (2>&1) keep it.
+// `!` can each replace it. `&&` chains and fd redirects (2>&1) keep it. Quoted
+// text is an argument, unless the test command itself sits inside the quotes
+// (sh -c 'npm test || true'), where the same rule applies to the quoted script.
 function exitStatusMayBeHidden(command) {
-  const bare = command
-    .replace(/'[^']*'/g, ' ')
-    .replace(/"(?:[^"\\]|\\.)*"/g, (q) => (/\$\(|`/.test(q) ? ' $( ' : ' '))
-    .replace(/\d*[<>]&\d*-?|&>>?/g, ' ')
-    .replace(/&&/g, ' ');
-  return /[|;&\n`]|\$\(|(?:^|\s)!\s/.test(bare);
+  let hidden = false;
+  const bare = command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, (quoted) => {
+    const inner = quoted.slice(1, -1);
+    if (TEST_CMD_RE.test(inner) && HIDES_STATUS.test(withoutChainsAndRedirects(inner))) hidden = true;
+    return quoted[0] === '"' && /\$\(|`/.test(inner) ? ' $( ' : ' ';
+  });
+  return hidden || HIDES_STATUS.test(withoutChainsAndRedirects(bare));
 }
 
 /**
@@ -315,9 +321,11 @@ function extractTestResult(command, toolResponse, toolInput) {
   }
   if (r.interrupted === true) return { cmd, exit: 130, ok: false };
   if (r.backgroundTaskId || (toolInput && toolInput.run_in_background === true)) return { cmd, exit: null, ok: false };
-  const output = `${typeof r.stdout === 'string' ? r.stdout : ''}\n${typeof r.stderr === 'string' ? r.stderr : ''}`;
+  const output = `${typeof r.stdout === 'string' ? r.stdout : ''}\n${typeof r.stderr === 'string' ? r.stderr : ''}`
+    .replace(/\x1b\[[0-9;]*m/g, '');
+  const unmarked = output.split('\n').filter((line) => !PASS_LINE.test(line));
   const hidden = exitStatusMayBeHidden(command);
-  if (RUNNER_FAILED.test(output) || (hidden && outputHasFailureWords(output))) return { cmd, exit: 1, ok: false, inferred: true };
+  if (RUNNER_FAILED.test(unmarked.join('\n')) || (hidden && outputHasFailureWords(unmarked))) return { cmd, exit: 1, ok: false, inferred: true };
   if (!hidden) return { cmd, exit: 0, ok: true };
   if (RUNNER_PASSED.test(output)) return { cmd, exit: 0, ok: true, inferred: true };
   return { cmd, exit: null, ok: false };
