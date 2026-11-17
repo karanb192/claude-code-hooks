@@ -28,13 +28,12 @@ run('session-logger', (data) => {
   const key = createHash('sha256').update(data.session_id).digest('hex');
   const file = path.join(dir, `codex-${key}.md`);
   const ts = new Date().toISOString();
-  const git = gitInfo(data.cwd);
   withLock(file, () => {
     const header = fs.existsSync(file) ? '' : [
       '# Codex Session', '',
       `Session: ${JSON.stringify(data.session_id)}`,
       `Working directory: ${JSON.stringify(data.cwd)}`,
-      `Git branch: ${JSON.stringify(git.branch)}`, '', '## Activity', '',
+      `Git branch: ${JSON.stringify(gitInfo(data.cwd).branch)}`, '', '## Activity', '',
     ].join('\n');
     fs.appendFileSync(file, header + entries.map((entry) => `- ${ts} ${entry}\n`).join(''));
   }, { failOnTimeout: true });

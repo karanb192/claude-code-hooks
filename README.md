@@ -5,7 +5,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml/badge.svg)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
-[![Tests](https://img.shields.io/badge/tests-2359%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-2363%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
 
 **🌐 [Live site & catalog](https://karanb192.github.io/claude-code-hooks/)**
 
@@ -355,7 +355,7 @@ It also points agent-specific risks at the OWASP Top 10 for Agentic Applications
 
 ## 🧪 Testing
 
-Requires **Node ≥ 18** (no npm dependencies). The `format-code` tests exercise the real formatters, so have `prettier`, `ruff`, and `uv` on your PATH (CI installs them) or expect those few tests to fail. All hooks include comprehensive tests, run in CI on Node 18, 20, and 22:
+Requires **Node ≥ 18** (no npm dependencies). The `format-code` tests exercise the real formatters, so have Prettier 3 (`prettier`), `ruff`, and `uv` on your PATH (CI installs them) or expect those few tests to fail. All hooks include comprehensive tests, run in CI on Node 18, 20, and 22:
 
 ```bash
 # Run all tests

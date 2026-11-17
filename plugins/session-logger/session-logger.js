@@ -163,8 +163,8 @@ function withLock(filePath, fn, { retries = 60, delayMs = 15, staleMs = 10000, f
       try { fs.unlinkSync(lockPath); } catch {}
     }
   }
-  log({ level: 'LOCK_TIMEOUT', file: filePath });
   if (failOnTimeout) throw new Error('Session note lock timed out');
+  log({ level: 'LOCK_TIMEOUT', file: filePath });
   return fn(); // proceed unlocked rather than lose the entry
 }
 

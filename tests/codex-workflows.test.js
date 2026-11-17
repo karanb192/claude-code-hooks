@@ -67,6 +67,47 @@ test('stages native add/update/delete/move paths and no unrelated edits', () => 
   assert.deepEqual(git(dir, 'diff', '--cached', '--name-only', '--no-renames', '-z').split('\0').filter(Boolean).sort(), ['gone/last.txt', 'move.txt', 'moved.txt', 'new.txt', 'old.txt']);
 });
 
+test('staging rejects embedded bare repositories without executing their configuration', () => {
+  const dir = repo(), nested = path.join(dir, 'nested'), marker = path.join(dir, 'executed');
+  fs.mkdirSync(nested);
+  git(nested, 'init', '--bare', '-q');
+  git(nested, 'config', 'core.bare', 'false');
+  git(nested, 'config', 'core.worktree', '.');
+  git(nested, 'config', 'filter.probe.clean', `touch '${marker}'; cat`);
+  fs.writeFileSync(path.join(nested, '.gitattributes'), '*.txt filter=probe\n');
+  fs.writeFileSync(path.join(nested, 'item.txt'), 'value\n');
+  run('auto-stage', { cwd: dir, ...patch('*** Add File: nested/item.txt', '+value') });
+  assert.equal(fs.existsSync(marker), false);
+  assert.equal(git(dir, 'diff', '--cached', '--name-only'), '');
+  assert.equal(fs.existsSync(path.join(nested, 'index')), false);
+});
+
+test('staging skips other repositories and works from a session subdirectory', () => {
+  const dir = repo(), outside = repo(), nested = path.join(dir, 'nested'), cwd = path.join(dir, 'session');
+  fs.mkdirSync(nested); fs.mkdirSync(cwd); git(nested, 'init', '-q');
+  for (const d of [nested, outside, cwd]) fs.writeFileSync(path.join(d, 'new.txt'), 'value');
+  run('auto-stage', { cwd, ...patch('*** Add File: new.txt', '+value', '*** Add File: ../nested/new.txt', '+value', `*** Add File: ${outside}/new.txt`, '+value') });
+  assert.equal(git(dir, 'diff', '--cached', '--name-only'), 'session/new.txt\n');
+  for (const d of [nested, outside]) assert.equal(git(d, 'diff', '--cached', '--name-only'), '');
+});
+
+test('staging disables monitor and index hooks and skips clean and process filters', () => {
+  const dir = repo(), hooks = path.join(dir, 'hooks');
+  fs.mkdirSync(hooks);
+  const marker = path.join(dir, 'executed');
+  const command = `touch '${marker}'`;
+  fs.writeFileSync(path.join(hooks, 'post-index-change'), `#!/bin/sh\n${command}\n`, { mode: 0o755 });
+  git(dir, 'config', 'core.hooksPath', hooks);
+  git(dir, 'config', 'core.fsmonitor', command);
+  git(dir, 'config', 'filter.cleaner.clean', `${command}; cat`);
+  git(dir, 'config', 'filter.processor.process', command);
+  fs.writeFileSync(path.join(dir, '.gitattributes'), 'filtered.txt filter=cleaner\nprocess.txt filter=processor\n');
+  for (const f of ['filtered.txt', 'process.txt', 'plain.txt']) fs.writeFileSync(path.join(dir, f), 'value');
+  run('auto-stage', { cwd: dir, ...patch('*** Add File: filtered.txt', '+value', '*** Add File: process.txt', '+value', '*** Add File: plain.txt', '+value') });
+  assert.equal(fs.existsSync(marker), false);
+  assert.equal(git(dir, '-c', 'core.fsmonitor=false', 'diff', '--cached', '--name-only'), 'plain.txt\n');
+});
+
 test('staging treats metacharacters and git pathspecs as literal filenames', () => {
   const dir = repo();
   const files = ['odd[1].txt', 'odd1.txt', '-option.txt', '$(touch pwned).txt', 'quote\"file.txt'];
@@ -165,7 +206,21 @@ test('a busy session note is never written without its lock', () => {
   fs.writeFileSync(file + '.lock', '');
   run('session-logger', { hook_event_name: 'SessionEnd', session_id: 'locked' }, extra);
   assert.equal(fs.readFileSync(file, 'utf8'), before);
+  assert.equal(fs.existsSync(path.join(home, '.claude')), false);
+  const logs = fs.readdirSync(path.join(codexHome, 'hooks-logs')).map((f) => fs.readFileSync(path.join(codexHome, 'hooks-logs', f), 'utf8')).join('\n');
+  assert.match(logs, /Session note lock timed out/);
   fs.unlinkSync(file + '.lock');
+});
+
+test('session Git metadata is computed only when the note is first created', () => {
+  const dir = repo(), bin = path.join(dir, 'bin'), calls = path.join(dir, 'git-calls'), notes = path.join(dir, 'notes');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'git'), `#!${process.execPath}\nrequire('fs').appendFileSync(${JSON.stringify(calls)},'call\\n');console.log('fixture');\n`, { mode: 0o755 });
+  const extra = { PATH: bin, CC_SESSION_LOG_DIR: notes };
+  run('session-logger', { cwd: dir, hook_event_name: 'SessionStart' }, extra);
+  const first = fs.readFileSync(calls, 'utf8');
+  run('session-logger', { cwd: dir, hook_event_name: 'SessionEnd' }, extra);
+  assert.equal(fs.readFileSync(calls, 'utf8'), first);
 });
 
 test('session notes cover lifecycle, patch paths and redacted commands without patch contents', () => {
