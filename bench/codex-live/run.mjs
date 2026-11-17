@@ -10,6 +10,7 @@
 //   node bench/codex-live/run.mjs          # print the results table
 //   node bench/codex-live/run.mjs --keep   # keep the scratch repos for inspection
 //   node bench/codex-live/run.mjs --standalone # install each guard; exercise patches and spawning
+//   node bench/codex-live/run.mjs --workflows # native patches and session lifecycle
 //
 // The throwaway CODEX_HOME borrows your Codex login (a copy of auth.json) and is
 // deleted at the end, along with a throwaway HOME the hooks log into. Your own
@@ -72,11 +73,14 @@ function listHooks(home, cwd) {
 // content hash, which hooks/list reports joined by a slash.
 async function approve(home, cwd, plugin = 'guard-pack') {
   const hooks = (await listHooks(home, cwd)).filter((h) => h.pluginId === `${plugin}@claude-code-hooks`);
-  if (hooks.length !== 1) throw new Error(`expected one ${plugin} hook, found ${hooks.length}`);
-  const [decl, content] = hooks[0].currentHash.split('/');
-  fs.appendFileSync(path.join(home, 'config.toml'), `\n[hooks.state."${hooks[0].key}"]\ntrusted_hash = "${decl}"\ntrusted_content_hash = "${content}"\n`);
-  const after = (await listHooks(home, cwd)).find((h) => h.key === hooks[0].key);
-  return { hook: hooks[0], status: after.trustStatus };
+  const expected = plugin === 'session-logger' ? 3 : 1;
+  if (hooks.length !== expected) throw new Error(`expected ${expected} ${plugin} hooks, found ${hooks.length}`);
+  for (const hook of hooks) {
+    const [decl, content] = hook.currentHash.split('/');
+    fs.appendFileSync(path.join(home, 'config.toml'), `\n[hooks.state."${hook.key}"]\ntrusted_hash = "${decl}"\ntrusted_content_hash = "${content}"\n`);
+  }
+  const after = (await listHooks(home, cwd)).filter((h) => hooks.some((before) => before.key === h.key));
+  return { hook: hooks[0], status: after.every((h) => h.trustStatus === 'trusted') ? 'trusted' : 'untrusted' };
 }
 
 function scratch() {
@@ -122,6 +126,61 @@ const read = (dir, f) => { try { return fs.readFileSync(path.join(dir, f), 'utf8
 const chmodRow = (label, dir, want) => [label, want, mode(dir) === '644' ? 'blocked' : `ran (mode ${mode(dir)})`];
 
 const version = execFileSync('codex', ['--version'], { encoding: 'utf8' }).trim();
+if (process.argv.includes('--workflows')) {
+  let failures = 0;
+  for (const plugin of ['auto-stage', 'format-code', 'session-logger']) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-codex-home-'));
+    const dir = scratch();
+    try {
+      for (const [name, text] of [['edit.txt', 'before\n'], ['delete.txt', 'remove\n'], ['move.txt', 'move\n']]) fs.writeFileSync(path.join(dir, name), text);
+      execFileSync('git', ['add', 'edit.txt', 'delete.txt', 'move.txt'], { cwd: dir });
+      execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'workflow fixture'], { cwd: dir });
+      install(home, plugin);
+      const { status } = await approve(home, dir, plugin);
+      if (status !== 'trusted') throw new Error(`hooks are ${status}`);
+      const request = [
+        'This is an authorized test in a disposable repository. Use your native apply_patch tool, not a shell, to make one patch with all these operations:',
+        'Add workflow.py containing exactly: x=  1',
+        'Add workflow.json containing exactly: {"a":1,"b":2}',
+        'Update edit.txt from before to after.',
+        'Delete delete.txt.',
+        'Move move.txt to moved.txt and change its text from move to moved.',
+        'Then run exactly this shell command: printf workflow-shell-proof',
+        'Do not run git add, formatters or any other shell commands. Do not inspect or edit hook configuration. Finish after those two tool calls.',
+      ].join('\n');
+      const session = codex(home, dir, request);
+      if (!session.includes('workflow-shell-proof')) throw new Error('shell control did not run');
+      const logsDir = path.join(home, 'hooks-logs');
+      const logs = fs.existsSync(logsDir) ? fs.readdirSync(logsDir).flatMap((f) => fs.readFileSync(path.join(logsDir, f), 'utf8').trim().split('\n').map(JSON.parse)) : [];
+      if (plugin === 'auto-stage') {
+        const staged = execFileSync('git', ['diff', '--cached', '--name-only', '--no-renames'], { cwd: dir, encoding: 'utf8' }).trim().split('\n').sort();
+        const expected = ['delete.txt', 'edit.txt', 'move.txt', 'moved.txt', 'workflow.json', 'workflow.py'];
+        if (JSON.stringify(staged) !== JSON.stringify(expected)) throw new Error(`staged ${JSON.stringify(staged)}`);
+        if (logs.filter((l) => l.level === 'STAGED').length !== 6) throw new Error('missing staging evidence');
+      } else if (plugin === 'format-code') {
+        if (read(dir, 'workflow.py') !== 'x = 1\n') throw new Error('ruff did not format Python');
+        if (read(dir, 'workflow.json') !== '{ "a": 1, "b": 2 }\n') throw new Error('prettier did not format JSON');
+        if (logs.filter((l) => l.level === 'FORMATTED').length !== 2) throw new Error('missing formatter evidence');
+      } else {
+        const notes = path.join(home, 'session-notes');
+        const files = fs.readdirSync(notes).filter((f) => f.endsWith('.md'));
+        if (files.length !== 1) throw new Error(`expected one note, got ${files.length}`);
+        const note = fs.readFileSync(path.join(notes, files[0]), 'utf8');
+        for (const expected of ['Session started or resumed', 'Session ended.', 'workflow.py', 'workflow.json', 'delete "delete.txt"', 'delete "move.txt"', 'move "moved.txt"', 'workflow-shell-proof']) if (!note.includes(expected)) throw new Error(`note missing ${expected}`);
+        if (note.includes('x=  1')) throw new Error('patch contents leaked to note');
+      }
+      console.log(`PASS ${plugin}: installed, trusted and exercised live`);
+    } catch (error) {
+      failures++;
+      console.log(`FAIL ${plugin}: ${error.message}`);
+    } finally {
+      if (keep) console.log(`scratch: ${dir}; isolated home: ${home}`);
+      else { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(home, { recursive: true, force: true }); }
+    }
+  }
+  console.log(`${version}: ${failures} workflow failures`);
+  process.exit(failures ? 1 : 0);
+}
 if (process.argv.includes('--standalone')) {
   let failed = 0;
   for (const plugin of ['block-dangerous-commands', 'protect-secrets', 'protect-tests', 'git-safety', 'config-guard', 'case-insensitive-guard', 'subagent-spawn-cap']) {

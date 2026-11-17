@@ -5,6 +5,7 @@ Runs guard-pack inside real Codex CLI sessions and checks the disk afterwards. I
 ```bash
 node bench/codex-live/run.mjs          # print the results table
 node bench/codex-live/run.mjs --keep   # keep the scratch repos for inspection
+node bench/codex-live/run.mjs --workflows # exercise auto-stage, format-code and session-logger
 ```
 
 What it does:

@@ -141,7 +141,7 @@ function sleepSync(ms) {
 // serialize per-note via an exclusive lockfile. Best-effort: if we can't get
 // the lock within the budget, we proceed unlocked rather than drop the write -
 // a rare interleave beats silent data loss.
-function withLock(filePath, fn, { retries = 60, delayMs = 15, staleMs = 10000 } = {}) {
+function withLock(filePath, fn, { retries = 60, delayMs = 15, staleMs = 10000, failOnTimeout = false } = {}) {
   const lockPath = `${filePath}.lock`;
   for (let i = 0; i < retries; i++) {
     let fd;
@@ -164,6 +164,7 @@ function withLock(filePath, fn, { retries = 60, delayMs = 15, staleMs = 10000 } 
     }
   }
   log({ level: 'LOCK_TIMEOUT', file: filePath });
+  if (failOnTimeout) throw new Error('Session note lock timed out');
   return fn(); // proceed unlocked rather than lose the entry
 }
 

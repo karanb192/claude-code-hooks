@@ -1,0 +1,22 @@
+{
+  "name": "auto-stage",
+  "description": "Stage files changed by successful native Codex patches, including deletions and renames.",
+  "version": "1.1.0",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "git",
+    "staging",
+    "automation",
+    "posttooluse",
+    "codex",
+    "codex-hooks"
+  ],
+  "hooks": "./hooks/codex-hooks.json"
+}
