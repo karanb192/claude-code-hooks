@@ -3,10 +3,11 @@
  * PR Provenance Stamp - PreToolUse (Bash) + PostToolUse (Edit|MultiEdit|Write|Bash) + PostToolUseFailure (Bash) Hook
  *
  * Embeds a reviewer-facing provenance receipt into the PR body when Claude runs
- * `gh pr create` (or `glab mr create`). PostToolUse hooks maintain a per-session
- * ledger under ~/.claude/pr-provenance-stamp/<session_id>.json: a tool-call
+ * `gh pr create` (or `glab mr create`). PostToolUse hooks append to a per-session
+ * ledger under ~/.claude/pr-provenance-stamp/<session_id>.jsonl: a tool-call
  * counter, agent-authored line count, and every test/typecheck command with its
- * result (PostToolUseFailure supplies the exit code of a failed one). When `gh pr create` fires, the PreToolUse branch reads the
+ * result (PostToolUseFailure supplies the exit code of a failed one; a
+ * PostToolUse means the command line exited 0). When `gh pr create` fires, the PreToolUse branch reads the
  * transcript for the real prompt count / token+dollar spend / models, asks git
  * for the branch's total added lines to derive a TRUTHFUL agent-vs-human split,
  * then rewrites the `--body` argument via hookSpecificOutput.updatedInput,
@@ -145,20 +146,43 @@ function ledgerPath(sessionId, dir = STATE_DIR) {
   return path.join(dir, `${safe}.json`);
 }
 
-function loadLedger(sessionId, dir = STATE_DIR) {
-  try {
-    const raw = fs.readFileSync(ledgerPath(sessionId, dir), 'utf-8');
-    const parsed = JSON.parse(raw);
-    return { ...emptyLedger(sessionId), ...parsed };
-  } catch {
-    return emptyLedger(sessionId);
-  }
+function eventsPath(sessionId, dir = STATE_DIR) {
+  return ledgerPath(sessionId, dir) + 'l';
 }
 
-function saveLedger(ledger, dir = STATE_DIR) {
+const COUNTERS = ['tool_calls', 'edits', 'writes', 'agent_lines'];
+
+// The ledger is the sum of one appended line per hook event. The hooks run
+// async and in parallel, so a read-modify-write of one JSON file lost events;
+// an append does not. A <session>.json snapshot written by 1.0.x is the base.
+function loadLedger(sessionId, dir = STATE_DIR) {
+  let ledger = emptyLedger(sessionId);
   try {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(ledgerPath(ledger.session_id, dir), JSON.stringify(ledger));
+    ledger = { ...ledger, ...JSON.parse(fs.readFileSync(ledgerPath(sessionId, dir), 'utf-8')) };
+  } catch {}
+  if (!Array.isArray(ledger.tests)) ledger.tests = [];
+  let lines = [];
+  try {
+    lines = fs.readFileSync(eventsPath(sessionId, dir), 'utf-8').split('\n');
+  } catch {}
+  for (const line of lines) {
+    let event;
+    try { event = JSON.parse(line); } catch { continue; }
+    if (!event || typeof event !== 'object') continue;
+    for (const k of COUNTERS) if (Number.isFinite(event[k])) ledger[k] = (ledger[k] || 0) + event[k];
+    if (event.test && typeof event.test === 'object') ledger.tests.push(event.test);
+  }
+  return ledger;
+}
+
+/** Append what one hook event added (a ledger built from that event alone). */
+function appendLedgerEvent(sessionId, delta, dir = STATE_DIR) {
+  const event = {};
+  for (const k of COUNTERS) if (delta[k]) event[k] = delta[k];
+  if (delta.tests && delta.tests.length) event.test = delta.tests[0];
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(eventsPath(sessionId, dir), JSON.stringify(event) + '\n');
     return true;
   } catch {
     return false;
@@ -208,39 +232,99 @@ function redactSecrets(s) {
     .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b/g, '[redacted]');
 }
 
-/** Detect a test/typecheck command and its exit code from a Bash PostToolUse. */
-function extractTestResult(command, toolResponse) {
-  if (typeof command !== 'string' || !TEST_CMD_RE.test(command)) return null;
-  let exit = null;
-  if (toolResponse && typeof toolResponse === 'object') {
-    if (typeof toolResponse.exit_code === 'number') exit = toolResponse.exit_code;
-    else if (typeof toolResponse.exitCode === 'number') exit = toolResponse.exitCode;
-    else if (typeof toolResponse.returnCode === 'number') exit = toolResponse.returnCode;
-    else if (toolResponse.interrupted === true) exit = 130;
-    else if (typeof toolResponse.stderr === 'string' && /command not found|No such file/i.test(toolResponse.stderr)) exit = 127;
-  }
-  // If no explicit exit code is available, treat a present stdout with no error
-  // marker as a pass (exit 0), otherwise unknown. Zero-count summaries like
-  // "0 failed", "0 failing", or node --test's "fail 0" are NOT failures: strip
-  // them before matching so a green run isn't misrecorded as red.
-  if (exit === null) {
-    const stdout = toolResponse && typeof toolResponse.stdout === 'string' ? toolResponse.stdout : '';
-    const stderr = toolResponse && typeof toolResponse.stderr === 'string' ? toolResponse.stderr : '';
-    const blob = `${stdout}\n${stderr}`;
-    const cleaned = blob
+// A runner's own verdict that tests failed. Line-anchored summaries only, so a
+// test NAME or log line that merely contains "error" or "failed" never matches.
+const RUNNER_FAILED = new RegExp([
+  String.raw`^(?:=+ )?(?:\d+ [a-z]+, )*[1-9]\d* (?:failed|errors?)\b.*\bin [\d.]+s`, // pytest
+  String.raw`^FAILED \((?:failures|errors)=`,                                         // unittest
+  String.raw`^\s*Tests?(?: Suites| Files)?:?\s+.*\b[1-9]\d* failed\b`,                // jest, vitest
+  String.raw`^\s*[1-9]\d* failing\b`,                                                 // mocha
+  String.raw`^(?:#|ℹ) fail [1-9]`,                                                    // node --test
+  String.raw`^--- FAIL:|^\s*FAIL\b`,                                                  // go test, jest
+  String.raw`^test result: FAILED`,                                                   // cargo test
+  String.raw`^not ok\b(?!.*#\s*(?:TODO|SKIP)\b)`,                                      // TAP
+  String.raw`\b\d+ examples?, [1-9]\d* failures?\b`,                                  // rspec
+  String.raw`\([1-9]\d* errors?, \d+ warnings?\)`,                                    // eslint
+  String.raw`\berror TS\d+:|^Found [1-9]\d* errors?\b`,                               // tsc
+  String.raw`\bBUILD FAILURE\b|\bTests run: \d+, Failures: (?:[1-9]|\d+, Errors: [1-9])`,  // maven
+].join('|'), 'm');
+
+// A runner's own verdict on the whole run: the only evidence of a pass when the
+// exit status is hidden. One test's "ok" line is not a verdict, so TAP has none.
+const RUNNER_PASSED = new RegExp([
+  String.raw`^(?:=+ )?(?:\d+ [a-z]+, )*\d+ passed\b.*\bin [\d.]+s`,   // pytest
+  String.raw`^OK\b`,                                                  // unittest
+  String.raw`^\s*Tests?(?: Suites| Files)?:?\s+.*\b\d+ passed\b`,     // jest, vitest
+  String.raw`^\s*\d+ passing\b`,                                      // mocha
+  String.raw`^(?:#|ℹ) fail 0\b`,                                      // node --test
+  String.raw`^ok\s+\S+\s+(?:[\d.]+s|\(cached\))`,                     // go test
+  String.raw`^test result: ok\.`,                                     // cargo test
+  String.raw`\b\d+ examples?, 0 failures\b`,                          // rspec
+  String.raw`\(0 errors, \d+ warnings?\)`,                            // eslint
+  String.raw`^Found 0 errors\b`,                                      // tsc
+  String.raw`\bBUILD SUCCESS\b`,                                      // maven
+].join('|'), 'm');
+
+// Looser failure words, trusted only when the exit status is hidden. Lines a
+// runner marked as passed (or as a TAP todo/skip, which does not fail a run)
+// are skipped: their text is a test name, not a result.
+const PASS_LINE = /^\s*(?:[✓✔√]|ok\b|PASS(?:ED)?\b|--- PASS\b)|\bPASSED\s*(?:\[\s*\d+%\s*\]\s*)?$|\.\.\.\s+ok\s*$|#\s*(?:TODO|SKIP)\b/;
+const FAILURE_WORDS = /\b(FAIL|FAILED|failed|failing|error:|Error:|ERROR|not ok)\b|\b[1-9]\d*\s+errors?\b|command not found|No such file or directory/;
+
+function outputHasFailureWords(text) {
+  return text.split('\n').some((line) => {
+    if (PASS_LINE.test(line)) return false;
+    // "0 failed", "0 failing" and node --test's "fail 0" are not failures.
+    const cleaned = line
       .replace(/\b0\s+(?:tests?\s+)?fail(?:ed|ing|ures?)?\b/gi, '')
       .replace(/\bfail(?:ed|ing|ures?)?[:\s]+0\b/gi, '')
       .replace(/\b(?:errors?)[:\s]+0\b/gi, '')
       .replace(/\b0\s+errors?\b/gi, '');
-    if (/\b(FAIL|FAILED|failed|failing|error:|Error:|ERROR|not ok)\b|\b[1-9]\d*\s+errors?\b/.test(cleaned)) exit = 1;
-    else if (blob.trim() !== '') exit = 0;
-  }
-  // Collapse whitespace (multi-line commands would break the markdown list the
-  // cmd is rendered into) and redact secret-looking material: this string ends
-  // up in a PUBLIC PR body.
-  return { cmd: testCommandLabel(command), exit, ok: exit === 0 };
+    return FAILURE_WORDS.test(cleaned);
+  });
 }
 
+// True when the command line's exit status may not be the test runner's: a
+// pipe, `;`, `||`, a background `&`, a second line, a substitution or a leading
+// `!` can each replace it. `&&` chains and fd redirects (2>&1) keep it.
+function exitStatusMayBeHidden(command) {
+  const bare = command
+    .replace(/'[^']*'/g, ' ')
+    .replace(/"(?:[^"\\]|\\.)*"/g, (q) => (/\$\(|`/.test(q) ? ' $( ' : ' '))
+    .replace(/\d*[<>]&\d*-?|&>>?/g, ' ')
+    .replace(/&&/g, ' ');
+  return /[|;&\n`]|\$\(|(?:^|\s)!\s/.test(bare);
+}
+
+/**
+ * Detect a test/typecheck command and its result from a Bash PostToolUse.
+ * Claude Code sends PostToolUse only when the command line exited 0 and gives
+ * no exit code. So a runner's own failure summary overrules the zero exit (a
+ * script that swallows the status), and a line that may hide the runner's
+ * status needs evidence in the output either way: a failure, a passing summary,
+ * or neither, which is no result (exit null, as for a backgrounded run). A
+ * result read from the output rather than the exit status is `inferred`.
+ */
+function extractTestResult(command, toolResponse, toolInput) {
+  if (typeof command !== 'string' || !TEST_CMD_RE.test(command)) return null;
+  const cmd = testCommandLabel(command);
+  const r = toolResponse && typeof toolResponse === 'object' ? toolResponse : null;
+  if (!r) return { cmd, exit: null, ok: false };
+  for (const key of ['exit_code', 'exitCode', 'returnCode']) {
+    if (typeof r[key] === 'number') return { cmd, exit: r[key], ok: r[key] === 0 };
+  }
+  if (r.interrupted === true) return { cmd, exit: 130, ok: false };
+  if (r.backgroundTaskId || (toolInput && toolInput.run_in_background === true)) return { cmd, exit: null, ok: false };
+  const output = `${typeof r.stdout === 'string' ? r.stdout : ''}\n${typeof r.stderr === 'string' ? r.stderr : ''}`;
+  const hidden = exitStatusMayBeHidden(command);
+  if (RUNNER_FAILED.test(output) || (hidden && outputHasFailureWords(output))) return { cmd, exit: 1, ok: false, inferred: true };
+  if (!hidden) return { cmd, exit: 0, ok: true };
+  if (RUNNER_PASSED.test(output)) return { cmd, exit: 0, ok: true, inferred: true };
+  return { cmd, exit: null, ok: false };
+}
+
+// Collapsed to one line (the receipt renders it in a markdown list) and
+// redacted: this string ends up in a PUBLIC PR body.
 function testCommandLabel(command) {
   return redactSecrets(command.trim().replace(/\s+/g, ' ')).slice(0, 200);
 }
@@ -264,7 +348,7 @@ function applyPostToolUse(ledger, toolName, toolInput, toolResponse) {
     ledger.edits += 1;
     ledger.agent_lines += countAddedLines('Edit', toolInput);
   } else if (toolName === 'Bash') {
-    const test = extractTestResult(toolInput && toolInput.command, toolResponse);
+    const test = extractTestResult(toolInput && toolInput.command, toolResponse, toolInput);
     if (test) ledger.tests.push(test);
   }
   return ledger;
@@ -464,8 +548,11 @@ function fmtTokens(n) {
  */
 function buildProvenance(ledger, transcript, totalAddedLines = null) {
   const tests = Array.isArray(ledger.tests) ? ledger.tests : [];
-  const passed = tests.filter((t) => t.ok).length;
-  const total = tests.length;
+  // A run with no captured result (backgrounded, or cut off by a pipe) is
+  // neither green nor failing.
+  const known = tests.filter((t) => t.exit != null);
+  const passed = known.filter((t) => t.ok).length;
+  const total = known.length;
 
   // Prefer transcript-derived prompt count; fall back to ledger proxy.
   const prompts = transcript && transcript.userPrompts > 0 ? transcript.userPrompts : null;
@@ -499,6 +586,7 @@ function buildProvenance(ledger, transcript, totalAddedLines = null) {
     hasUsage: !!(transcript && transcript.hasUsage),
     testsPassed: passed,
     testsTotal: total,
+    testsNotCaptured: tests.length - total,
     tests,
     agentPct,
     agentLines: agent,
@@ -513,9 +601,12 @@ function renderSummaryLine(p) {
   if (p.prompts != null) parts.push(`${p.prompts} prompt${p.prompts === 1 ? '' : 's'}`);
   const d = fmtDollars(p.dollars);
   if (d) parts.push(d);
+  const missing = p.testsNotCaptured > 0 ? `${p.testsNotCaptured} not captured` : '';
   if (p.testsTotal > 0) {
     const glyph = p.testsPassed === p.testsTotal ? 'green' : `${p.testsTotal - p.testsPassed} failing`;
-    parts.push(`tests ${p.testsPassed}/${p.testsTotal} ${glyph}`);
+    parts.push(`tests ${p.testsPassed}/${p.testsTotal} ${glyph}${missing && `, ${missing}`}`);
+  } else if (missing) {
+    parts.push(`tests ${missing}`);
   }
   if (p.agentPct != null) parts.push(`${p.agentPct}% agent-authored`);
   else if (p.agentLines > 0) parts.push(`${p.agentLines} agent-authored lines`);
@@ -539,22 +630,27 @@ function renderStamp(p) {
   if (d && tk) lines.push(`| Spend (est.) | ${d} (${tk} tokens) |`);
   else if (d) lines.push(`| Spend (est.) | ${d} |`);
   if (p.models.length) lines.push(`| Models | ${p.models.join(', ')} |`);
+  const missing = p.testsNotCaptured > 0 ? `${p.testsNotCaptured} not captured` : '';
   if (p.testsTotal > 0) {
     const glyph = p.testsPassed === p.testsTotal ? '✓' : '✗';
-    lines.push(`| Tests | ${p.testsPassed}/${p.testsTotal} ${glyph} |`);
+    lines.push(`| Tests | ${p.testsPassed}/${p.testsTotal} ${glyph}${missing && ` (${missing})`} |`);
+  } else if (missing) {
+    lines.push(`| Tests | ${missing} |`);
   }
   if (p.agentPct != null) lines.push(`| Agent-authored | ${p.agentPct}% (${p.agentLines} of ${p.agentLines + (p.humanLines || 0)} added lines) |`);
   else if (p.agentLines > 0) lines.push(`| Agent-authored | ${p.agentLines} lines |`);
-  if (p.testsTotal > 0) {
+  if (p.tests.length > 0) {
     lines.push('');
     lines.push('<details><summary>Test commands & exit codes</summary>');
     lines.push('');
     for (const t of p.tests) {
-      const code = t.exit == null ? '?' : t.exit;
       // Redact again at render time (defense in depth: ledgers written by older
       // versions of this hook may hold unredacted commands).
       const cmd = redactSecrets(String(t.cmd || '')).replace(/`/g, '').replace(/\s+/g, ' ');
-      lines.push(`- \`${cmd}\` → exit ${code} ${t.ok ? '✓' : '✗'}`);
+      let result = `exit ${t.exit} ${t.ok ? '✓' : '✗'}`;
+      if (t.exit == null) result = 'result not captured';
+      else if (t.inferred) result = t.ok ? 'passed per its output ✓' : 'failures in its output ✗';
+      lines.push(`- \`${cmd}\` → ${result}`);
     }
     lines.push('');
     lines.push('</details>');
@@ -883,18 +979,14 @@ function rewriteBodyArg(command, stampBlock) {
 function handlePostToolUse(data, dir = STATE_DIR) {
   const { tool_name, tool_input, tool_response, session_id } = data;
   if (!['Edit', 'Write', 'MultiEdit', 'Bash'].includes(tool_name)) return {};
-  const ledger = loadLedger(session_id, dir);
-  applyPostToolUse(ledger, tool_name, tool_input, tool_response);
-  saveLedger(ledger, dir);
+  appendLedgerEvent(session_id, applyPostToolUse(emptyLedger(session_id), tool_name, tool_input, tool_response), dir);
   return {};
 }
 
 function handlePostToolUseFailure(data, dir = STATE_DIR) {
   const { tool_name, tool_input, error, is_interrupt, session_id } = data;
   if (tool_name !== 'Bash') return {};
-  const ledger = loadLedger(session_id, dir);
-  applyPostToolUseFailure(ledger, tool_name, tool_input, error, is_interrupt);
-  saveLedger(ledger, dir);
+  appendLedgerEvent(session_id, applyPostToolUseFailure(emptyLedger(session_id), tool_name, tool_input, error, is_interrupt), dir);
   return {};
 }
 
@@ -987,10 +1079,10 @@ async function main() {
 // Never throws; falls back to a friendly no-ledger-yet message on empty state.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Absolute path of the most-recently-modified ledger JSON, or null. */
+/** Absolute path of the most-recently-modified ledger file, or null. */
 function findLatestLedger(dir = STATE_DIR) {
   try {
-    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+    const files = fs.readdirSync(dir).filter((f) => /\.jsonl?$/.test(f));
     let best = null;
     for (const f of files) {
       const full = path.join(dir, f);
@@ -1016,12 +1108,7 @@ function renderCli(dir = STATE_DIR, cwd = process.cwd(), runGit = defaultRunGit)
       );
       return;
     }
-    let ledger;
-    try {
-      ledger = { ...emptyLedger('unknown'), ...JSON.parse(fs.readFileSync(file, 'utf-8')) };
-    } catch {
-      ledger = emptyLedger('unknown');
-    }
+    const ledger = loadLedger(path.basename(file).replace(/\.jsonl?$/, ''), dir);
     // Real human/agent split needs a git denominator; degrades to null (→ the
     // absolute agent line count is shown instead of a fabricated percentage).
     let totalAdded = null;
@@ -1043,11 +1130,13 @@ if (require.main === module) {
   module.exports = {
     emptyLedger,
     ledgerPath,
+    eventsPath,
     loadLedger,
-    saveLedger,
+    appendLedgerEvent,
     countAddedLines,
     redactSecrets,
     extractTestResult,
+    exitStatusMayBeHidden,
     applyPostToolUse,
     applyPostToolUseFailure,
     exitCodeFromFailure,
