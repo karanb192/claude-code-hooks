@@ -1,0 +1,27 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "__TRANSCRIPT__",
+  "cwd": "__CWD__",
+  "prompt_id": "00000000-0000-4000-8000-000000000002",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "sleep 2; echo bg-done",
+    "description": "Sleep then echo in background",
+    "run_in_background": true
+  },
+  "tool_response": {
+    "stdout": "",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false,
+    "noOutputExpected": false,
+    "backgroundTaskId": "b00000000"
+  },
+  "tool_use_id": "toolu_000000000000000000000005",
+  "duration_ms": 6
+}

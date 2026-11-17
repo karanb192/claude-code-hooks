@@ -1,0 +1,25 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "__TRANSCRIPT__",
+  "cwd": "__CWD__",
+  "prompt_id": "00000000-0000-4000-8000-000000000002",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "sh -c 'echo piped-fail; exit 1' | tail -1",
+    "description": "Run failing command piped to tail"
+  },
+  "tool_response": {
+    "stdout": "piped-fail",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false,
+    "noOutputExpected": false
+  },
+  "tool_use_id": "toolu_000000000000000000000003",
+  "duration_ms": 27
+}

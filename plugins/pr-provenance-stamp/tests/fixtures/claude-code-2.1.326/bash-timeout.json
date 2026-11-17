@@ -1,0 +1,21 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "__TRANSCRIPT__",
+  "cwd": "__CWD__",
+  "prompt_id": "00000000-0000-4000-8000-000000000002",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUseFailure",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "sleep 5",
+    "timeout": 1000,
+    "description": "Sleep with short timeout"
+  },
+  "tool_use_id": "toolu_000000000000000000000006",
+  "error": "Exit code 143\nCommand timed out after 1s",
+  "is_interrupt": false,
+  "duration_ms": 1010
+}

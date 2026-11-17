@@ -21,7 +21,6 @@ const {
   emptyLedger,
   ledgerPath,
   loadLedger,
-  saveLedger,
   countAddedLines,
   extractTestResult,
   applyPostToolUse,
@@ -52,6 +51,13 @@ const SCRIPT_PATH = path.join(__dirname, '../pr-provenance-stamp.js');
 
 function freshDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pps-test-'));
+}
+
+// A whole-ledger <session>.json file, the format 1.0.x wrote. Still read as the
+// base of a session's ledger, so it doubles as the way tests seed one.
+function seedSnapshot(ledger, dir) {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(ledgerPath(ledger.session_id, dir), JSON.stringify(ledger));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -115,13 +121,13 @@ describe('Unit: extractTestResult()', () => {
     const r = extractTestResult('npm test', { stdout: 'ok 12 tests passed' });
     assert.strictEqual(r.ok, true);
   });
-  it('infers exit 1 from FAIL marker when code absent', () => {
-    const r = extractTestResult('npm test', { stdout: '1) FAIL should work' });
-    assert.strictEqual(r.ok, false);
+  it('reads a loose FAIL marker only when a pipe hides the exit status', () => {
+    assert.strictEqual(extractTestResult('npm test', { stdout: '1) FAIL should work' }).ok, true);
+    const piped = extractTestResult('npm test | tail -5', { stdout: '1) FAIL should work' });
+    assert.deepStrictEqual({ ok: piped.ok, inferred: piped.inferred }, { ok: false, inferred: true });
   });
-  it('maps command-not-found stderr to 127', () => {
-    const r = extractTestResult('pytest', { stderr: 'pytest: command not found' });
-    assert.strictEqual(r.exit, 127);
+  it('reads command-not-found behind a pipe as a failure', () => {
+    const r = extractTestResult('pytest | tail -3', { stdout: '', stderr: 'sh: pytest: command not found' });
     assert.strictEqual(r.ok, false);
   });
   it('handles non-string command', () => assert.strictEqual(extractTestResult(42, {}), null));
@@ -178,14 +184,24 @@ describe('Unit: ledger persistence', () => {
     assert.deepStrictEqual(l.tests, []);
   });
 
-  it('save then load round-trips', () => {
+  it('adds appended events to a 1.0.x snapshot of the same session', () => {
     const l = emptyLedger('round');
     l.writes = 3;
     l.tests.push({ cmd: 'npm test', exit: 0, ok: true });
-    assert.strictEqual(saveLedger(l, dir), true);
+    seedSnapshot(l, dir);
+    handlePostToolUse({ tool_name: 'Write', tool_input: { content: 'a' }, session_id: 'round' }, dir);
+    handlePostToolUse({ tool_name: 'Bash', tool_input: { command: 'pytest' }, tool_response: { stdout: '1 passed in 0.01s' }, session_id: 'round' }, dir);
     const loaded = loadLedger('round', dir);
-    assert.strictEqual(loaded.writes, 3);
-    assert.strictEqual(loaded.tests.length, 1);
+    assert.strictEqual(loaded.writes, 4);
+    assert.deepStrictEqual(loaded.tests.map((t) => t.cmd), ['npm test', 'pytest']);
+  });
+
+  it('skips a damaged line and keeps the rest', () => {
+    handlePostToolUse({ tool_name: 'Write', tool_input: { content: 'a\nb' }, session_id: 'torn' }, dir);
+    fs.appendFileSync(mod.eventsPath('torn', dir), '{"agent_lines":\nnot json\n42\n');
+    handlePostToolUse({ tool_name: 'Edit', tool_input: { new_string: 'c' }, session_id: 'torn' }, dir);
+    const loaded = loadLedger('torn', dir);
+    assert.deepStrictEqual([loaded.tool_calls, loaded.agent_lines, loaded.writes, loaded.edits], [2, 3, 1, 1]);
   });
 
   it('sanitizes session id in the path (no traversal escape)', () => {
@@ -776,7 +792,7 @@ describe('Unit: handlePreToolUse() defers on heredoc bodies', () => {
   after(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
   it('returns {} (no-op) when body uses a heredoc', () => {
-    const l = emptyLedger('hd'); l.agent_lines = 10; saveLedger(l, dir);
+    const l = emptyLedger('hd'); l.agent_lines = 10; seedSnapshot(l, dir);
     const cmd = `gh pr create --body "$(cat <<'EOF'\nhello\nEOF\n)"`;
     const out = handlePreToolUse({ tool_name: 'Bash', tool_input: { command: cmd }, session_id: 'hd' }, dir);
     assert.deepStrictEqual(out, {});
@@ -891,7 +907,7 @@ describe('Unit: handlePreToolUse()', () => {
     const l = emptyLedger(sid);
     l.agent_lines = 90; l.human_lines = 10;
     l.tests = [{ cmd: 'npm test', exit: 0, ok: true }];
-    saveLedger(l, dir);
+    seedSnapshot(l, dir);
 
     const transcriptPath = path.join(dir, 'transcript.jsonl');
     fs.writeFileSync(transcriptPath, [
@@ -986,10 +1002,9 @@ describe('Integration: stdin/stdout hook flow', () => {
     });
     assert.strictEqual(code, 0);
     assert.deepStrictEqual(output, {});
-    const ledgerFile = path.join(home, '.claude', 'pr-provenance-stamp', 'int-session.json');
-    assert.ok(fs.existsSync(ledgerFile), 'ledger persisted under temp HOME');
-    const ledger = JSON.parse(fs.readFileSync(ledgerFile, 'utf-8'));
-    assert.strictEqual(ledger.agent_lines, 3);
+    const stateDir = path.join(home, '.claude', 'pr-provenance-stamp');
+    assert.ok(fs.existsSync(mod.eventsPath('int-session', stateDir)), 'ledger persisted under temp HOME');
+    assert.strictEqual(loadLedger('int-session', stateDir).agent_lines, 3);
   });
 
   it('PostToolUse Bash test records exit code', async () => {
@@ -1000,7 +1015,7 @@ describe('Integration: stdin/stdout hook flow', () => {
       tool_response: { exit_code: 0 },
       session_id: 'int-session',
     });
-    const ledger = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'pr-provenance-stamp', 'int-session.json'), 'utf-8'));
+    const ledger = loadLedger('int-session', path.join(home, '.claude', 'pr-provenance-stamp'));
     assert.strictEqual(ledger.tests.length, 1);
     assert.strictEqual(ledger.tests[0].ok, true);
   });
@@ -1242,10 +1257,287 @@ describe('Integration: PostToolUseFailure through main()', () => {
         child.stdin.end(JSON.stringify(payload));
       });
       assert.strictEqual(out.trim(), '{}');
-      const ledger = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'pr-provenance-stamp', 'fail-79.json'), 'utf8'));
+      const ledger = loadLedger('fail-79', path.join(home, '.claude', 'pr-provenance-stamp'));
       assert.deepStrictEqual(ledger.tests, [{ cmd: 'pytest', exit: 1, ok: false }]);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A PostToolUse means the command line exited 0: what may still overrule it
+// ─────────────────────────────────────────────────────────────────────────────
+
+const out = (stdout, stderr = '') => ({ stdout, stderr, interrupted: false });
+
+describe('When the exit status may be hidden', () => {
+  it('keeps the status through && chains, redirects and quoted text', () => {
+    for (const cmd of ['pytest', 'cd api && pytest -q', 'npm test 2>&1', 'npm test > out.log 2>&1', 'npm test &> out.log',
+      "pytest -k 'a | b; c'", 'npx jest -t "adds; then | subtracts"', 'CI=1 npm run lint -- --max-warnings 0']) {
+      assert.strictEqual(mod.exitStatusMayBeHidden(cmd), false, cmd);
+    }
+  });
+
+  it('applies the same rule to a quoted script that holds the test command', () => {
+    for (const cmd of ["sh -c 'npm test || true'", 'bash -lc "pytest | tail -3"', "ssh build 'cd app; npm test'"]) {
+      assert.strictEqual(mod.exitStatusMayBeHidden(cmd), true, cmd);
+    }
+    for (const cmd of ["sh -c 'npm test'", 'bash -lc "cd app && pytest -q"']) assert.strictEqual(mod.exitStatusMayBeHidden(cmd), false, cmd);
+    assert.deepStrictEqual(extractTestResult("sh -c 'node --test x.test.js >/dev/null 2>&1 || true'", out('')),
+      { cmd: "sh -c 'node --test x.test.js >/dev/null 2>&1 || true'", exit: null, ok: false });
+  });
+
+  it('treats pipes, ;, ||, background, extra lines, substitutions and ! as hiding it', () => {
+    for (const cmd of ['pytest | tail -3', 'npm test 2>&1 | tail -20', 'npm test || true', 'npm test; echo done', 'npm test &',
+      'npm test\necho done', 'echo $(pytest)', 'echo "$(pytest)"', 'echo `pytest`', '! npm test', 'cd api && ! npm test']) {
+      assert.strictEqual(mod.exitStatusMayBeHidden(cmd), true, cmd);
+    }
+  });
+});
+
+describe('A zero exit is a pass unless the runner says otherwise', () => {
+  const NOISY_PASSES = [
+    ' ✓ maps 404 to NOT_FOUND ERROR code (2 ms)',
+    'tests/test_log.py::test_login_failed PASSED                    [ 50%]',
+    'PASS src/failed-login.test.js',
+    'test errors::rejects_failed_login ... ok',
+    'ok 3 - reports Error: when the file is missing',
+    '--- PASS: TestRetryAfterError (0.00s)',
+  ];
+
+  it('does not read failure words in test names or logs as a failed run', () => {
+    for (const line of [...NOISY_PASSES, 'WARNING: 2 errors suppressed by config', 'console.error\n    Error: expected in this test']) {
+      assert.deepStrictEqual(extractTestResult('npm test', out(line)), { cmd: 'npm test', exit: 0, ok: true }, line);
+    }
+  });
+
+  it('skips lines the runner marked as passed, even behind a pipe', () => {
+    for (const line of NOISY_PASSES) {
+      const piped = 'npm test 2>&1 | tail -20';
+      assert.deepStrictEqual(extractTestResult(piped, out(line)), { cmd: piped, exit: null, ok: false }, line);
+      assert.deepStrictEqual(extractTestResult(piped, out(`${line}\nTests:       5 passed, 5 total`)), { cmd: piped, exit: 0, ok: true, inferred: true }, line);
+    }
+  });
+
+  it('records a silent passing run as a pass', () => {
+    assert.deepStrictEqual(extractTestResult('npx tsc --noEmit', out('')), { cmd: 'npx tsc --noEmit', exit: 0, ok: true });
+  });
+
+  it('claims no result when a pipe leaves neither a failure nor a passing summary', () => {
+    const cutOff = "    expected: 3,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }";
+    for (const [cmd, text] of [['node --test fail.test.js | tail -5', cutOff], ['npx eslint . | head -50', ''], ['npm test; echo done', 'done']]) {
+      assert.deepStrictEqual(extractTestResult(cmd, out(text)), { cmd, exit: null, ok: false }, cmd);
+    }
+  });
+
+  const FAILED_SUMMARIES = {
+    pytest: '=========================== 1 failed, 2 passed in 0.12s ===========================',
+    'pytest -q': '1 failed, 2 passed in 0.12s',
+    'pytest collection': '========= 2 passed, 1 error in 0.12s =========',
+    unittest: 'FAILED (failures=1)',
+    jest: 'Tests:       1 failed, 4 passed, 5 total',
+    vitest: ' Test Files  1 failed | 2 passed (3)',
+    mocha: '  1 failing',
+    'node --test': 'ℹ fail 1',
+    'node --test tap': '# fail 2',
+    'go test': '--- FAIL: TestAdds (0.00s)',
+    'go test package': 'FAIL\tgithub.com/example/pkg\t0.012s',
+    'cargo test': 'test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out',
+    tap: 'not ok 2 - adds',
+    rspec: '5 examples, 1 failure',
+    eslint: '✖ 3 problems (2 errors, 1 warning)',
+    tsc: "src/a.ts(3,5): error TS2322: Type 'string' is not assignable to type 'number'.",
+    'tsc summary': 'Found 2 errors in 1 file.',
+    maven: '[ERROR] Tests run: 5, Failures: 1, Errors: 0, Skipped: 0',
+    'maven build': '[INFO] BUILD FAILURE',
+  };
+
+  it("lets the runner's own failure summary overrule a zero exit", () => {
+    for (const [runner, line] of Object.entries(FAILED_SUMMARIES)) {
+      const r = extractTestResult('npm test', out(`collected\n${line}\ndone`));
+      assert.deepStrictEqual({ ok: r.ok, inferred: r.inferred }, { ok: false, inferred: true }, runner);
+    }
+  });
+
+  it('does not read a runner summary out of a test name or a log line', () => {
+    for (const text of ['✔ handles BUILD FAILURE responses\n# fail 0', 'test error TS1234: ... ok\nOK',
+      'handles BUILD FAILURE responses passed\nlog: saw error TS1234: in the fixture', 'retried after 5 examples, 1 failure was reported upstream',
+      'note (2 errors, 0 warnings) was the old count']) {
+      assert.deepStrictEqual(extractTestResult('npm test', out(text)), { cmd: 'npm test', exit: 0, ok: true }, text);
+    }
+  });
+
+  it('reads coloured output', () => {
+    assert.strictEqual(extractTestResult('npm test | tail -5', out('\x1b[31m  1 failing\x1b[0m')).ok, false);
+    assert.strictEqual(extractTestResult('npm test | tail -5', out('\x1b[32m  5 passing\x1b[0m (12ms)')).ok, true);
+  });
+
+  it('does not count a TAP todo or skip as a failure', () => {
+    const tap = 'ok 1 - adds\nnot ok 2 - subtracts # TODO not written yet\nok 3 - divides # SKIP\n# pass 1\n# fail 0';
+    assert.strictEqual(extractTestResult('node --test', out(tap)).ok, true);
+    assert.strictEqual(extractTestResult('node --test | tail -20', out(tap)).ok, true);
+    assert.strictEqual(extractTestResult('node --test', out('not ok 2 - subtracts')).ok, false);
+  });
+
+  it('reads 30,000 characters of hostile output in well under a second', () => {
+    const hostile = [' '.repeat(30000), 'PASSED' + ' '.repeat(30000) + 'x', '='.repeat(30000), '1 a, '.repeat(6000), 'Tests run:'.repeat(3000), '"\\'.repeat(10000)];
+    const start = process.hrtime.bigint();
+    for (const text of hostile) {
+      extractTestResult('npm test', out(text));
+      extractTestResult(`npm test | tail -5 ${text.slice(0, 5000)}`, out(text));
+    }
+    assert.ok(Number(process.hrtime.bigint() - start) / 1e6 < 1000);
+  });
+
+  it('keeps passing summaries green, piped or not', () => {
+    const passing = [
+      '============================== 3 passed in 0.10s ==============================', '3 passed, 1 warning in 0.10s',
+      'Ran 3 tests in 0.001s\n\nOK', 'Tests:       5 passed, 5 total', ' Test Files  3 passed (3)', '  5 passing (12ms)',
+      'ℹ pass 5\nℹ fail 0', '# pass 5\n# fail 0', 'ok  \tgithub.com/example/pkg\t0.012s',
+      'test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out', '5 examples, 0 failures',
+      '✖ 2 problems (0 errors, 2 warnings)', 'Found 0 errors. Watching for file changes.',
+      '[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0\n[INFO] BUILD SUCCESS',
+    ];
+    for (const text of passing) {
+      assert.deepStrictEqual(extractTestResult('npm test', out(text)), { cmd: 'npm test', exit: 0, ok: true }, text);
+      const piped = extractTestResult('npm test 2>&1 | tail -20', out(text));
+      assert.deepStrictEqual({ ok: piped.ok, inferred: piped.inferred }, { ok: true, inferred: true }, `piped: ${text}`);
+    }
+  });
+});
+
+describe('A run with no captured result', () => {
+  it('records a backgrounded test command as not captured', () => {
+    const viaResponse = extractTestResult('npm test', { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b1' });
+    const viaInput = extractTestResult('npm test', out(''), { command: 'npm test', run_in_background: true });
+    for (const r of [viaResponse, viaInput]) assert.deepStrictEqual(r, { cmd: 'npm test', exit: null, ok: false });
+  });
+
+  it('is neither green nor failing in the receipt', () => {
+    const L = emptyLedger('s');
+    L.tests = [{ cmd: 'npm test', exit: 0, ok: true }, { cmd: 'npm run lint', exit: null, ok: false }];
+    const p = buildProvenance(L, null);
+    assert.deepStrictEqual([p.testsPassed, p.testsTotal, p.testsNotCaptured], [1, 1, 1]);
+    assert.ok(renderSummaryLine(p).includes('tests 1/1 green, 1 not captured'), renderSummaryLine(p));
+    const stamp = renderStamp(p);
+    assert.ok(stamp.includes('| Tests | 1/1 ✓ (1 not captured) |'), stamp);
+    assert.ok(stamp.includes('- `npm run lint` → result not captured'), stamp);
+  });
+
+  it('says so when no run was captured at all', () => {
+    const L = emptyLedger('s');
+    L.tests = [{ cmd: 'npm test', exit: null, ok: false }];
+    const p = buildProvenance(L, null);
+    assert.ok(renderSummaryLine(p).includes('tests 1 not captured'), renderSummaryLine(p));
+    assert.ok(renderStamp(p).includes('| Tests | 1 not captured |'));
+    assert.ok(!renderSummaryLine(p).includes('failing'));
+  });
+
+  it('labels a failure read from the output instead of printing an exit code', () => {
+    const L = emptyLedger('s');
+    applyPostToolUse(L, 'Bash', { command: 'pytest | tail -3' }, out('1 failed, 2 passed in 0.12s'));
+    const stamp = renderStamp(buildProvenance(L, null));
+    assert.ok(stamp.includes('- `pytest | tail -3` → failures in its output ✗'), stamp);
+    assert.ok(renderSummaryLine(buildProvenance(L, null)).includes('tests 0/1 1 failing'));
+    const P = emptyLedger('s');
+    applyPostToolUse(P, 'Bash', { command: 'pytest | tail -3' }, out('3 passed in 0.12s'));
+    assert.ok(renderStamp(buildProvenance(P, null)).includes('- `pytest | tail -3` → passed per its output ✓'));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Payload shapes captured from Claude Code 2.1.326 (ids and paths replaced).
+// The captured commands are stand-ins, so each test swaps in a test command.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Captured Claude Code payload shapes', () => {
+  const FIXTURES = path.join(__dirname, 'fixtures', 'claude-code-2.1.326');
+  let dir;
+  before(() => { dir = freshDir(); });
+  after(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+  function replay(name, command, stdout) {
+    const payload = JSON.parse(fs.readFileSync(path.join(FIXTURES, `${name}.json`), 'utf8'));
+    payload.session_id = name;
+    payload.tool_input.command = command;
+    if (stdout !== undefined) payload.tool_response.stdout = stdout;
+    const handle = payload.hook_event_name === 'PostToolUseFailure' ? mod.handlePostToolUseFailure : handlePostToolUse;
+    handle(payload, dir);
+    return loadLedger(name, dir).tests;
+  }
+
+  it('non-zero exit arrives as PostToolUseFailure with the exit code', () => {
+    assert.deepStrictEqual(replay('bash-nonzero-exit', 'pytest'), [{ cmd: 'pytest', exit: 3, ok: false }]);
+  });
+  it('zero exit carries no exit code and is a pass, whatever words the output holds', () => {
+    assert.deepStrictEqual(replay('bash-zero-exit-failure-text', 'npm test'), [{ cmd: 'npm test', exit: 0, ok: true }]);
+  });
+  it('a failure behind a pipe arrives as PostToolUse and is read from the summary', () => {
+    const [t] = replay('bash-piped-failure', 'pytest | tail -1', '1 failed, 2 passed in 0.12s');
+    assert.deepStrictEqual(t, { cmd: 'pytest | tail -1', exit: 1, ok: false, inferred: true });
+  });
+  it('a silent zero exit is a pass', () => {
+    assert.deepStrictEqual(replay('bash-silent-pass', 'npx tsc --noEmit'), [{ cmd: 'npx tsc --noEmit', exit: 0, ok: true }]);
+  });
+  it('a backgrounded run is not captured', () => {
+    assert.deepStrictEqual(replay('bash-background', 'npm test'), [{ cmd: 'npm test', exit: null, ok: false }]);
+  });
+  it('a timed-out run is a failure with the exit code Claude Code reports', () => {
+    assert.deepStrictEqual(replay('bash-timeout', 'npm test'), [{ cmd: 'npm test', exit: 143, ok: false }]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Parallel hook processes must not lose each other's events
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Integration: parallel hook processes on one session', () => {
+  it('keeps every event when 40 hooks write at once', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'pps-parallel-'));
+    try {
+      const fire = (payload) => new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [SCRIPT_PATH], { env: { ...process.env, HOME: home, USERPROFILE: home } });
+        child.on('error', reject);
+        child.on('close', resolve);
+        child.stdin.end(JSON.stringify({ session_id: 'parallel', ...payload }));
+      });
+      const jobs = [];
+      for (let i = 0; i < 20; i++) {
+        jobs.push(fire({ hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { content: 'a\nb' } }));
+        jobs.push(i % 2
+          ? fire({ hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_input: { command: `pytest -k t${i}` }, error: 'Exit code 1\n1 failed', is_interrupt: false })
+          : fire({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: `pytest -k t${i}` }, tool_response: out('1 passed in 0.01s') }));
+      }
+      await Promise.all(jobs);
+      const ledger = loadLedger('parallel', path.join(home, '.claude', 'pr-provenance-stamp'));
+      assert.deepStrictEqual([ledger.tool_calls, ledger.writes, ledger.agent_lines], [40, 20, 40]);
+      assert.strictEqual(ledger.tests.length, 20);
+      assert.strictEqual(ledger.tests.filter((t) => t.ok).length, 10);
+      assert.strictEqual(new Set(ledger.tests.map((t) => t.cmd)).size, 20);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('--render reads an append-only ledger', () => {
+  it('renders the newest session whether it is a .jsonl ledger or a 1.0.x .json snapshot', () => {
+    const dir = freshDir();
+    try {
+      const old = emptyLedger('older'); old.tests = [{ cmd: 'npm test', exit: 1, ok: false }];
+      seedSnapshot(old, dir);
+      fs.utimesSync(ledgerPath('older', dir), new Date(Date.now() - 60000), new Date(Date.now() - 60000));
+      handlePostToolUse({ tool_name: 'Bash', tool_input: { command: 'pytest' }, tool_response: out('2 passed in 0.01s'), session_id: 'newer' }, dir);
+      assert.strictEqual(mod.findLatestLedger(dir), mod.eventsPath('newer', dir));
+      let printed = '';
+      const write = process.stdout.write;
+      process.stdout.write = (chunk) => { printed += chunk; return true; };
+      try { mod.renderCli(dir, dir, () => null); } finally { process.stdout.write = write; }
+      assert.ok(printed.includes('tests 1/1 green'), printed);
+      assert.ok(printed.includes('- `pytest` → exit 0 ✓'), printed);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

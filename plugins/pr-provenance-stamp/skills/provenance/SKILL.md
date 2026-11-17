@@ -11,7 +11,7 @@ disable-model-invocation: true
 The block above is the provenance receipt exactly as it would be stamped into a PR
 body when you run `gh pr create`, built from the most recent session ledger the
 `pr-provenance-stamp` hook has been recording (tool calls, test/typecheck commands
-with real exit codes, and the agent-vs-human authored-line split). Prompt and spend
+with their results, and the agent-vs-human authored-line split). Prompt and spend
 figures come from the transcript at PR-create time, so they may be absent in this
 preview.
 
