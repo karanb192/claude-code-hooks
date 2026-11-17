@@ -12,6 +12,8 @@ Run on 2026-11-17 with `node bench/codex-live/run.mjs --workflows`, Codex CLI 0.
 
 Isolated regression tests also cover literal Git pathspecs and shell metacharacters, ignore rules, removed parent directories, missing formatters, symlink skips, same-prefix thread IDs, concurrent note appends and lock exhaustion. These are local process tests, not additional model-driven sessions.
 
+A separate defensive live probe checked the formatter's trust boundary. In a disposable workspace-write session, a direct shell write outside the workspace and a write into `.git` were denied. Before the fix, a Prettier project config could write the outside marker through the hook. With project config loading disabled, the same probe left all three markers absent while JSON still formatted correctly. The Codex adapter now requires Prettier 3 (no automatic plugin discovery), disables config and EditorConfig loading, and runs Ruff in isolated mode without a cache. Local tests also exercise executable configs, declarative plugin configuration and Prettier 2 rejection.
+
 Not tested live: GitHub-hosted marketplace installation, resume, failed/partially applied native patches, simultaneous plugins, Windows, desktop/cloud or remote environments. Shell edits are deliberately not staged/formatted or reconstructed as file activity. Formatter/stager ordering is not guaranteed; review and stage formatted files before committing. The session note records shell commands without claiming their exit status.
 
 ```text

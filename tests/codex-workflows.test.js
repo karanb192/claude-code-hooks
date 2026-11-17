@@ -91,7 +91,7 @@ test('staging respects ignores and skips shell writes, failure events and unread
 test('formatting sends only existing patch targets to local executables without a shell', () => {
   const dir = repo(), bin = path.join(dir, 'bin'), calls = path.join(dir, 'calls.jsonl');
   fs.mkdirSync(bin);
-  const script = `#!${process.execPath}\nrequire('fs').appendFileSync(${JSON.stringify(calls)},JSON.stringify(process.argv.slice(1))+'\\n');\n`;
+  const script = `#!${process.execPath}\nif(process.argv[2]==='--version'){console.log('3.10.1');process.exit(0)}require('fs').appendFileSync(${JSON.stringify(calls)},JSON.stringify(process.argv.slice(1))+'\\n');\n`;
   for (const command of ['ruff', 'prettier']) fs.writeFileSync(path.join(bin, command), script, { mode: 0o755 });
   for (const name of ['new.py', 'out.js', 'unrelated.js', 'note.txt', '$(touch pwned).json']) fs.writeFileSync(path.join(dir, name), 'value');
   fs.symlinkSync(path.join(dir, 'unrelated.js'), path.join(dir, 'link.js'));
@@ -100,7 +100,46 @@ test('formatting sends only existing patch targets to local executables without 
   assert.equal(args.length, 4);
   assert.deepEqual(args.map((a) => path.basename(a[0])), ['ruff', 'ruff', 'prettier', 'prettier']);
   assert.deepEqual(args.map((a) => path.basename(a.at(-1))), ['new.py', 'new.py', 'out.js', '$(touch pwned).json']);
+  for (const a of args) {
+    if (path.basename(a[0]) === 'ruff') assert.ok(a.includes('--isolated') && a.includes('--no-cache'));
+    else assert.ok(a.includes('--no-config') && a.includes('--no-editorconfig'));
+  }
   assert.equal(fs.existsSync(path.join(dir, 'pwned')), false);
+});
+
+test('Prettier 2 is skipped because it can auto-load plugins', () => {
+  const dir = repo(), bin = path.join(dir, 'bin');
+  fs.mkdirSync(bin); fs.writeFileSync(path.join(dir, 'new.json'), '{"a":1}');
+  fs.writeFileSync(path.join(bin, 'prettier'), `#!${process.execPath}\nif(process.argv[2]==='--version'){console.log('2.8.8')}else{require('fs').writeFileSync(${JSON.stringify(path.join(dir,'ran'))},'unsafe')}\n`, { mode: 0o755 });
+  run('format-code', { cwd: dir, ...patch('*** Add File: new.json', '+{"a":1}') }, { PATH: bin });
+  assert.equal(fs.existsSync(path.join(dir, 'ran')), false);
+  assert.equal(fs.readFileSync(path.join(dir, 'new.json'), 'utf8'), '{"a":1}');
+});
+
+test('real Prettier ignores executable project configs and configured plugins', () => {
+  for (const config of ['.prettierrc.cjs', '.prettierrc.json', 'package.json']) {
+    const dir = repo(), marker = path.join(dir, 'executed');
+    const code = `require('fs').writeFileSync(${JSON.stringify(marker)},'executed');module.exports={semi:false};`;
+    if (config === '.prettierrc.cjs') fs.writeFileSync(path.join(dir, config), code);
+    else {
+      fs.writeFileSync(path.join(dir, 'plugin.cjs'), code);
+      const settings = { plugins: ['./plugin.cjs'], semi: false };
+      fs.writeFileSync(path.join(dir, config), JSON.stringify(config === 'package.json' ? { prettier: settings } : settings));
+    }
+    fs.writeFileSync(path.join(dir, 'new.js'), "const msg='ok'\n");
+    run('format-code', { cwd: dir, ...patch('*** Add File: new.js', "+const msg='ok'") });
+    assert.equal(fs.existsSync(marker), false, config);
+    assert.equal(fs.readFileSync(path.join(dir, 'new.js'), 'utf8'), 'const msg = "ok";\n', config);
+  }
+});
+
+test('real Ruff uses defaults without reading project configuration or writing a cache', () => {
+  const dir = repo();
+  fs.writeFileSync(path.join(dir, 'ruff.toml'), 'invalid toml = [');
+  fs.writeFileSync(path.join(dir, 'new.py'), 'x=  1\n');
+  run('format-code', { cwd: dir, ...patch('*** Add File: new.py', '+x=  1') });
+  assert.equal(fs.readFileSync(path.join(dir, 'new.py'), 'utf8'), 'x = 1\n');
+  assert.equal(fs.existsSync(path.join(temp, 'format-code/.ruff_cache')), false);
 });
 
 test('a missing formatter does not block or alter the file', () => {
