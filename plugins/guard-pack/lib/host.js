@@ -151,7 +151,10 @@ function callsForOps(ops) {
   const calls = [];
   for (const o of ops) {
     if (o.kind === 'add') calls.push({ tool: 'Write', input: { file_path: o.path, content: o.added.join('\n') } });
-    if (o.kind === 'delete') calls.push({ tool: 'Bash', input: { command: `rm -- ${shellQuote(o.path)}` } });
+    if (o.kind === 'delete') {
+      calls.push({ tool: 'Write', input: { file_path: o.path, content: '' } });
+      calls.push({ tool: 'Bash', input: { command: `rm -- ${shellQuote(o.path)}` } });
+    }
     if (o.kind === 'update') {
       calls.push({ tool: 'Edit', input: { file_path: o.path, old_string: o.removed.join('\n'), new_string: o.added.join('\n') } });
       if (o.moveTo) {
@@ -166,6 +169,38 @@ function callsForOps(ops) {
 // Detection is conservative, not a shell interpreter. Only the literal
 // heredoc grammar below can supply patch text without shell evaluation.
 const RUNS_APPLY_PATCH = /(?:^|[;&|(\n`{!]|\b(?:then|do|else|elif)\s+|-[a-zA-Z]*c\s+)\s*(?:(?:[A-Za-z_]\w*=[^\s;]*|(?:sudo|env|exec|command|nohup|xargs|time|nice)(?:\s+-\S+)*)\s+)*(?:[\w./~-]*\/)?(?:apply_patch|applypatch)(?=$|[\s;&|)<>'"`])/m;
+
+// These commands consume literal arguments rather than shell programs. Only
+// exempt a whole simple command, never substitutions, redirects or pipelines.
+function literalMention(command) {
+  const words = [];
+  let word = '', quote = null, started = false;
+  const push = () => { if (started) words.push(word); word = ''; started = false; };
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (quote === "'") {
+      if (c === quote) quote = null; else word += c;
+      continue;
+    }
+    if (c === '$' || c === '`') return false;
+    if (c === '\\') {
+      if (i + 1 >= command.length || command[i + 1] === '\n') return false;
+      word += command[++i]; started = true; continue;
+    }
+    if (quote === '"') {
+      if (c === quote) quote = null; else word += c;
+      continue;
+    }
+    if (c === "'" || c === '"') { quote = c; started = true; continue; }
+    if (/[;&|<>(){}\n\r]/.test(c)) return false;
+    if (/[ \t]/.test(c)) { push(); continue; }
+    word += c; started = true;
+  }
+  if (quote) return false;
+  push();
+  if (words[0] === 'rg' && words.some((w) => /^--(?:pre|hostname-bin)(?:=|$)/.test(w))) return false;
+  return ['grep', 'rg', 'echo', 'printf'].includes(words[0]) || (words[0] === 'git' && words[1] === 'commit');
+}
 
 // Consume the entire command as literal, quoted heredocs. Patch marker text
 // inside file content must never delimit the shell's input.
@@ -189,11 +224,12 @@ function patchBlocks(command) {
 function codexCalls(event) {
   const tool = event && event.tool_name;
   const input = (event && event.tool_input) || {};
+  if (tool === 'spawn_agent' || tool === 'collaborationspawn_agent') return [{ tool: 'Agent', input }];
   if (tool === 'Bash') {
     const calls = [{ tool: 'Bash', input }];
     const command = typeof input.command === 'string' ? input.command : '';
     const names = command.replace(/\\\r?\n/g, '').replace(/['"\\]/g, '');
-    if (!RUNS_APPLY_PATCH.test(names)) return calls;
+    if (literalMention(command) || !RUNS_APPLY_PATCH.test(names)) return calls;
     const blocks = patchBlocks(command);
     if (!blocks || blocks.length === 0) return [...calls, { unreadable: true }];
     for (const block of blocks) {
@@ -211,7 +247,7 @@ function codexCalls(event) {
   return [];
 }
 
-const UNREADABLE_REASON = '[unreadable-patch] guard-pack could not read this patch in full, so it cannot check the edit. Use the native apply_patch tool or a plain apply_patch command with a quoted heredoc, or make the edit yourself.';
+const UNREADABLE_REASON = '[unreadable-patch] The guard could not read this patch in full, so it cannot check the edit. Use the native apply_patch tool or a plain apply_patch command with a quoted heredoc, or make the edit yourself.';
 
 const ASK_ON_CODEX = ' This guard is set to ask, and Codex hooks cannot ask, so it is blocked. Run it yourself if you meant it.';
 

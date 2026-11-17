@@ -1,7 +1,7 @@
 {
   "name": "guard-pack",
-  "version": "1.3.0",
-  "description": "Six guards in one Node process for Codex CLI: blocks dangerous shell commands, secret reads and writes, disabled or deleted tests, git pushes to main, guardrail config tampering and case-collision deletes. Checks the shell commands and apply_patch edits Codex sends to hooks. Guards set to ask are sent as blocks, because Codex hooks cannot ask. The subagent spawn cap is Claude Code only for now.",
+  "version": "1.4.0",
+  "description": "Seven guards in one Node process for Codex CLI. Checks shell commands and native patches, protects Codex configuration and installed plugins, and caps subagent spawns per thread. Ask verdicts become blocks. See the README for coverage and limits.",
   "author": {
     "name": "Karan Bansal",
     "url": "https://github.com/karanb192"

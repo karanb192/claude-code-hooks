@@ -93,13 +93,16 @@ const PROTECTED_PATHS = [
   { level: 'critical', id: 'managed-settings', regex: /(^|\/)managed-settings\.json$/i,             reason: 'managed policy settings' },
   { level: 'critical', id: 'hook-script',      regex: /(^|\/)\.claude\/hooks(\/|$)/i,               reason: 'hook scripts are the guardrails themselves' },
   { level: 'critical', id: 'hooks-manifest',   regex: /(^|\/)hooks\.json$/i,                        reason: 'hooks.json manifests register hooks' },
+  { level: 'critical', id: 'codex-config', regex: /(^|\/)\.codex(?:\/config\.toml|\/plugins(?:\/.*)?)?$/i, reason: 'Codex configuration and installed plugins control hook enforcement' },
 
   // HIGH - config supply chain
   { level: 'high',     id: 'mcp-config',       regex: /(^|\/)\.mcp\.json$/i,                        reason: '.mcp.json adds MCP servers (new tools)' },
   { level: 'high',     id: 'plugin-manifest',  regex: /(^|\/)\.claude-plugin(\/|$)/i,               reason: 'plugin manifests install hooks and skills' },
+  { level: 'high', id: 'codex-plugin-manifest', regex: /(^|\/)\.codex-plugin(\/|$)/i, reason: 'Codex plugin manifests register hooks' },
 
   // STRICT - instruction files that steer the agent
   { level: 'strict',   id: 'claude-md',        regex: /(^|\/)CLAUDE(\.local)?\.md$/i,               reason: 'CLAUDE.md instructions steer the agent' },
+  { level: 'strict', id: 'agents-md', regex: /(^|\/)AGENTS(?:\.override)?\.md$/i, reason: 'AGENTS.md instructions steer the agent' },
   { level: 'strict',   id: 'rules-dir',        regex: /(^|\/)\.claude\/(rules|agents|commands)\//i, reason: 'rules, agents, and commands steer the agent' },
 ];
 
@@ -129,6 +132,18 @@ const INPLACE_EDIT   = /\b(sed|gsed)\s+[^|;&]*-i\b|\bperl\s+[^|;&]*-\w*i\b|\bgaw
 // `claude plugin install` registers arbitrary hooks and skills, so it is a
 // config write in everything but name; list/get/read forms stay allowed.
 const CLAUDE_CLI_WRITE = /\bclaude\s+(config\s+(set|add|remove|rm)|mcp\s+(add|add-json|add-from-claude-desktop|remove|rm)|plugin\s+(install|uninstall|enable|disable|update|marketplace\s+(add|remove|rm|update)))\b/i;
+const CLI_VALUE = '(?:"[^"\\n]*"|\'[^\'\\n]*\'|[^\\s"\';|&]+)';
+const CODEX_OPTION = `(?:--(?:profile|cd|model|config|sandbox|ask-for-approval|enable|disable|add-dir|image|local-provider|remote|remote-auth-token-env)(?:=|\\s+)${CLI_VALUE}|-[pCmcsai]\\s*${CLI_VALUE}|--(?:search|no-alt-screen|oss|strict-config|approve-for-me|dangerously-bypass-approvals-and-sandbox|dangerously-bypass-hook-trust|yolo|worktree|no-daemon|full-auto))`;
+const CODEX_CLI_WRITE = new RegExp(`\\bcodex(?:\\s+${CODEX_OPTION})*\\s+(?:plugin\\s+(?:add|remove|marketplace\\s+(?:add|remove|upgrade))|mcp\\s+(?:add|remove)|features\\s+(?:enable|disable))\\b`, 'i');
+
+const CODEX_HOME = path.resolve(process.env.CODEX_HOME || path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.codex'));
+const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const codexPrefix = `(?:\\.codex|\\$CODEX_HOME|\\$\\{CODEX_HOME\\}|${escapeRegex(CODEX_HOME.replace(/\\/g, '/'))})`;
+BASH_TOKENS.push(
+  { level: 'critical', id: 'codex-config', regex: new RegExp(`(?:^|[\\s'"/=])${codexPrefix}(?:/config\\.toml|/plugins(?:/[^\\s'";|&]*)?|/\\*?)?(?=[\\s'";|&]|$)`, 'i'), reason: 'Codex configuration and installed plugins control hook enforcement' },
+  { level: 'high', id: 'codex-plugin-manifest', regex: /\.codex-plugin([/\s'"]|$)/i, reason: 'Codex plugin manifests register hooks' },
+  { level: 'strict', id: 'agents-md', regex: /(^|[\s'"/=])AGENTS(?:\.override)?\.md(?=[\s'";|&]|$)/i, reason: 'AGENTS.md instructions steer the agent' },
+);
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
 const EMOJIS = { critical: '🔒', high: '🛡️', strict: '⚠️' };
@@ -151,25 +166,37 @@ function redirectsInto(cmd, tokenRegex) {
 
 // The typed path plus its symlink-resolved form: a write through
 // `ln -s ~/.claude /tmp/x` must be judged by where it really lands. When the
-// file does not exist yet (the CVE vector), resolve the parent directory.
+// file does not exist yet, resolve its nearest existing ancestor.
 function resolveCandidates(filePath) {
   const candidates = [filePath];
   try {
-    candidates.push(fs.realpathSync(filePath));
+    candidates.push(fs.realpathSync.native(filePath));
   } catch {
-    try {
-      candidates.push(path.join(fs.realpathSync(path.dirname(filePath)), path.basename(filePath)));
-    } catch { /* parent missing too: nothing on disk to resolve */ }
+    let ancestor = path.dirname(filePath);
+    while (true) {
+      try {
+        candidates.push(path.join(fs.realpathSync.native(ancestor), path.relative(ancestor, filePath)));
+        break;
+      } catch {}
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) break;
+      ancestor = parent;
+    }
   }
   return [...new Set(candidates)];
 }
 
 // Check for Edit/MultiEdit/Write file paths - unit-testable (touches the
 // filesystem only to resolve symlinks; unresolvable paths check as typed).
-function checkFilePath(filePath, safetyLevel = SAFETY_LEVEL) {
+function checkFilePath(filePath, safetyLevel = SAFETY_LEVEL, cwd = process.cwd()) {
   if (!filePath) return { blocked: false };
   const threshold = LEVELS[safetyLevel] || 2;
-  for (const candidate of resolveCandidates(filePath)) {
+  const homes = resolveCandidates(CODEX_HOME).map((p) => p.replace(/\\/g, '/'));
+  for (const raw of resolveCandidates(path.resolve(cwd, filePath))) {
+    const candidate = raw.replace(/\\/g, '/');
+    if (homes.some((home) => candidate === home || candidate === `${home}/config.toml` || candidate === `${home}/plugins` || candidate.startsWith(`${home}/plugins/`))) {
+      return { blocked: true, id: 'codex-config', level: 'critical', reason: 'Codex configuration and installed plugins control hook enforcement' };
+    }
     for (const p of PROTECTED_PATHS) {
       if (LEVELS[p.level] <= threshold && p.regex.test(candidate)) {
         return { blocked: true, id: p.id, level: p.level, reason: p.reason };
@@ -186,6 +213,9 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
 
   if (LEVELS.high <= threshold && CLAUDE_CLI_WRITE.test(cmd)) {
     return { blocked: true, id: 'claude-cli-config', level: 'high', reason: 'claude config/mcp CLI write rewrites agent config' };
+  }
+  if (LEVELS.high <= threshold && CODEX_CLI_WRITE.test(cmd)) {
+    return { blocked: true, id: 'codex-cli-config', level: 'high', reason: 'Codex CLI write changes plugin or agent configuration' };
   }
 
   for (const t of BASH_TOKENS) {
@@ -206,9 +236,9 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
 
 // Returns { blocked, id, level, reason } - pure, so it is unit-testable.
 // Read (and any unrecognized tool) always passes: reading config is legitimate.
-function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL) {
+function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL, cwd = process.cwd()) {
   if (toolName === 'Edit' || toolName === 'MultiEdit' || toolName === 'Write') {
-    return checkFilePath(toolInput.file_path || '', safetyLevel);
+    return checkFilePath(toolInput.file_path || '', safetyLevel, cwd);
   }
   if (toolName === 'Bash') {
     return checkBashCommand(toolInput.command || '', safetyLevel);
@@ -229,7 +259,7 @@ async function main() {
       return console.log('{}');
     }
 
-    const result = checkTool(tool_name, tool_input || {});
+    const result = checkTool(tool_name, tool_input || {}, SAFETY_LEVEL, cwd);
 
     if (result.blocked) {
       const shouldAsk = ASK[result.level] === true;

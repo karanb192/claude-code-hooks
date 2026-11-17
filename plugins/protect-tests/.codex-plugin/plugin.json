@@ -1,0 +1,22 @@
+{
+  "name": "protect-tests",
+  "description": "Block test deletion and disabling tests in Codex CLI shell commands and native patches.",
+  "version": "1.2.0",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "safety",
+    "tests",
+    "guardrails",
+    "pretooluse",
+    "codex",
+    "codex-hooks"
+  ],
+  "hooks": "./hooks/codex-hooks.json"
+}
