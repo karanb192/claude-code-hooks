@@ -161,6 +161,22 @@ if (process.argv.includes('--workflows')) {
         if (read(dir, 'workflow.py') !== 'x = 1\n') throw new Error('ruff did not format Python');
         if (read(dir, 'workflow.json') !== '{ "a": 1, "b": 2 }\n') throw new Error('prettier did not format JSON');
         if (logs.filter((l) => l.level === 'FORMATTED').length !== 2) throw new Error('missing formatter evidence');
+        fs.mkdirSync(path.join(dir, 'pkg'));
+        fs.writeFileSync(path.join(dir, 'pyproject.toml'), '[tool.ruff.lint]\nignore = ["F401"]\n');
+        fs.writeFileSync(path.join(dir, 'prettier.config.js'), `require('fs').writeFileSync(${JSON.stringify(path.join(dir, 'config-ran'))},'ran');module.exports = {singleQuote:true,semi:false,tabWidth:4};\n`);
+        fs.writeFileSync(path.join(dir, 'pkg/api.py'), 'import os\nfrom .core import Engine\nx = 1\n');
+        fs.writeFileSync(path.join(dir, 'app.js'), "function greet() {\n    return 'old'\n}\n");
+        const configuredSession = codex(home, dir, 'In this disposable formatter test, invoke native apply_patch once with this exact patch, then stop. Do not use a shell or run formatters.\n*** Begin Patch\n*** Update File: pkg/api.py\n@@\n-x = 1\n+x = 2\n*** Update File: app.js\n@@\n-    return \'old\'\n+    return \'new\'\n*** End Patch');
+        if (read(dir, 'pkg/api.py') !== 'import os\nfrom .core import Engine\nx = 2\n') throw new Error(`configured Python bytes: ${JSON.stringify(read(dir, 'pkg/api.py'))}; session: ${configuredSession}`);
+        if (read(dir, 'app.js') !== "function greet() {\n    return 'new'\n}\n") throw new Error(`configured JavaScript bytes: ${JSON.stringify(read(dir, 'app.js'))}`);
+        if (fs.existsSync(path.join(dir, 'config-ran'))) throw new Error('project formatter config executed');
+        fs.unlinkSync(path.join(dir, 'prettier.config.js'));
+        fs.writeFileSync(path.join(dir, '.prettierignore'), 'generated.json\n');
+        codex(home, dir, 'In this disposable formatter test, invoke native apply_patch once with this exact patch, then stop. Do not use a shell or run formatters.\n*** Begin Patch\n*** Add File: generated.json\n+{"generated":true}\n*** End Patch');
+        if (read(dir, 'generated.json') !== '{"generated":true}\n') throw new Error('ignored file was formatted');
+        const skips = fs.readdirSync(logsDir).flatMap((f) => fs.readFileSync(path.join(logsDir, f), 'utf8').trim().split('\n').map(JSON.parse)).filter((l) => l.level === 'SKIP');
+        for (const name of ['pkg/api.py', 'app.js', 'generated.json']) if (!skips.some((l) => l.file === path.join(dir, name))) throw new Error(`missing skip evidence for ${name}`);
+        console.log('PASS format-code: configured imports/style and ignored file preserved; config did not execute');
       } else {
         const notes = path.join(home, 'session-notes');
         const files = fs.readdirSync(notes).filter((f) => f.endsWith('.md'));

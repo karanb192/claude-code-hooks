@@ -246,7 +246,7 @@
     {
       "name": "format-code",
       "source": "./plugins/format-code",
-      "description": "Format Claude edits and native Codex patches with ruff for Python and prettier for JS/TS/JSON/MD/YAML/HTML. Codex uses preinstalled Ruff and Prettier 3 with default settings, no project configs, plugins or downloads.",
+      "description": "Format Claude edits and native Codex patches with ruff and prettier. Codex uses installed tools, skips project formatter settings and ignore files, and never runs lint autofixes or downloads tools.",
       "category": "automation",
       "tags": [
         "formatting",

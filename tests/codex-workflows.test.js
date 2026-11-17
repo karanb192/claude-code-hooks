@@ -138,9 +138,9 @@ test('formatting sends only existing patch targets to local executables without 
   fs.symlinkSync(path.join(dir, 'unrelated.js'), path.join(dir, 'link.js'));
   run('format-code', { cwd: dir, ...patch('*** Add File: new.py', '+value', '*** Update File: old.js', '*** Move to: out.js', '@@', '-old', '+value', '*** Delete File: deleted.py', '*** Add File: note.txt', '+value', '*** Add File: $(touch pwned).json', '+value', '*** Add File: link.js', '+value') }, { PATH: bin });
   const args = fs.readFileSync(calls, 'utf8').trim().split('\n').map(JSON.parse);
-  assert.equal(args.length, 4);
-  assert.deepEqual(args.map((a) => path.basename(a[0])), ['ruff', 'ruff', 'prettier', 'prettier']);
-  assert.deepEqual(args.map((a) => path.basename(a.at(-1))), ['new.py', 'new.py', 'out.js', '$(touch pwned).json']);
+  assert.equal(args.length, 3);
+  assert.deepEqual(args.map((a) => path.basename(a[0])), ['ruff', 'prettier', 'prettier']);
+  assert.deepEqual(args.map((a) => path.basename(a.at(-1))), ['new.py', 'out.js', '$(touch pwned).json']);
   for (const a of args) {
     if (path.basename(a[0]) === 'ruff') assert.ok(a.includes('--isolated') && a.includes('--no-cache'));
     else assert.ok(a.includes('--no-config') && a.includes('--no-editorconfig'));
@@ -157,7 +157,7 @@ test('Prettier 2 is skipped because it can auto-load plugins', () => {
   assert.equal(fs.readFileSync(path.join(dir, 'new.json'), 'utf8'), '{"a":1}');
 });
 
-test('real Prettier ignores executable project configs and configured plugins', () => {
+test('real Prettier skips executable project configs and configured plugins without restyling', () => {
   for (const config of ['.prettierrc.cjs', '.prettierrc.json', 'package.json']) {
     const dir = repo(), marker = path.join(dir, 'executed');
     const code = `require('fs').writeFileSync(${JSON.stringify(marker)},'executed');module.exports={semi:false};`;
@@ -170,17 +170,74 @@ test('real Prettier ignores executable project configs and configured plugins', 
     fs.writeFileSync(path.join(dir, 'new.js'), "const msg='ok'\n");
     run('format-code', { cwd: dir, ...patch('*** Add File: new.js', "+const msg='ok'") });
     assert.equal(fs.existsSync(marker), false, config);
-    assert.equal(fs.readFileSync(path.join(dir, 'new.js'), 'utf8'), 'const msg = "ok";\n', config);
+    assert.equal(fs.readFileSync(path.join(dir, 'new.js'), 'utf8'), "const msg='ok'\n", config);
   }
 });
 
-test('real Ruff uses defaults without reading project configuration or writing a cache', () => {
+test('real Ruff skips project configuration without reading it or writing a cache', () => {
   const dir = repo();
   fs.writeFileSync(path.join(dir, 'ruff.toml'), 'invalid toml = [');
   fs.writeFileSync(path.join(dir, 'new.py'), 'x=  1\n');
   run('format-code', { cwd: dir, ...patch('*** Add File: new.py', '+x=  1') });
-  assert.equal(fs.readFileSync(path.join(dir, 'new.py'), 'utf8'), 'x = 1\n');
+  assert.equal(fs.readFileSync(path.join(dir, 'new.py'), 'utf8'), 'x=  1\n');
   assert.equal(fs.existsSync(path.join(temp, 'format-code/.ruff_cache')), false);
+});
+
+test('Ruff formatting preserves unused imports and re-exports even without configuration', () => {
+  const dir = repo();
+  fs.writeFileSync(path.join(dir, 'api.py'), 'import os\nfrom .core import Engine\nx=  1\n');
+  run('format-code', { cwd: dir, ...patch('*** Update File: api.py', '@@', '-x=  0', '+x=  1') });
+  assert.equal(fs.readFileSync(path.join(dir, 'api.py'), 'utf8'), 'import os\nfrom .core import Engine\n\nx = 1\n');
+});
+
+test('configured Python re-exports and JavaScript project style survive a one-line patch', () => {
+  const dir = repo();
+  fs.mkdirSync(path.join(dir, 'pkg'));
+  fs.writeFileSync(path.join(dir, 'pyproject.toml'), '[tool.ruff.lint]\nignore = ["F401"]\n');
+  fs.writeFileSync(path.join(dir, 'prettier.config.js'), 'module.exports = { singleQuote: true, semi: false, tabWidth: 4 };\n');
+  const python = 'import os\nfrom .core import Engine\nx = 2\n';
+  const js = "function greet() {\n    return 'new'\n}\n";
+  fs.writeFileSync(path.join(dir, 'pkg/api.py'), python);
+  fs.writeFileSync(path.join(dir, 'app.js'), js);
+  run('format-code', { cwd: dir, ...patch('*** Update File: pkg/api.py', '@@', '-x = 1', '+x = 2', '*** Update File: app.js', '@@', "-    return 'old'", "+    return 'new'") });
+  assert.equal(fs.readFileSync(path.join(dir, 'pkg/api.py'), 'utf8'), python);
+  assert.equal(fs.readFileSync(path.join(dir, 'app.js'), 'utf8'), js);
+  const check = spawnSync('prettier', ['--check', 'app.js'], { cwd: dir, env, encoding: 'utf8' });
+  assert.equal(check.status, 0, check.stderr + check.stdout);
+});
+
+test('ancestor formatter settings and ignore files skip only their formatter and record why', () => {
+  const cases = [
+    ...['.prettierrc', '.prettierrc.json', '.prettierrc.yaml', '.prettierrc.cjs', '.prettierrc.mts', 'prettier.config.js', 'prettier.config.cts', '.editorconfig', '.prettierignore'].map((name) => [name, 'ignored settings', 'js']),
+    ['package.json', '{"prettier":null}', 'js'],
+    ...['ruff.toml', '.ruff.toml', 'pyproject.toml'].map((name) => [name, '[project]\nname="fixture"', 'py']),
+  ];
+  for (const [name, contents, ext] of cases) {
+    const dir = repo(), nested = path.join(dir, 'src/deep');
+    fs.mkdirSync(nested, { recursive: true });
+    const config = path.join(dir, 'src', name), file = path.join(nested, `app.${ext}`);
+    fs.writeFileSync(config, contents);
+    const before = ext === 'py' ? 'x=  1\n' : "const msg='ok'\n";
+    fs.writeFileSync(file, before);
+    run('format-code', { cwd: dir, session_id: name, ...patch(`*** Add File: src/deep/app.${ext}`, '+' + before.trim()) });
+    assert.equal(fs.readFileSync(file, 'utf8'), before, name);
+    const logs = fs.readdirSync(path.join(codexHome, 'hooks-logs')).flatMap((f) => fs.readFileSync(path.join(codexHome, 'hooks-logs', f), 'utf8').trim().split('\n').map(JSON.parse));
+    assert.ok(logs.some((l) => l.level === 'SKIP' && l.file === file && l.config === config && l.reason.includes('sandboxed')), name);
+  }
+});
+
+test('configuration discovery stops at the repository root and leaves unrelated settings alone', () => {
+  const dir = repo(), nested = path.join(dir, 'child');
+  fs.mkdirSync(nested); git(nested, 'init', '-q');
+  fs.writeFileSync(path.join(dir, '.prettierrc'), '{}');
+  fs.writeFileSync(path.join(nested, 'package.json'), '{"name":"fixture"}');
+  fs.writeFileSync(path.join(nested, 'pyproject.toml'), '[project]\nname="fixture"');
+  fs.writeFileSync(path.join(nested, 'new.json'), '{"a":1}');
+  run('format-code', { cwd: nested, ...patch('*** Add File: new.json', '+{"a":1}') });
+  assert.equal(fs.readFileSync(path.join(nested, 'new.json'), 'utf8'), '{ "a": 1 }\n');
+  fs.writeFileSync(path.join(dir, 'new.py'), 'x=  1\n');
+  run('format-code', { cwd: dir, ...patch('*** Add File: new.py', '+x=  1') });
+  assert.equal(fs.readFileSync(path.join(dir, 'new.py'), 'utf8'), 'x = 1\n');
 });
 
 test('a missing formatter does not block or alter the file', () => {
