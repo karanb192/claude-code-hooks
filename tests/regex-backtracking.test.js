@@ -142,7 +142,7 @@ test('every guard checker finishes pumped token runs in under 50ms (500ms with d
   inputs.push('rm ' + '-a '.repeat(27) + 'x && cat .env', 'rm' + ' '.repeat(3000) + 'x', 'rm -' + ' '.repeat(3000) + 'x');
   const script = `
     const path = require('path');
-    const inputs = ${JSON.stringify(inputs)};
+    const inputs = JSON.parse(require('fs').readFileSync(0, 'utf8'));
     const calls = {
       'protect-secrets': (m, s) => m.check('Bash', { command: s }, 'strict'),
       'block-dangerous-commands': (m, s) => m.checkCommand(s, 'strict'),
@@ -167,7 +167,8 @@ test('every guard checker finishes pumped token runs in under 50ms (500ms with d
     }
     process.stdout.write('OK\\n');
   `;
-  const child = spawnSync(process.execPath, ['-e', script], { timeout: 20000, encoding: 'utf8' });
+  // Over stdin: Linux caps a single argument at 128 KiB and the corpus is larger.
+  const child = spawnSync(process.execPath, ['-e', script], { input: JSON.stringify(inputs), timeout: 20000, encoding: 'utf8' });
   if (child.error) assert.fail(`${child.error.code}. Last output:\n${child.stdout}`);
   assert.strictEqual(child.status, 0, child.stdout + child.stderr);
 });
