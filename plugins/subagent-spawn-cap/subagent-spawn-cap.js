@@ -194,12 +194,26 @@ function evaluateSpawn(event, env = process.env, now = Date.now()) {
   };
 }
 
+// A check that throws must not read as an allow, so the call is denied.
+// HOOK_FAIL_OPEN=true restores the old allow-on-error behaviour.
+function guardError(e) {
+  if (process.env.HOOK_FAIL_OPEN === 'true') return '{}';
+  return JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: `🚨 [guard-error] subagent-spawn-cap could not check this call (${String(e && e.message).slice(0, 200)}), so it is blocked. Run it yourself if you meant it, or set HOOK_FAIL_OPEN=true to let calls through when a guard fails.`,
+    },
+  });
+}
+
 async function main() {
   let input = '';
   for await (const chunk of process.stdin) input += chunk;
 
+  let data;
   try {
-    const data = JSON.parse(input);
+    data = JSON.parse(input);
     if (!isSpawnTool(data.tool_name)) return console.log('{}');
 
     const r = evaluateSpawn(data);
@@ -216,7 +230,7 @@ async function main() {
     }));
   } catch (e) {
     log({ level: 'ERROR', error: e.message });
-    console.log('{}');
+    console.log(data !== null && typeof data === 'object' ? guardError(e) : '{}');
   }
 }
 

@@ -56,10 +56,15 @@ Hook processes inherit the environment Claude Code was launched with: set these 
 | `SPAWN_CAP_ASK_STEP` | `10` | Prompt again every this many spawns after `SPAWN_CAP_ASK`; `1` prompts on every spawn. Positive integer. |
 | `SPAWN_CAP_DENY` | `60` | Spawn number denied outright. Clamped up to `SPAWN_CAP_ASK` if set lower; equal to it skips the ask stage. |
 | `SPAWN_CAP_ALLOW` | unset | The literal string `true` lets spawns through past both thresholds while set; each is still recorded and logged `ALLOW_OVERRIDE`. |
+| `HOOK_FAIL_OPEN` | unset (deny) | The literal string `true` lets the call through when the guard's own check throws, instead of denying it. See [When the guard fails](#when-the-guard-fails). |
 
 `HOOK_SAFETY_LEVEL` is not read: the repo's levels pick pattern sets, a budget is a number, and a hidden level-to-number table would move your budget whenever you tune the level for another guard.
 
 **Unattended runs.** In `claude -p` with no permission host and in `dontAsk` mode, anything that would prompt is denied ([headless reference](https://code.claude.com/docs/en/headless)), so the ask threshold is the effective hard stop: with the defaults an unattended session ends at spawn 20, not 60. Set `SPAWN_CAP_ASK` equal to `SPAWN_CAP_DENY` for CI so Claude gets the deny text it can act on.
+
+## When the guard fails
+
+From 1.2.0, a guard that cannot finish its check refuses the call instead of allowing it. A check that throws is denied with a `[guard-error]` reason. A timeout (10 s) or a missing `node` is blocked by `"onFailure": "block"` on Claude Code v2.1.295 or later; older versions ignore that key and let the call run. On Codex a missing `node` is blocked by the command's `|| exit 2`, but a timeout still lets the call run, because Codex has no setting for it. Set `HOOK_FAIL_OPEN=true` to let the call through when the check throws; [When a guard fails](../../README.md#-when-a-guard-fails) covers the rest of the way back.
 
 ## State
 

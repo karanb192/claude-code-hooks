@@ -6,7 +6,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/config-guard.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/config-guard.js\"",
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       }

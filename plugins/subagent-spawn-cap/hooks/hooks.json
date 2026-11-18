@@ -6,7 +6,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/subagent-spawn-cap.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/subagent-spawn-cap.js\"",
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       }

@@ -6,7 +6,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/case-insensitive-guard.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/case-insensitive-guard.js\"",
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       }

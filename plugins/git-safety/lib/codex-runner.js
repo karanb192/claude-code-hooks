@@ -1,15 +1,16 @@
 const fs = require('fs');
 const path = require('path');
 const host = require('./host');
-const { GUARDS } = require('./dispatch');
+const { GUARDS, failOpen, guardErrorReason } = require('./dispatch');
 
 async function run(name, mod) {
   let input = '';
   for await (const chunk of process.stdin) input += chunk;
   let reason = '';
   let record;
+  let data;
   try {
-    const data = JSON.parse(input);
+    data = JSON.parse(input);
     const guard = GUARDS.find((g) => g.name === name);
     if (!guard) throw new Error('Unknown guard');
     if (guard.skip?.()) return;
@@ -24,6 +25,7 @@ async function run(name, mod) {
     if (reason) record = { ...record, session_id: data.session_id, tool: data.tool_name, decision: 'deny' };
   } catch (error) {
     record = { level: 'ERROR', error: error.message };
+    if (data !== null && typeof data === 'object' && !failOpen()) reason = `🚨 ${guardErrorReason(name, error)}`;
   }
   if (record) {
     try {

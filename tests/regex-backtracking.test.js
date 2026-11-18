@@ -129,3 +129,45 @@ test('every guard checker finishes the same inputs in under 50ms', () => {
   if (child.error) assert.fail(`${child.error.code}. Last output:\n${child.stdout}`);
   assert.strictEqual(child.status, 0, child.stdout + child.stderr);
 });
+
+// A grid of command words followed by one token repeated: the shape of the rm
+// flag run that took block-dangerous-commands past the hook timeout. Every
+// checker must stay fast on all of it, matching or not. case-insensitive-guard
+// reads the directories a path walks through, so it gets a disk-sized budget.
+test('every guard checker finishes pumped token runs in under 50ms (500ms with disk reads)', () => {
+  const words = ['', 'rm ', 'rm -rf ', 'git ', 'git push ', 'git rm ', 'cat ', 'grep ', 'curl x | ', 'find . ', 'sed -i ', 'mv ', 'cp ', 'chmod ', 'dd ', 'sudo ', 'env ', 'bash -c ', 'npx jest ', 'tee ', 'xargs '];
+  const tokens = ['-a ', 'a ', ' ', '-', '-- ', '-rf ', '--a ', '-C x ', '- a ', 'a/', '../', '"a" ', "'a' ", '\\ ', '$x ', '.env ', '&& ', '| ', '\t', 'a -'];
+  const inputs = [];
+  for (const word of words) for (const token of tokens) for (const end of ['x', ' ~', ' /']) inputs.push(word + token.repeat(40) + end);
+  inputs.push('rm ' + '-a '.repeat(27) + 'x && cat .env', 'rm' + ' '.repeat(3000) + 'x', 'rm -' + ' '.repeat(3000) + 'x');
+  const script = `
+    const path = require('path');
+    const inputs = ${JSON.stringify(inputs)};
+    const calls = {
+      'protect-secrets': (m, s) => m.check('Bash', { command: s }, 'strict'),
+      'block-dangerous-commands': (m, s) => m.checkCommand(s, 'strict'),
+      'git-safety': (m, s) => m.checkCommand(s, 'feature', 'strict'),
+      'protect-tests': (m, s) => m.checkTool('Bash', { command: s }, 'strict'),
+      'config-guard': (m, s) => m.checkTool('Bash', { command: s }, 'strict', ${JSON.stringify(ROOT)}),
+      'case-insensitive-guard': (m, s) => m.checkCommand(s, ${JSON.stringify(path.join(ROOT, 'no-such-dir'))}),
+    };
+    for (const [name, call] of Object.entries(calls)) {
+      const mod = require(path.join(${JSON.stringify(ROOT)}, 'plugins', name, name + '.js'));
+      process.stdout.write(name + '\\n');
+      call(mod, 'echo warm');
+      for (const input of inputs) {
+        const start = process.hrtime.bigint();
+        call(mod, input);
+        const ms = Number(process.hrtime.bigint() - start) / 1e6;
+        if (!(ms < (name === 'case-insensitive-guard' ? 500 : 50))) {
+          process.stdout.write('SLOW ' + ms + ' on ' + JSON.stringify(input.slice(0, 40)) + '\\n');
+          process.exit(2);
+        }
+      }
+    }
+    process.stdout.write('OK\\n');
+  `;
+  const child = spawnSync(process.execPath, ['-e', script], { timeout: 20000, encoding: 'utf8' });
+  if (child.error) assert.fail(`${child.error.code}. Last output:\n${child.stdout}`);
+  assert.strictEqual(child.status, 0, child.stdout + child.stderr);
+});
