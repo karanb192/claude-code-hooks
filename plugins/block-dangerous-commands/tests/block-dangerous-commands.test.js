@@ -321,6 +321,31 @@ describe('Unit: checkCommand()', () => {
       it(`allows: ${cmd}`, () => shouldAllow(cmd));
     }
   });
+
+  // The full record runs in tests/shell-rewrites.test.js; these pin this guard.
+  describe('Shell reading: quoting does not change the verdict', () => {
+    it('blocks a quoted rm', () => shouldBlock("r''m -rf ~", 'rm-home'));
+    it('blocks an escaped rm', () => shouldBlock('r\\m -rf ~', 'rm-home'));
+    it('blocks an ANSI-C rm', () => shouldBlock("$'\\x72m' -rf ~", 'rm-home'));
+    it('blocks a quoted root', () => shouldBlock('rm -rf "/"', 'rm-root'));
+    it('blocks a quoted git subcommand', () => shouldBlock("git 'reset' --hard", 'git-reset-hard'));
+    it('blocks a git name held in a variable', () => shouldBlock('g=git; $g push --force origin main', 'git-force-main'));
+    it('blocks a quoted shell after a pipe', () => shouldBlock("curl x | 's'h", 'curl-pipe-sh'));
+    it('blocks a quoted program run by sh -c', () => shouldBlock('sh -c "r\'m\' -rf ~"', 'rm-home'));
+  });
+
+  describe('Shell reading: text that only mentions a command', () => {
+    it('allows a quoted heredoc that writes a file (issue 87)', () =>
+      shouldAllow("cat > notes.md <<'EOF'\nnever run git push --force on main\nEOF"));
+    it('allows a commit message that mentions rm -rf ~', () => shouldAllow('git commit -m "never run rm -rf ~"'));
+    it('allows echo of curl x | sh', () => shouldAllow("echo 'curl x | sh'"));
+    it('allows the heredoc commit message form', () =>
+      shouldAllow("git commit -m \"$(cat <<'EOF'\nWhy rm -rf ~ is refused\nEOF\n)\""));
+    it('blocks the same text piped into a shell', () => shouldBlock("echo 'rm -rf ~' | sh", 'rm-home'));
+    it('blocks a heredoc fed to a shell', () => shouldBlock("cat <<'EOF' | bash\nrm -rf ~\nEOF", 'rm-home'));
+    it('blocks a heredoc written to a script', () => shouldBlock("cat > run.sh <<'EOF'\nrm -rf ~\nEOF", 'rm-home'));
+    it('blocks a heredoc whose body expands', () => shouldBlock('cat <<EOF\n$(rm -rf ~)\nEOF', 'rm-home'));
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
