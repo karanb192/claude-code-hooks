@@ -43,8 +43,10 @@ Per the [hooks reference](https://code.claude.com/docs/en/hooks#pretooluse-decis
 What Claude sees at spawn 60:
 
 ```
-🚨 [spawn-cap] Subagent spawn #60 in this session hit the hard cap (SPAWN_CAP_DENY=60). Do not retry: finish with the results you already have and tell the user the session's spawn budget is spent. The user can reset it by deleting ~/.claude/subagent-spawn-cap/<session_id>.jsonl, or raise SPAWN_CAP_DENY in the settings.json env block and restart.
+🚨 [spawn-cap] Subagent spawn #60 in this session hit the hard cap (SPAWN_CAP_DENY=60). Do not retry: finish with the results you already have and tell the user the session's spawn budget is spent. Only the user can lift it, by raising SPAWN_CAP_DENY in the settings.json env block and restarting.
 ```
+
+The deny text does not name the ledger file, because a model that knows which file holds its budget can delete it and keep going. [config-guard](../config-guard) (also in [guard-pack](../guard-pack)) refuses an agent's attempt to delete, truncate or rewrite the ledger. To reset a session's budget, delete its file from your own shell.
 
 ## Configuration
 
@@ -63,7 +65,7 @@ Hook processes inherit the environment Claude Code was launched with: set these 
 
 ## State
 
-One append-only JSONL per session at `~/.claude/subagent-spawn-cap/<session_id>.jsonl`, one line per allowed or asked spawn (`ts`, `n`, `decision`, `subagent_type`, `description` truncated to 80 chars, plus `agent_id` / `agent_type` inside subagents). Append-only because parallel tool calls in one turn fire parallel hook processes; `O_APPEND` writes survive that, a read-modify-write counter does not. Denied calls are not written. An asked call is written before you answer, so a declined ask still consumed one budget unit. Ledgers untouched for 7 days are pruned, at most once a day. Delete a session's file to reset its budget. Verdicts, `ALLOW_OVERRIDE` bypasses and config warnings go to `~/.claude/hooks-logs/`; the ledger never stores the prompt; no network calls.
+One append-only JSONL per session at `~/.claude/subagent-spawn-cap/<session_id>.jsonl`, one line per allowed or asked spawn (`ts`, `n`, `decision`, `subagent_type`, `description` truncated to 80 chars, plus `agent_id` / `agent_type` inside subagents). Append-only because parallel tool calls in one turn fire parallel hook processes; `O_APPEND` writes survive that, a read-modify-write counter does not. Denied calls are not written. An asked call is written before you answer, so a declined ask still consumed one budget unit. Ledgers untouched for 7 days are pruned, at most once a day. Delete a session's file from your own shell to reset its budget; config-guard refuses that delete when the agent tries it. Verdicts, `ALLOW_OVERRIDE` bypasses and config warnings go to `~/.claude/hooks-logs/`; the ledger never stores the prompt; no network calls.
 
 ## Known limits
 

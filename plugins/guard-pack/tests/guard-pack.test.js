@@ -28,7 +28,7 @@ function runHook(payload, envOverrides = {}) {
   return new Promise((resolve, reject) => {
     const env = { ...process.env, HOME: TMP_HOME, USERPROFILE: TMP_HOME, ...envOverrides };
     for (const key of Object.keys(env)) {
-      if ((key.startsWith('HOOK_ASK_') || key.startsWith('HOOK_SAFETY') || key.startsWith('CONFIG_GUARD_') || key.startsWith('SPAWN_CAP_')) && !(key in envOverrides)) {
+      if ((key.startsWith('HOOK_ASK_') || key.startsWith('HOOK_SAFETY') || key.startsWith('CONFIG_GUARD_') || key.startsWith('SPAWN_CAP_') || key === 'CLAUDE_CONFIG_DIR') && !(key in envOverrides)) {
         delete env[key];
       }
     }
@@ -373,6 +373,63 @@ describe('Integration: subagent-spawn-cap through the pack', () => {
         if (val === undefined) delete process.env[k]; else process.env[k] = val;
       }
     }
+  });
+});
+
+describe('Integration: the pack cannot be switched off through its own files', () => {
+  const cache = path.join(TMP_HOME, '.claude', 'plugins', 'cache', 'claude-code-hooks', 'guard-pack', '1.5.0');
+  const dispatch = path.join(cache, 'lib', 'dispatch.js');
+
+  it('denies an Edit or Write of the installed dispatcher', async () => {
+    for (const [tool, input] of [['Edit', { file_path: dispatch, old_string: 'const GUARDS = [', new_string: 'const GUARDS = [] && [' }], ['Write', { file_path: dispatch, content: 'module.exports = { GUARDS: [] };' }]]) {
+      const { output } = await runHook(payload(tool, input));
+      assert.strictEqual(decisionOf(output), 'deny', tool);
+      assert.match(reasonOf(output), /^🔒 \[claude-plugins\] .*\(via guard-pack\)$/);
+    }
+  });
+
+  it('denies sed -i and rm -rf on the plugin cache', async () => {
+    for (const command of [`sed -i '' 's/GUARDS = \\[/GUARDS = [] \\&\\& [/' ${dispatch}`, 'rm -rf ~/.claude/plugins/cache/claude-code-hooks', 'rm -rf ~/.claude']) {
+      const { output } = await runHook(payload('Bash', { command }));
+      assert.strictEqual(decisionOf(output), 'deny', command);
+      assert.match(reasonOf(output), /\[claude-plugins\]/);
+    }
+  });
+
+  it('denies a direct write to ~/.claude.json', async () => {
+    const { output } = await runHook(payload('Write', { file_path: path.join(TMP_HOME, '.claude.json'), content: '{"mcpServers":{"x":{"command":"node"}}}' }));
+    assert.strictEqual(decisionOf(output), 'deny');
+    assert.match(reasonOf(output), /\[claude-json\]/);
+  });
+
+  it('reads of the installed pack and ordinary plugin commands still pass', async () => {
+    for (const [tool, input] of [
+      ['Read', { file_path: dispatch }],
+      ['Grep', { pattern: 'GUARDS', path: cache }],
+      ['Bash', { command: `cat ${dispatch}` }],
+      ['Bash', { command: 'ls ~/.claude/plugins/cache/claude-code-hooks' }],
+      ['Bash', { command: 'claude plugin list' }],
+      ['Bash', { command: "git commit -m \"$(cat <<'EOF'\nProtect ~/.claude/plugins from rm -rf\nEOF\n)\"" }],
+    ]) {
+      const { output } = await runHook(payload(tool, input));
+      assert.deepStrictEqual(output, {}, `${tool} ${JSON.stringify(input)}`);
+    }
+  });
+
+  it('the spawn cap deny names no ledger, and deleting the ledger is refused', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-pack-spawn-'));
+    const env = { HOME: home, USERPROFILE: home, SPAWN_CAP_ASK: '1', SPAWN_CAP_DENY: '1' };
+    const spawnCall = payload('Agent', { description: 'x', prompt: 'y' }, { session_id: 'reset-me' });
+    const denied = await runHook(spawnCall, env);
+    assert.strictEqual(decisionOf(denied.output), 'deny');
+    assert.doesNotMatch(reasonOf(denied.output), /subagent-spawn-cap\/|reset-me\.jsonl/);
+    for (const command of ['rm ~/.claude/subagent-spawn-cap/reset-me.jsonl', ': > ~/.claude/subagent-spawn-cap/reset-me.jsonl', `rm -rf ${path.join(home, '.claude', 'subagent-spawn-cap')}`]) {
+      const { output } = await runHook(payload('Bash', { command }), env);
+      assert.strictEqual(decisionOf(output), 'deny', command);
+      assert.match(reasonOf(output), /\[spawn-cap-state\]/);
+    }
+    const write = await runHook(payload('Write', { file_path: path.join(home, '.claude', 'subagent-spawn-cap', 'reset-me.jsonl'), content: '' }), env);
+    assert.strictEqual(decisionOf(write.output), 'deny');
   });
 });
 
