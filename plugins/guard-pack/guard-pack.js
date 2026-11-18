@@ -12,8 +12,9 @@
  * later deny must outrank it (deny > ask, as when the standalone hooks run
  * side by side). The verdict is emitted in that guard's own output
  * format, suffixed "(via guard-pack)". A guard that throws is logged and
- * skipped so one broken guard can never switch off the other six
- * (fail-open per guard, same convention as the standalone hooks).
+ * the rest still run, so a real deny keeps its own reason; if none denies,
+ * the call is denied as a guard error (fail-closed, same as the standalone
+ * hooks; HOOK_FAIL_OPEN=true skips the broken guard instead).
  *
  * The seven guard scripts in lib/ are byte-identical copies of the individual
  * plugin scripts; a repo test pins them, so they cannot drift. lib/host.js is
@@ -46,8 +47,9 @@ const LIB = path.join(__dirname, 'lib');
 const host = require('./lib/host');
 const LOG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.claude', 'hooks-logs');
 
-const { GUARDS } = require('./lib/dispatch');
+const { GUARDS, failOpen, guardErrorReason } = require('./lib/dispatch');
 const PACK_TOOLS = ['Bash', 'Read', 'Edit', 'MultiEdit', 'Write', 'Agent', 'Task', 'Grep'];
+const ERROR_EMOJIS = { critical: '🚨' };
 
 function log(data) {
   try {
@@ -61,6 +63,7 @@ function log(data) {
 // with its guard attached. Exported for tests.
 function evaluate(toolName, toolInput, cwd, event) {
   let ask = null;
+  let error = null;
   for (const g of GUARDS) {
     try {
       if (g.skip && g.skip()) continue;
@@ -72,9 +75,10 @@ function evaluate(toolName, toolInput, cwd, event) {
       ask = ask || hit;
     } catch (e) {
       log({ level: 'ERROR', guard: g.name, error: e.message });
+      if (!error && !failOpen()) error = { guard: g.name, emojis: ERROR_EMOJIS, id: 'guard-error', level: 'critical', ask: false, reason: guardErrorReason(g.name, e) };
     }
   }
-  return ask;
+  return error || ask;
 }
 
 // Codex: check every Claude-shaped call a patch or command turns into, then
@@ -96,8 +100,9 @@ function codexVerdict(data) {
 
 function runCodex(input) {
   let answer = host.codexAnswer('');
+  let data;
   try {
-    const data = JSON.parse(input);
+    data = JSON.parse(input);
     const r = codexVerdict(data);
     if (r) {
       const { session_id, cwd, permission_mode } = data;
@@ -112,6 +117,7 @@ function runCodex(input) {
     }
   } catch (e) {
     log({ level: 'ERROR', host: 'codex', error: e.message });
+    if (data !== null && typeof data === 'object' && !failOpen()) answer = host.codexAnswer(`${ERROR_EMOJIS.critical} ${guardErrorReason('guard-pack', e)}`);
   }
   if (answer.stderr) process.stderr.write(answer.stderr);
   process.exitCode = answer.exitCode;
@@ -122,8 +128,9 @@ async function main() {
   for await (const chunk of process.stdin) input += chunk;
   if (host.hostFromArgv(process.argv) === 'codex') return runCodex(input);
 
+  let data;
   try {
-    const data = JSON.parse(input);
+    data = JSON.parse(input);
     const { tool_name, tool_input, session_id, cwd, permission_mode } = data;
     if (!PACK_TOOLS.includes(tool_name)) return console.log('{}');
 
@@ -141,7 +148,14 @@ async function main() {
     }));
   } catch (e) {
     log({ level: 'ERROR', error: e.message });
-    console.log('{}');
+    if (data === null || typeof data !== 'object' || failOpen()) return console.log('{}');
+    console.log(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: `${ERROR_EMOJIS.critical} ${guardErrorReason('guard-pack', e)}`,
+      },
+    }));
   }
 }
 

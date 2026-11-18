@@ -6,7 +6,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/block-dangerous-commands.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/block-dangerous-commands.js\"",
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       }

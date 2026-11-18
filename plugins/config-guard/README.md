@@ -51,6 +51,7 @@ All optional, set via environment variables:
 | `HOOK_ASK_CRITICAL` | unset | `true` prompts the user instead of denying for `critical`-level matches. |
 | `HOOK_ASK_HIGH` | unset | `true` prompts instead of denying for `high`-level matches. |
 | `HOOK_ASK_STRICT` | unset | `true` prompts instead of denying for `strict`-level matches. |
+| `HOOK_FAIL_OPEN` | unset (deny) | The literal string `true` lets the call through when the guard's own check throws, instead of denying it. See [When the guard fails](#when-the-guard-fails). |
 
 Ask mode is strictly per level and opt-in: everything defaults to deny.
 
@@ -65,6 +66,10 @@ The protected Codex set is listed above. Other files, including `.codex/rules/*.
 Shell paths must use conventional spellings. Home-directory deletion with a trailing `/` or `/*` is checked, but partial globs, brace expansion, repeated slashes and dot segments are not normalized: `~/.codex/plugin*`, `~/.codex/conf*.toml`, `~/.codex/{config.toml,x}`, `~/.codex/./plugins` and `~/.codex//config.toml` can pass. Native patch paths are normalized separately and do not have this shell-spelling limitation.
 
 CLI-write checks recognize the documented Codex 0.169.0 global options and its `--yolo` alias. They do not parse quoted command/subcommand words or unknown future flags. Because they scan command text, literal searches, printed text and commit messages that contain `codex plugin add` or a similar write command can be refused. The Claude CLI patterns have the same text-matching limits.
+
+## When the guard fails
+
+From 1.2.0, a guard that cannot finish its check refuses the call instead of allowing it. A check that throws is denied with a `[guard-error]` reason. A timeout (10 s) or a missing `node` is blocked by `"onFailure": "block"` on Claude Code v2.1.295 or later; older versions ignore that key and let the call run. On Codex a missing `node` is blocked by the command's `|| exit 2`, but a timeout still lets the call run, because Codex has no setting for it. Set `HOOK_FAIL_OPEN=true` to let the call through when the check throws; [When a guard fails](../../README.md#-when-a-guard-fails) covers the rest of the way back.
 
 ## Data & privacy
 

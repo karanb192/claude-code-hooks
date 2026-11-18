@@ -5,7 +5,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml/badge.svg)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
-[![Tests](https://img.shields.io/badge/tests-2393%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-2440%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
 
 **🌐 [Live site & catalog](https://karanb192.github.io/claude-code-hooks/)**
 
@@ -229,7 +229,7 @@ Then open `/hooks` in Codex and approve the plugin's hooks. Codex skips any hook
 
 | On Codex | Plugins | Why |
 | --- | --- | --- |
-| Native support | [guard-pack](plugins/guard-pack#codex-cli) 1.4.0 and all seven current standalone guards | Shell and native patch checks; asks become blocks. The pack also includes Codex config protection and a deny-only, per-thread spawn budget. Install the pack or individual guards, not both |
+| Native support | [guard-pack](plugins/guard-pack#codex-cli) 1.5.0 and all seven current standalone guards | Shell and native patch checks; asks become blocks. The pack also includes Codex config protection and a deny-only, per-thread spawn budget. Install the pack or individual guards, not both |
 | Native workflow support | [auto-stage](plugins/auto-stage#codex-cli), [format-code](plugins/format-code#codex-cli), [session-logger](plugins/session-logger#codex-cli) 1.1.0 | Stage or format successful native patches; record lifecycle, patch paths and shell commands. Formatting skips project settings and ignore files; unconfigured files use installed Ruff/Prettier 3 defaults without lint autofixes. Shell-edited paths are not tracked, and formatting/staging order is not guaranteed |
 | Older versions | guard-pack 1.3.x | Shell and native patches, without the Codex spawn cap or full config-path coverage. Older standalone guards have no native patch adapter and do not safely support ask mode |
 | Claude Code only for now | Every other plugin | They rely on Claude Code transcripts, its edit events, or events Codex doesn't have (`Notification`, `ConfigChange`, `InstructionsLoaded`, the status line) |
@@ -276,7 +276,9 @@ cp plugins/block-dangerous-commands/block-dangerous-commands.js ~/.claude/hooks/
         "hooks": [
           {
             "type": "command",
-            "command": "node ~/.claude/hooks/block-dangerous-commands.js"
+            "command": "node ~/.claude/hooks/block-dangerous-commands.js",
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       }
@@ -286,6 +288,8 @@ cp plugins/block-dangerous-commands/block-dangerous-commands.js ~/.claude/hooks/
 ```
 
 **3. Restart Claude Code**: the hook is now active.
+
+`"onFailure": "block"` makes Claude Code (v2.1.295 or later) refuse the call when the guard times out or cannot start. Leave it out to let the call through instead; see [When a guard fails](#-when-a-guard-fails).
 
 > 💡 **Tip:** Use multiple hooks together. Combine `block-dangerous-commands` + `protect-secrets` for comprehensive safety.
 
@@ -342,6 +346,20 @@ Set them in the `env` block of `settings.json` (works for plugins and classic co
 Classic copies can also take them inline in the hook command: `"command": "HOOK_ASK_STRICT=true node ~/.claude/hooks/block-dangerous-commands.js"`.
 
 Everything defaults to **deny**: ask mode is strictly opt-in. A common setup: keep `critical` on deny, set `HOOK_ASK_STRICT=true` so cautionary patterns prompt instead of blocking.
+
+### 🧯 When a guard fails
+
+A guard that cannot finish its check refuses the call it was guarding. This covers the seven guards and guard-pack (guard-pack 1.5.0 and the standalone guards released with it); the workflow and observability plugins still let the call through.
+
+| The guard... | Claude Code | Codex CLI |
+| --- | --- | --- |
+| throws inside its check | Denied with a `[guard-error]` reason naming the guard and the error | Blocked (exit 2), same reason |
+| runs past its 10 s timeout | Blocked by `"onFailure": "block"` on v2.1.295 or later; older versions ignore the key and let the call run | Runs: Codex has no setting that blocks on a timeout |
+| cannot start (`node` missing from PATH) | Blocked on v2.1.295 or later, as above | Blocked: the hook command ends in `\|\| exit 2` |
+
+Input that is not JSON still passes, because the host never sends it and there is no call to check.
+
+**To get the old allow-on-failure behaviour back,** set `HOOK_FAIL_OPEN=true` in the `env` block of `settings.json` (or export it before launching Codex). A guard that throws then lets the call through, as before. The block on a timeout or a missing `node` comes from the plugin's hook registration, which plugin updates overwrite; to drop it too, uninstall the plugin and register the script yourself without `onFailure` (and, on Codex, without `|| exit 2`), as in [The classic way](#the-classic-way-copy-the-script).
 
 ---
 

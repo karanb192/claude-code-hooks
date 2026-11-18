@@ -2,6 +2,11 @@
 
 const envBool = (key) => process.env[key] === 'true';
 
+// A guard that throws denies the call rather than allowing it, unless the user
+// set HOOK_FAIL_OPEN=true. Same text as the standalone guards' guardError.
+const failOpen = () => envBool('HOOK_FAIL_OPEN');
+const guardErrorReason = (name, e) => `[guard-error] ${name} could not check this call (${String(e && e.message).slice(0, 200)}), so it is blocked. Run it yourself if you meant it, or set HOOK_FAIL_OPEN=true to let calls through when a guard fails.`;
+
 // Two emoji vocabularies exist across the guards; kept per guard so the
 // pack's output is character-identical to the standalone hook's.
 const STD_EMOJIS = { critical: '🚨', high: '⛔', strict: '⚠️' };
@@ -100,4 +105,4 @@ const GUARDS = [
   },
 ];
 
-module.exports = { GUARDS };
+module.exports = { GUARDS, failOpen, guardErrorReason };
