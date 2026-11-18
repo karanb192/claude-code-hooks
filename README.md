@@ -5,11 +5,11 @@
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml/badge.svg)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
-[![Tests](https://img.shields.io/badge/tests-2393%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-2520%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
 
 **🌐 [Live site & catalog](https://karanb192.github.io/claude-code-hooks/)**
 
-Before an agent runs a shell command or edits a file, these hooks check the action against rules outside the model. The [guard pack](plugins/guard-pack) blocks matched secret reads, dangerous commands, test disabling and destructive Git operations. A blocked call returns a reason to the agent. The [coverage limits](plugins/guard-pack#codex-cli) matter: hooks only see the events their host sends, and pattern checks are not a sandbox. The catalog also includes Claude Code automation, notifications and observability, with an [OWASP mapping](docs/owasp-llm-top-10-2026.md).
+Before an agent runs a shell command or edits a file, these hooks check the action against rules outside the model. The [guard pack](plugins/guard-pack) blocks matched secret reads, dangerous commands, test disabling and destructive Git operations. A blocked call returns a reason to the agent. The [coverage limits](plugins/guard-pack#codex-cli) matter: hooks only see the events their host sends, and pattern checks are not a sandbox. The [rewrite record](tests/shell-rewrites.test.js) lists the command spellings the shell guards must refuse, the mentions they must allow, and the ones they still miss. The catalog also includes Claude Code automation, notifications and observability, with an [OWASP mapping](docs/owasp-llm-top-10-2026.md).
 
 **Start with guard-pack. Choose your agent:**
 
