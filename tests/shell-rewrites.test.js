@@ -66,6 +66,8 @@ const REFUSED = [
   { cmd: "cat <<'EOF' | sh\nrm -rf ~\nEOF", id: 'rm-home' },
   { cmd: "cat > .git/hooks/pre-commit <<'EOF'\nrm -rf ~\nEOF", id: 'rm-home' },
   { cmd: "tee deploy.sh <<'EOF'\nrm -rf ~\nEOF", id: 'rm-home' },
+  { cmd: "cat > x <<'EOF'\nrm -rf ~\nEOF\nchmod +x x; PATH=.:$PATH x", id: 'rm-home' },
+  { cmd: "cat > x <<'EOF'\nrm -rf ~\nEOF\nfind . -name x -exec ./x \\;", id: 'rm-home' },
   { cmd: "$(cat <<'EOF'\nrm -rf ~\nEOF\n)", id: 'rm-home' },
   { cmd: "cat <<EOF\n$(rm -rf ~)\nEOF", id: 'rm-home' },
   { cmd: 'git commit -m "$(rm -rf ~)"', id: 'rm-home' },

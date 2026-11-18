@@ -70,7 +70,7 @@ Text that only mentions a command is not matched:
 - The body of a quoted heredoc fed to a reader that never runs it (`cat`, `tee`, `head`, `git commit -F -` and similar). `cat > notes.md <<'EOF'` with a body that mentions `git push --force` is allowed.
 - The quoted text of `echo`, `printf`, `git commit` and `gh pr|issue create|edit|comment`, including the `git commit -m "$(cat <<'EOF' ...)"` form. `git commit -m "never run rm -rf ~"` and `echo 'curl x | sh'` are allowed.
 
-That text is still matched whenever it can run: piped into a program (`echo '...' | sh`), echoed into a file, written by a heredoc to a script, shell rc file or git hook, an unquoted heredoc body (it expands), a substitution used as the command, or a line that also starts a shell or interpreter, defines a function or alias, or uses `eval`, `source`, `trap` or `case`.
+That text is still matched whenever it can run: piped into a program (`echo '...' | sh`), echoed into a file, written by a heredoc to a script, shell rc file, git hook or git config, or a file under `/etc`, cron or launchd, an unquoted heredoc body (it expands), a substitution used as the command, or a line that also starts a shell, an interpreter or a wrapper that runs its argument (`sudo`, `nohup`, `timeout`, `find -exec` and similar), runs a path (`./x`), changes `PATH`, defines a function or alias, or uses `eval`, `source`, `hash`, `trap` or `case`.
 
 ### What it does not catch
 

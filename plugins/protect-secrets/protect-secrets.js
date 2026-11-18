@@ -295,12 +295,14 @@ const CLOSERS = new Set(['}', 'fi', 'done', 'esac']);
 // an alias, a sourced file, a DEBUG trap) or run text they are given; anywhere
 // in the line these start a program that may run a file the line just wrote.
 // Either keeps the mention exceptions off for the whole line.
-const REDEFINERS = new Set(['alias', 'function', 'enable', 'source', '.', 'eval', 'shopt', 'trap', 'case', 'coproc', 'exec', 'builtin', 'command']);
-const RUNNERS = /^(?:(?:ba|z|da|k|c|tc|fi)?sh|eval|exec|xargs|python[\d.]*|node|nodejs|perl|ruby|php|deno|bun|osascript|env)$/;
+const REDEFINERS = new Set(['alias', 'function', 'enable', 'hash', 'source', '.', 'eval', 'shopt', 'trap', 'case', 'coproc', 'exec', 'builtin', 'command']);
+const RUNNERS = /^(?:(?:ba|z|da|k|c|tc|fi)?sh|eval|exec|xargs|python[\d.]*|node|nodejs|perl|ruby|php|deno|bun|osascript|env|sudo|doas|nohup|nice|timeout|setsid|stdbuf|watch|chroot|flock|script|parallel|-exec(?:dir)?|-ok(?:dir)?)$/;
+// Assignments that change which program a name runs, or run code at startup.
+const LOOKUP_VARS = /^(?:PATH|BASH_ENV|ENV|PROMPT_COMMAND|IFS)\+?=/;
 const GIT_VALUE_OPTS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env']);
 const SAFE_TARGET = /^(?:\/dev\/(?:null|stdout|stderr)|[12]|-)$/;
-// Files a shell runs by name: a heredoc written to one keeps its body.
-const SCRIPT_FILE = /(?:^|\/)(?:\.git\/hooks\/[^/]+|\.(?:bash|zsh|k|c)shrc|\.(?:bash_)?profile|\.bash_login|\.z(?:profile|shenv|login))$|\.(?:sh|bash|zsh|ksh|command)$/;
+// Files a shell, git or the system runs: a heredoc written to one keeps its body.
+const SCRIPT_FILE = /(?:^|\/)(?:\.git\/(?:hooks\/[^/]+|config)|\.husky\/[^/]+|\.gitconfig|\.(?:bash|zsh|k|c)shrc|\.(?:bash_)?profile|\.bash_login|\.z(?:profile|shenv|login))$|^\/etc\/|cron|Launch(?:Agents|Daemons)\/|systemd\/|\.(?:sh|bash|zsh|ksh|command)$/;
 const REDIRECT = /^\d*(?:<<<|<<-|<<|&>>|&>|>>|>\||>&|<&|<>|<|>)/;
 const ANSI = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v' };
 const MAX_DEPTH = 6;
@@ -580,7 +582,7 @@ function lineIsPlain(read) {
       const words = argv(cmd);
       const w = words[commandIndex(words)];
       if (w && (w.dynamic || w.value.includes('/') || REDEFINERS.has(w.value))) return false;
-      if (words.some(x => RUNNERS.test(base(x.value)))) return false;
+      if (words.some(x => RUNNERS.test(base(x.value)) || LOOKUP_VARS.test(x.lead))) return false;
     }
   }
   return true;
