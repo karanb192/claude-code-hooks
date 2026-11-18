@@ -1,5 +1,31 @@
 # Codex CLI: live results
 
+## Workflow plugins
+
+Run on 2026-11-17 with `node bench/codex-live/run.mjs --workflows`, Codex CLI 0.169.0 on macOS. Each plugin was installed separately from the local marketplace checkout in a fresh temporary `CODEX_HOME`, and its hooks were approved by stored declaration/content hashes. Real Ruff 0.17.5 and Prettier 3.10.1 were on the test process's PATH. No user configuration was changed.
+
+| Plugin | Install and approval | Live verification |
+|---|---|---|
+| auto-stage 1.1.0 | Passed | Native patch additions, update, deletion and both rename paths staged; unrelated existing edits stayed unstaged. Six staging log entries matched the Git index |
+| format-code 1.1.0 | Passed | Unconfigured Python and JSON formatted correctly. Subsequent one-line patches preserved configured Python imports/re-exports and JavaScript style; an ignored generated file stayed unformatted. All three skips were logged, and executable config did not run |
+| session-logger 1.1.0 | All three hooks passed | Session start, patch paths (including deletion/rename), shell command and session end appeared in one note; patch body text was absent |
+
+Isolated regression tests also cover literal Git pathspecs and shell metacharacters, ignore rules, removed parent directories, missing formatters, symlink skips, same-prefix thread IDs, concurrent note appends and lock exhaustion. A local marker probe reproduced command execution through a nested bare repository before the staging fix; the regression now verifies no marker or nested index is created. Further tests verify that repository boundaries are respected, Git monitors and index hooks do not run, and filtered files remain unstaged. These are local process tests, not additional model-driven sessions.
+
+A separate defensive live probe checked the formatter's trust boundary. In a disposable workspace-write session, a direct shell write outside the workspace and a write into `.git` were denied. Before the isolation fix, a Prettier project config could write the outside marker through the hook. An intermediate revision disabled config loading and left all three markers absent while JSON still formatted correctly.
+
+Additional review found that isolated defaults could remove Python imports and restyle configured files. The final adapter runs only `ruff format`, skips targets with project settings or ignore files, and logs the settings path. Any `pyproject.toml` conservatively opts Python out. A fresh complete workflow run verified the configured and ignored cases in the table. Two earlier attempts did not establish the requested configured-file edit; the runner now supplies an exact native patch and asserts both the changed bytes and skip records. Local tests also cover executable/declarative configs without execution, unconfigured re-export preservation, repository boundaries and Prettier 2 rejection.
+
+Not tested live: GitHub-hosted marketplace installation, resume, failed/partially applied native patches, simultaneous plugins, Windows, desktop/cloud or remote environments. Shell edits are deliberately not staged/formatted or reconstructed as file activity. Formatter/stager ordering is not guaranteed; review and stage formatted files before committing. The session note records shell commands without claiming their exit status.
+
+```text
+PASS auto-stage: installed, trusted and exercised live
+PASS format-code: configured imports/style and ignored file preserved; config did not execute
+PASS format-code: installed, trusted and exercised live
+PASS session-logger: installed, trusted and exercised live
+codex-cli 0.169.0: 0 workflow failures
+```
+
 ## Standalone guards
 
 Run on 2026-11-16 with `node bench/codex-live/run.mjs --standalone`, Codex CLI 0.169.0, macOS. Each plugin was installed separately in a fresh temporary Codex home, then approved through the same stored hashes as `/hooks`.

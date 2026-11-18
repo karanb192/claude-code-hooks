@@ -5,7 +5,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml/badge.svg)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
-[![Tests](https://img.shields.io/badge/tests-2369%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-2393%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
 
 **🌐 [Live site & catalog](https://karanb192.github.io/claude-code-hooks/)**
 
@@ -230,8 +230,11 @@ Then open `/hooks` in Codex and approve the plugin's hooks. Codex skips any hook
 | On Codex | Plugins | Why |
 | --- | --- | --- |
 | Native support | [guard-pack](plugins/guard-pack#codex-cli) 1.4.0 and all seven current standalone guards | Shell and native patch checks; asks become blocks. The pack also includes Codex config protection and a deny-only, per-thread spawn budget. Install the pack or individual guards, not both |
+| Native workflow support | [auto-stage](plugins/auto-stage#codex-cli), [format-code](plugins/format-code#codex-cli), [session-logger](plugins/session-logger#codex-cli) 1.1.0 | Stage or format successful native patches; record lifecycle, patch paths and shell commands. Formatting skips project settings and ignore files; unconfigured files use installed Ruff/Prettier 3 defaults without lint autofixes. Shell-edited paths are not tracked, and formatting/staging order is not guaranteed |
 | Older versions | guard-pack 1.3.x | Shell and native patches, without the Codex spawn cap or full config-path coverage. Older standalone guards have no native patch adapter and do not safely support ask mode |
 | Claude Code only for now | Every other plugin | They rely on Claude Code transcripts, its edit events, or events Codex doesn't have (`Notification`, `ConfigChange`, `InstructionsLoaded`, the status line) |
+
+Codex workflow diagnostics are in `$CODEX_HOME/hooks-logs` (default `~/.codex/hooks-logs`). Guard diagnostics remain in `~/.claude/hooks-logs` with `host: "codex"`. Session notes use `$CODEX_HOME/session-notes`, or `CC_SESSION_LOG_DIR` when set.
 
 Two more things change under Codex.
 
@@ -352,7 +355,7 @@ It also points agent-specific risks at the OWASP Top 10 for Agentic Applications
 
 ## 🧪 Testing
 
-Requires **Node ≥ 18** (no npm dependencies). The `format-code` tests exercise the real formatters, so have `prettier`, `ruff`, and `uv` on your PATH (CI installs them) or expect those few tests to fail. All hooks include comprehensive tests, run in CI on Node 18, 20, and 22:
+Requires **Node ≥ 18** (no npm dependencies). The `format-code` tests exercise the real formatters, so have Prettier 3 (`prettier`), `ruff`, and `uv` on your PATH (CI installs them) or expect those few tests to fail. All hooks include comprehensive tests, run in CI on Node 18, 20, and 22:
 
 ```bash
 # Run all tests

@@ -20,7 +20,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - name: Install formatters exercised by the format-code tests
         run: |
-          npm install -g prettier
+          npm install -g prettier@3
           pipx install ruff
           pipx install uv
       - name: Run test suite

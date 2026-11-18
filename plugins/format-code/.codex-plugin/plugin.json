@@ -1,0 +1,23 @@
+{
+  "name": "format-code",
+  "description": "Format unconfigured native Codex patch targets with installed Ruff and Prettier 3. Skip project settings and ignore files; no lint autofixes, config execution or downloads.",
+  "version": "1.1.0",
+  "author": {
+    "name": "Karan Bansal",
+    "url": "https://github.com/karanb192"
+  },
+  "homepage": "https://github.com/karanb192/claude-code-hooks",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "formatting",
+    "prettier",
+    "ruff",
+    "automation",
+    "posttooluse",
+    "codex",
+    "codex-hooks"
+  ],
+  "hooks": "./hooks/codex-hooks.json"
+}

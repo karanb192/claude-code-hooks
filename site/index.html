@@ -355,7 +355,7 @@
       </div>
       <div class="hero-stats">
         <div class="s"><b>22</b><span>Plugins</span></div>
-        <div class="s"><b class="accent">2369</b><span>Tests pass</span></div>
+        <div class="s"><b class="accent">2393</b><span>Tests pass</span></div>
         <div class="s"><b>~35<small style="font-size:.7rem">ms</small></b><span>Per call</span></div>
         <div class="s"><b>0 · 2</b><span>Exit codes</span></div>
       </div>
@@ -541,7 +541,7 @@ codex plugin add guard-pack@claude-code-hooks</pre>
       <div>
         <div class="entry-meta"><span class="tag evt">PostToolUse</span><span class="tag">Edit·Write</span><span class="tag rt">Node · ~65ms</span></div>
         <h3><span class="no">04</span>auto-stage</h3>
-        <p>After Claude edits or creates a file, runs <em>git add</em> on it, so <em>git diff --cached</em> becomes the canonical "what did the agent just do" view. One less accounting step in your loop.</p>
+        <p>Stages files after Claude edits them or Codex applies a native patch. Codex includes deletions and renames. Stages the whole file, including earlier edits; review <em>git diff --cached</em> before committing. <a href="https://github.com/karanb192/claude-code-hooks/tree/main/plugins/auto-stage#codex-cli">Codex setup and limits</a>.</p>
       </div>
       <div class="term">
         <div class="term-bar"><div class="term-dots"><i></i><i></i><i></i></div><div class="term-title">auto-stage</div></div>
@@ -559,7 +559,7 @@ codex plugin add guard-pack@claude-code-hooks</pre>
       <div>
         <div class="entry-meta"><span class="tag evt">PostToolUse</span><span class="tag">Write·Edit</span><span class="tag rt">Node · ~115ms</span></div>
         <h3><span class="no">05</span>format-code</h3>
-        <p>Runs the right formatter on whatever Claude just wrote: <em>ruff</em> for Python, <em>prettier</em> for JS/TS/HTML/JSON/Markdown/YAML. The agent's output lands already clean, so diffs stay about logic, not whitespace.</p>
+        <p>Formats edited files with <em>ruff</em> for Python and <em>prettier</em> for JS/TS/HTML/JSON/Markdown/YAML. Codex skips project settings and ignore files; unconfigured files use installed tools with no lint autofixes or downloads. <a href="https://github.com/karanb192/claude-code-hooks/tree/main/plugins/format-code#codex-cli">Codex setup and limits</a>.</p>
       </div>
       <div class="term">
         <div class="term-bar"><div class="term-dots"><i></i><i></i><i></i></div><div class="term-title">format-code</div></div>
@@ -613,7 +613,7 @@ codex plugin add guard-pack@claude-code-hooks</pre>
       <div>
         <div class="entry-meta"><span class="tag evt">SessionStart · SessionEnd</span><span class="tag">PostToolUse · async</span><span class="tag rt">Node · async</span></div>
         <h3><span class="no">08</span>session-logger</h3>
-        <p>Writes a durable markdown log of every session (repo, files touched, bash commands with secrets redacted): without adding a millisecond to the loop. Point <em>CC_SESSION_LOG_DIR</em> at an Obsidian vault and your agent keeps a diary.</p>
+        <p>Records session activity in local Markdown notes with best-effort command redaction. Claude logging runs async; Codex logging runs synchronously and records lifecycle events, native patch paths and shell commands. <em>CC_SESSION_LOG_DIR</em> chooses the notes folder. <a href="https://github.com/karanb192/claude-code-hooks/tree/main/plugins/session-logger#codex-cli">Codex setup and limits</a>.</p>
       </div>
       <div class="term">
         <div class="term-bar"><div class="term-dots"><i></i><i></i><i></i></div><div class="term-title">session-logger</div></div>
