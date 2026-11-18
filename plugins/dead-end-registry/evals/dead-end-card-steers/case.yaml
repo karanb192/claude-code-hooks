@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: dead-end-card-steers
+context:
+  scaffold_script: fixture.sh
