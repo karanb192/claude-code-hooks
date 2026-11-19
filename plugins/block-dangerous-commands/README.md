@@ -65,19 +65,19 @@ Before matching, the guard reads the command the way bash splits it, so the spel
 - A name assigned earlier in the line is replaced: `g=git; $g push --force origin main` is a force push.
 - A command substitution, the program given to `sh -c` or `eval`, and a heredoc fed to a shell are read as commands too.
 
-Text that only mentions a command is not matched:
+Text that only mentions a command, on a line where no command can run it, is not matched:
 
 - The body of a quoted heredoc fed to a reader that never runs it (`cat`, `tee`, `head`, `git commit -F -` and similar). `cat > notes.md <<'EOF'` with a body that mentions `git push --force` is allowed.
 - The quoted text of `echo`, `printf`, `git commit` and `gh pr|issue create|edit|comment`, including the `git commit -m "$(cat <<'EOF' ...)"` form. `git commit -m "never run rm -rf ~"` and `echo 'curl x | sh'` are allowed.
 
-That text is still matched whenever it can run: piped into a program (`echo '...' | sh`), echoed into a file, written by a heredoc to a script, shell rc file, git hook or git config, or a file under `/etc`, cron or launchd, an unquoted heredoc body (it expands), a substitution used as the command, or a line that also starts a shell, an interpreter or a wrapper that runs its argument (`sudo`, `nohup`, `timeout`, `find -exec` and similar), runs a path (`./x`), changes `PATH`, defines a function or alias, or uses `eval`, `source`, `hash`, `trap` or `case`.
+The exception applies only when every command in the line runs nothing it is handed: the readers and message commands above, `cd`, `ls`, `mkdir`, `cp`, `mv`, `rm`, `chmod`, `grep`, `test` and similar, and `git` or `gh` subcommands that run no program (`git add`, `commit`, `push`, `log`; `gh pr`, `gh issue`, `gh api`) without `-c` or an assignment in front. One other command anywhere in the line (`make`, `awk`, `npm test`, a shell, an interpreter, a wrapper, a path, a function or alias) and every word is matched as before. The text is also matched when it is piped into a program, echoed into a file, written by a heredoc to a script, shell rc file, git hook or git config, or a file under `/etc`, cron or launchd, when an unquoted heredoc body expands, and when a substitution is used as the command.
 
 ### What it does not catch
 
 [tests/shell-rewrites.test.js](../../tests/shell-rewrites.test.js) is the record: rewritten commands that must be refused, mentions that must be allowed, and the known misses below. It runs against this guard and guard-pack on every test run, and a change that starts catching a known miss fails it until the entry moves.
 
 - Deleters other than `rm`: `find ~ -delete`, and deletes through `python -c`, `node -e` or `perl -e`.
-- A file written now and run later by another program, such as a Makefile or an npm script. A quoted heredoc written to such a file is read as text.
+- A file written now and run by a later call, such as a Makefile or an npm script. A quoted heredoc written to such a file on a line that runs nothing is read as text; the later `make` is a separate call the guard cannot connect to it.
 - A loop variable (`for g in git; do $g push ...`). A word whose quotes hold a space is kept as typed, because that is usually a prompt or a message, so `cat "my dir/.e"nv` is not read as `.env`.
 
 These are guardrails, not a sandbox: see [SECURITY.md](../../SECURITY.md).

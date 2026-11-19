@@ -68,6 +68,10 @@ const REFUSED = [
   { cmd: "tee deploy.sh <<'EOF'\nrm -rf ~\nEOF", id: 'rm-home' },
   { cmd: "cat > x <<'EOF'\nrm -rf ~\nEOF\nchmod +x x; PATH=.:$PATH x", id: 'rm-home' },
   { cmd: "cat > x <<'EOF'\nrm -rf ~\nEOF\nfind . -name x -exec ./x \\;", id: 'rm-home' },
+  { cmd: "cat > x.mk <<'EOF'\nall:\n\trm -rf ~\nEOF\nmake -f x.mk", id: 'rm-home' },
+  { cmd: "cat > run.txt <<'EOF'\nrm -rf ~\nEOF\nawk 'BEGIN{while((getline l < \"run.txt\")>0) system(l)}'", id: 'rm-home' },
+  { cmd: "git commit -m 'rm -rf ~' && git log -1 --format=%B > x.mk && make -f x.mk", id: 'rm-home' },
+  { cmd: "echo 'rm -rf ~' && npm test", id: 'rm-home' },
   { cmd: "$(cat <<'EOF'\nrm -rf ~\nEOF\n)", id: 'rm-home' },
   { cmd: "cat <<EOF\n$(rm -rf ~)\nEOF", id: 'rm-home' },
   { cmd: 'git commit -m "$(rm -rf ~)"', id: 'rm-home' },
@@ -105,9 +109,9 @@ const KNOWN_MISSED = [
   // The branch-aware rules read the session's branch, not the one the command reaches.
   { cmd: 'git checkout main && git commit -m x' },
   { cmd: `git -C ${OTHER} commit -m x` },
-  // A file written now and run later by another program. Refused before this
-  // record existed (the guards matched heredoc bodies as commands); a quoted
-  // body is now read as data unless the file is a script, rc file or git hook.
+  // A file written now and run by a later call. Nothing in this line can run
+  // it, so its quoted body is read as data (main matched it as a command). A
+  // script, rc file, git hook or config, /etc, cron or launchd target keeps it.
   { cmd: "cat > Makefile <<'EOF'\nclean:\n\trm -rf ~\nEOF" },
   // A loop variable is not resolved; a quoted word with a space stays as typed.
   { cmd: 'for g in git; do $g push origin main; done' },

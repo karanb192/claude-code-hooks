@@ -291,14 +291,15 @@ const DATA_READERS = new Set(['cat', 'tee', 'head', 'tail', 'wc', 'sort', 'uniq'
 const KEYWORDS = new Set(['!', '{', '}', '(', ')', 'if', 'then', 'else', 'elif', 'fi', 'for', 'while', 'until', 'do', 'done', 'select', 'time', 'export', 'local', 'declare', 'typeset', 'readonly']);
 const OPENERS = new Set(['{', 'if', 'for', 'while', 'until', 'select', 'case']);
 const CLOSERS = new Set(['}', 'fi', 'done', 'esac']);
-// As a command these can redefine what a name runs (a function called echo,
-// an alias, a sourced file, a DEBUG trap) or run text they are given; anywhere
-// in the line these start a program that may run a file the line just wrote.
-// Either keeps the mention exceptions off for the whole line.
-const REDEFINERS = new Set(['alias', 'function', 'enable', 'hash', 'source', '.', 'eval', 'shopt', 'trap', 'case', 'coproc', 'exec', 'builtin', 'command']);
-const RUNNERS = /^(?:(?:ba|z|da|k|c|tc|fi)?sh|eval|exec|xargs|python[\d.]*|node|nodejs|perl|ruby|php|deno|bun|osascript|env|sudo|doas|nohup|nice|timeout|setsid|stdbuf|watch|chroot|flock|script|parallel|-exec(?:dir)?|-ok(?:dir)?)$/;
-// Assignments that change which program a name runs, or run code at startup.
-const LOOKUP_VARS = /^(?:PATH|BASH_ENV|ENV|PROMPT_COMMAND|IFS)\+?=/;
+// Commands that run no code they are handed or pointed at. The mention
+// exceptions apply only to a line made of these, the readers above and git or
+// gh calls that run nothing, so no command in the line can run the text that
+// is dropped. Anything else (make, awk, an interpreter, a wrapper, a path, a
+// function or alias, an assignment) keeps every word of the line.
+const INERT = new Set(['cd', 'pwd', 'ls', 'mkdir', 'touch', 'rm', 'cp', 'mv', 'ln', 'chmod', 'true', 'false', ':', 'test', '[', 'sleep', 'date', 'grep', 'echo', 'printf']);
+const GIT_INERT = /^(?:add|status|diff|log|show|commit|branch|switch|checkout|restore|stash|rm|mv|tag|push|fetch|pull)$/;
+const GIT_INERT_GLOBALS = new Set(['-C', '-P', '--no-pager']);
+const GIT_RUNS = /^--?(?:upload-pack|receive-pack|exec|ext-diff|textconv)\b/;
 const GIT_VALUE_OPTS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env']);
 const SAFE_TARGET = /^(?:\/dev\/(?:null|stdout|stderr)|[12]|-)$/;
 // Files a shell, git or the system runs: a heredoc written to one keeps its body.
@@ -574,26 +575,38 @@ function frameIsData(frame) {
   return true;
 }
 
+function runsNothing(cmd) {
+  const words = argv(cmd);
+  const k = commandIndex(words);
+  if (words.slice(0, k).some(w => /^[A-Za-z_]\w*\+?=/.test(w.lead))) return false;
+  const w = words[k];
+  if (!w) return true;
+  if (w.dynamic || w.spans.length) return false;
+  if (INERT.has(w.value) || DATA_READERS.has(w.value)) return true;
+  if (w.value === 'gh') return /^(?:pr|issue|api)$/.test(words[k + 1]?.value || '');
+  if (w.value !== 'git') return false;
+  let j = k + 1;
+  while (j < words.length && words[j].value.startsWith('-')) {
+    if (!GIT_INERT_GLOBALS.has(words[j].value)) return false;
+    j += words[j].value === '-C' ? 2 : 1;
+  }
+  return GIT_INERT.test(words[j]?.value || '') && !words.slice(j + 1).some(x => GIT_RUNS.test(x.value));
+}
+
 function lineIsPlain(read) {
   if (!read.sure) return false;
   for (const f of read.frames) {
-    if (f.kind === 'proc') return false;
-    for (const cmd of f.cmds) {
-      const words = argv(cmd);
-      const w = words[commandIndex(words)];
-      if (w && (w.dynamic || w.value.includes('/') || REDEFINERS.has(w.value))) return false;
-      if (words.some(x => RUNNERS.test(base(x.value)) || LOOKUP_VARS.test(x.lead))) return false;
-    }
+    if (f.kind === 'proc' || !f.cmds.every(runsNothing)) return false;
   }
   return true;
 }
 
 // The command with text that only mentions commands taken out: the body of a
 // heredoc fed to a reader that never runs it, and the quoted text of echo,
-// printf, git commit and gh pr/issue create|edit|comment. Text that can still
-// reach a program (a pipe into one, echo into a file, a heredoc into a script
-// or git hook, a substitution used as a command, any interpreter in the same
-// line) is kept.
+// printf, git commit and gh pr/issue create|edit|comment, on a line where no
+// command can run them (see INERT). A pipe into a program, echo into a file,
+// a heredoc into a script or git hook and a substitution used as the command
+// keep their text too.
 function dropMentions(cmd, read = readShell(cmd)) {
   if (!lineIsPlain(read)) return cmd;
   const cuts = [];

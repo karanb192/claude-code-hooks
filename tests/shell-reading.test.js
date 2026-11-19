@@ -96,7 +96,7 @@ describe('dropping text that only mentions a command', () => {
       "$(cat <<'EOF'\nrm -rf ~\nEOF\n)",            // a substitution used as the command
       "cmd \"$(echo 'rm -rf ~')\"",                 // a substitution passed to an unknown command
       'git commit -m "$HOME rm -rf ~"',             // a message that expands
-      "echo 'x'; bash run.sh",                      // an interpreter elsewhere in the line
+      "echo 'x'; bash run.sh",                      // a shell elsewhere in the line
       "echo() { :; }; echo 'rm -rf ~'",             // a function can redefine echo
       "alias e=echo\ne 'rm -rf ~'",                 // an alias can too
       "for x in 1; do echo 'rm -rf ~'; done",       // inside a loop
@@ -112,6 +112,11 @@ describe('dropping text that only mentions a command', () => {
       "cat > x <<'EOF'\nrm -rf ~\nEOF\nfind . -exec ./x \\;", // find runs it
       "cat > /etc/cron.d/x <<'EOF'\nrm -rf ~\nEOF",     // the system runs it
       "cat >> .git/config <<'EOF'\nrm -rf ~\nEOF",      // git runs aliases and pagers from it
+      "cat > x.mk <<'EOF'\nrm -rf ~\nEOF\nmake -f x.mk", // make runs it
+      "cat > r <<'EOF'\nrm -rf ~\nEOF\nawk '{system($0)}' r", // awk runs it
+      "git commit -m 'rm -rf ~' && npm test",           // any command outside the inert list
+      "git -c core.pager=less commit -m 'rm -rf ~'",    // git with a config override
+      "GIT_EDITOR=vi git commit -m 'rm -rf ~'",         // an assignment before the command
     ]) assert.strictEqual(dropped(cmd), cmd, JSON.stringify(cmd));
   });
 });
