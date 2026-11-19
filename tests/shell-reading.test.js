@@ -117,6 +117,10 @@ describe('dropping text that only mentions a command', () => {
       "git commit -m 'rm -rf ~' && npm test",           // any command outside the inert list
       "git -c core.pager=less commit -m 'rm -rf ~'",    // git with a config override
       "GIT_EDITOR=vi git commit -m 'rm -rf ~'",         // an assignment before the command
+      "cat > n.md <<'EOF'\nrm -rf ~\nEOF\ngit add n.md",  // a file write and git: it could be a hook
+      "cat > n.md <<'EOF'\nrm -rf ~\nEOF\ngh pr create --fill", // gh pr pushes, which runs hooks
+      "cat > x <<'EOF'\nrm -rf ~\nEOF\ncp x ~/.zshrc",   // a write to a shell rc file
+      "cat > x <<'EOF'\nrm -rf ~\nEOF\nsort --compress-program=./x y", // sort runs a program
     ]) assert.strictEqual(dropped(cmd), cmd, JSON.stringify(cmd));
   });
 });

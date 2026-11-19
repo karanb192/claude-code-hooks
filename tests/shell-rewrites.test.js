@@ -72,6 +72,25 @@ const REFUSED = [
   { cmd: "cat > run.txt <<'EOF'\nrm -rf ~\nEOF\nawk 'BEGIN{while((getline l < \"run.txt\")>0) system(l)}'", id: 'rm-home' },
   { cmd: "git commit -m 'rm -rf ~' && git log -1 --format=%B > x.mk && make -f x.mk", id: 'rm-home' },
   { cmd: "echo 'rm -rf ~' && npm test", id: 'rm-home' },
+  // A file written in a line that also runs git can become a hook: git runs
+  // hooks on commit, push, checkout, ref and index updates, from whatever
+  // directory core.hooksPath names. Such a line keeps every word.
+  { cmd: "cat > hook <<'EOF'\n#!/bin/sh\nrm -rf ~\nEOF\ncp hook .git/hooks/pre-commit\ngit commit -m x", id: 'rm-home' },
+  { cmd: "cat > hook <<'EOF'\n#!/bin/sh\nrm -rf ~\nEOF\nchmod +x hook && mv hook .git/hooks/pre-push && git push origin feature", id: 'rm-home' },
+  { cmd: "mkdir -p d && cat > d/x <<'EOF'\nrm -rf ~\nEOF\nln -s d/x .git/hooks/post-commit; git commit -m y", id: 'rm-home' },
+  { cmd: "cd .git/hooks && cat > pre-commit <<'EOF'\nrm -rf ~\nEOF\ncd ../.. && git commit -m x", id: 'rm-home' },
+  { cmd: "cat > scripts/hooks/pre-commit <<'EOF'\nrm -rf ~\nEOF\ngit commit -m x", id: 'rm-home' },
+  { cmd: "cat > x <<'EOF'\nrm -rf ~\nEOF\nmv x .git/hooks/post-index-change && git add -A", id: 'rm-home' },
+  { cmd: "cat > x <<'EOF'\nrm -rf ~\nEOF\ncp x .git/hooks/reference-transaction && git branch tmp", id: 'rm-home' },
+  { cmd: "git commit -m 'rm -rf ~' && git log -1 --format=%B > .git/hooks/pre-push && git push", id: 'rm-home' },
+  { cmd: "cat > notes.md <<'EOF'\nrm -rf ~ is refused\nEOF\ngit add notes.md && git commit -m docs", id: 'rm-home' },
+  // A write to a path a shell, git or the system runs keeps its text, git or not.
+  { cmd: "cat > .git/hooks/./pre-commit <<'EOF'\nrm -rf ~\nEOF", id: 'rm-home' },
+  { cmd: "cat > x <<'EOF'\nrm -rf ~\nEOF\ncp x ~/.bashrc", id: 'rm-home' },
+  { cmd: "cd .git/hooks && cat > pre-commit <<'EOF'\nrm -rf ~\nEOF", id: 'rm-home' },
+  { cmd: "cat > x <<'EOF'\nrm -rf ~\nEOF\nmv x .husky/pre-commit", id: 'rm-home' },
+  // sort runs --compress-program, so it is not a plain reader.
+  { cmd: "cat > z <<'EOF'\nrm -rf ~\nEOF\nchmod +x z && sort -S 1 --compress-program=./z big.txt", id: 'rm-home' },
   { cmd: "$(cat <<'EOF'\nrm -rf ~\nEOF\n)", id: 'rm-home' },
   { cmd: "cat <<EOF\n$(rm -rf ~)\nEOF", id: 'rm-home' },
   { cmd: 'git commit -m "$(rm -rf ~)"', id: 'rm-home' },
@@ -111,8 +130,10 @@ const KNOWN_MISSED = [
   { cmd: `git -C ${OTHER} commit -m x` },
   // A file written now and run by a later call. Nothing in this line can run
   // it, so its quoted body is read as data (main matched it as a command). A
-  // script, rc file, git hook or config, /etc, cron or launchd target keeps it.
+  // script, rc file, git hook or config, /etc, cron or launchd target keeps it,
+  // but a neutral name moved there by the later call does not.
   { cmd: "cat > Makefile <<'EOF'\nclean:\n\trm -rf ~\nEOF" },
+  { cmd: "mkdir -p d && cat > d/x <<'EOF'\nrm -rf ~\nEOF" },
   // A loop variable is not resolved; a quoted word with a space stays as typed.
   { cmd: 'for g in git; do $g push origin main; done' },
   { cmd: 'cat "my dir/.e"nv' },

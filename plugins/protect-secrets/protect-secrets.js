@@ -286,24 +286,29 @@ function maskQuotedSeparators(cmd) {
 }
 
 const SHELL_NAME = /^(?:ba|z|da|k)?sh$/;
-// Readers that never run what arrives on stdin.
-const DATA_READERS = new Set(['cat', 'tee', 'head', 'tail', 'wc', 'sort', 'uniq', 'tr', 'cut', 'nl', 'fold']);
+// Readers that never run what arrives on stdin (not sort: --compress-program runs one).
+const DATA_READERS = new Set(['cat', 'tee', 'head', 'tail', 'wc', 'uniq', 'tr', 'cut', 'nl', 'fold']);
 const KEYWORDS = new Set(['!', '{', '}', '(', ')', 'if', 'then', 'else', 'elif', 'fi', 'for', 'while', 'until', 'do', 'done', 'select', 'time', 'export', 'local', 'declare', 'typeset', 'readonly']);
 const OPENERS = new Set(['{', 'if', 'for', 'while', 'until', 'select', 'case']);
 const CLOSERS = new Set(['}', 'fi', 'done', 'esac']);
-// Commands that run no code they are handed or pointed at. The mention
-// exceptions apply only to a line made of these, the readers above and git or
-// gh calls that run nothing, so no command in the line can run the text that
-// is dropped. Anything else (make, awk, an interpreter, a wrapper, a path, a
-// function or alias, an assignment) keeps every word of the line.
-const INERT = new Set(['cd', 'pwd', 'ls', 'mkdir', 'touch', 'rm', 'cp', 'mv', 'ln', 'chmod', 'true', 'false', ':', 'test', '[', 'sleep', 'date', 'grep', 'echo', 'printf']);
+// The mention exceptions hold only for a line in which no command can make the
+// dropped text run. Every command must be one of these, which run nothing they
+// are handed: the readers above, the commands below, and the git and gh calls
+// below. git runs hooks (commit, push, ref and index updates all can, from any
+// directory core.hooksPath names), so a line with git or gh pr must not write,
+// copy, move, link, delete or chmod any file, since that file could be a hook.
+// No line may write to a path a shell, git or the system runs, or write after
+// cd or pushd, which hides the real path from that check.
+const INERT = new Set(['cd', 'pushd', 'popd', 'pwd', 'ls', 'mkdir', 'true', 'false', ':', 'test', '[', 'sleep', 'date', 'grep', 'echo', 'printf']);
+const WRITERS = new Set(['tee', 'cp', 'mv', 'ln', 'rm', 'touch', 'chmod']);
 const GIT_INERT = /^(?:add|status|diff|log|show|commit|branch|switch|checkout|restore|stash|rm|mv|tag|push|fetch|pull)$/;
 const GIT_INERT_GLOBALS = new Set(['-C', '-P', '--no-pager']);
 const GIT_RUNS = /^--?(?:upload-pack|receive-pack|exec|ext-diff|textconv)\b/;
+const WRITE_REDIRECT = new Set(['>', '>>', '>|', '&>', '&>>', '<>', '>&']);
 const GIT_VALUE_OPTS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env']);
 const SAFE_TARGET = /^(?:\/dev\/(?:null|stdout|stderr)|[12]|-)$/;
-// Files a shell, git or the system runs: a heredoc written to one keeps its body.
-const SCRIPT_FILE = /(?:^|\/)(?:\.git\/(?:hooks\/[^/]+|config)|\.husky\/[^/]+|\.gitconfig|\.(?:bash|zsh|k|c)shrc|\.(?:bash_)?profile|\.bash_login|\.z(?:profile|shenv|login))$|^\/etc\/|cron|Launch(?:Agents|Daemons)\/|systemd\/|\.(?:sh|bash|zsh|ksh|command)$/;
+// Paths a shell, git or the system runs.
+const SCRIPT_FILE = /(?:^|\/)(?:\.git\/(?:hooks\/[^/]+|config)|\.?(?:husky|githooks)\/[^/]+|\.gitconfig|\.(?:bash|zsh|ksh|csh|tcsh)rc|\.(?:bash_)?profile|\.bash_login|\.z(?:profile|shenv|login))$|^\/etc\/|cron|Launch(?:Agents|Daemons)\/|systemd\/|\.(?:sh|bash|zsh|ksh|command)$/;
 const REDIRECT = /^\d*(?:<<<|<<-|<<|&>>|&>|>>|>\||>&|<&|<>|<|>)/;
 const ANSI = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v' };
 const MAX_DEPTH = 6;
@@ -575,45 +580,62 @@ function frameIsData(frame) {
   return true;
 }
 
-function runsNothing(cmd) {
+const scriptPath = (v) => SCRIPT_FILE.test(v.replace(/\/(?:\.\/)+/g, '/').replace(/\/{2,}/g, '/'));
+
+// { runs, writes, git } for one command; runs is true unless it is one of the
+// commands above.
+function effects(cmd) {
   const words = argv(cmd);
   const k = commandIndex(words);
-  if (words.slice(0, k).some(w => /^[A-Za-z_]\w*\+?=/.test(w.lead))) return false;
+  const writes = cmd.words.some(w => w.target && WRITE_REDIRECT.has(w.target) && !SAFE_TARGET.test(w.value));
+  const ran = { runs: true, writes, git: false };
+  if (words.slice(0, k).some(w => /^[A-Za-z_]\w*\+?=/.test(w.lead))) return ran;
   const w = words[k];
-  if (!w) return true;
-  if (w.dynamic || w.spans.length) return false;
-  if (INERT.has(w.value) || DATA_READERS.has(w.value)) return true;
-  if (w.value === 'gh') return /^(?:pr|issue|api)$/.test(words[k + 1]?.value || '');
-  if (w.value !== 'git') return false;
+  if (!w) return { runs: false, writes, git: false };
+  if (w.dynamic || w.spans.length) return ran;
+  if (INERT.has(w.value) || DATA_READERS.has(w.value)) return { runs: false, writes: writes || w.value === 'tee', git: false };
+  if (WRITERS.has(w.value)) return { runs: false, writes: true, git: false };
+  if (w.value === 'gh') return /^(?:pr|issue|api)$/.test(words[k + 1]?.value || '') ? { runs: false, writes, git: words[k + 1].value === 'pr' } : ran;
+  if (w.value !== 'git') return ran;
   let j = k + 1;
   while (j < words.length && words[j].value.startsWith('-')) {
-    if (!GIT_INERT_GLOBALS.has(words[j].value)) return false;
+    if (!GIT_INERT_GLOBALS.has(words[j].value)) return ran;
     j += words[j].value === '-C' ? 2 : 1;
   }
-  return GIT_INERT.test(words[j]?.value || '') && !words.slice(j + 1).some(x => GIT_RUNS.test(x.value));
+  if (!GIT_INERT.test(words[j]?.value || '') || words.slice(j + 1).some(x => GIT_RUNS.test(x.value))) return ran;
+  return { runs: false, writes, git: true };
 }
 
 function lineIsPlain(read) {
   if (!read.sure) return false;
+  let writes = false;
+  let git = false;
+  let moves = false;
   for (const f of read.frames) {
-    if (f.kind === 'proc' || !f.cmds.every(runsNothing)) return false;
+    if (f.kind === 'proc') return false;
+    for (const cmd of f.cmds) {
+      const e = effects(cmd);
+      if (e.runs || (e.writes && cmd.words.some(w => scriptPath(w.value)))) return false;
+      const words = argv(cmd);
+      moves = moves || /^(?:cd|pushd|popd)$/.test(words[commandIndex(words)]?.value || '');
+      writes = writes || e.writes;
+      git = git || e.git;
+    }
   }
-  return true;
+  return !(writes && (git || moves));
 }
 
 // The command with text that only mentions commands taken out: the body of a
 // heredoc fed to a reader that never runs it, and the quoted text of echo,
 // printf, git commit and gh pr/issue create|edit|comment, on a line where no
-// command can run them (see INERT). A pipe into a program, echo into a file,
-// a heredoc into a script or git hook and a substitution used as the command
-// keep their text too.
+// command can make them run (see INERT). A pipe into a program, echo into a
+// file and a substitution used as the command keep their text too.
 function dropMentions(cmd, read = readShell(cmd)) {
   if (!lineIsPlain(read)) return cmd;
   const cuts = [];
   for (const h of read.heredocs) {
     if (!h.quoted && /[$`\\]/.test(cmd.slice(h.bodyStart, h.bodyEnd))) continue;
     if (h.cmd.group || !readsAsData(h.cmd) || !pipesToData(h.cmd) || !frameIsData(h.frame)) continue;
-    if (h.cmd.words.some(w => SCRIPT_FILE.test(w.value))) continue;
     cuts.push([h.bodyStart, h.bodyEnd]);
   }
   for (const f of read.frames) {
