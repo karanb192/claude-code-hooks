@@ -249,7 +249,7 @@ function readShell(src) {
     while (i < n) {
       const c = src[i];
       if ((c === '<' || c === '>') && src[i + 1] === '(' && !w.parts.length) { i += 2; nested(')', 'proc', c + '('); continue; }
-      if (/[\s;&|<>()]/.test(c) || (tick && c === '`')) break;
+      if (/[ \t\r\n;&|<>()]/.test(c) || (tick && c === '`')) break;
       if (c === '\\') {
         if (src[i + 1] === '\n') { i += 2; continue; }
         if (i + 1 < n) { const e = src[i + 1]; w.spans.push({ start: i, end: i + 2, kind: 'esc' }); i += 2; text(e, !/[\w.\/~:@%+,=-]/.test(e)); continue; }
@@ -368,6 +368,11 @@ function readShell(src) {
       }
       const cur = start();
       const w = readWord(depth, cur, close === '`');
+      if (w.start === w.end) {
+        sure = false;
+        i = n;
+        break;
+      }
       cur.words.push(w);
       if (head && !w.spans.length && !w.dynamic) {
         if (OPENERS.has(w.value)) cur.group = ++group;

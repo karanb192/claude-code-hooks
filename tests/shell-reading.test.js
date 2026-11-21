@@ -44,6 +44,23 @@ describe('the copies agree', () => {
 });
 
 describe('reading words as bash splits them', () => {
+  it('preserves international filenames within the reader deadline', () => {
+    const { spawnSync } = require('node:child_process');
+    const program = `
+      const { shellViews } = require(process.argv[1]);
+      const filename = process.argv[2];
+      const views = shellViews("ls -- 'docs/'" + filename);
+      process.stdout.write(JSON.stringify(views.map(view => view.text.trim())));
+    `;
+    for (const filename of ['résumé', 'release\u00a0notes', 'नोट्स']) {
+      const child = spawnSync(process.execPath, ['-e', program, file(GUARDS[0]), filename], {
+        encoding: 'utf8', timeout: 3000,
+      });
+      assert.ifError(child.error);
+      assert.strictEqual(child.status, 0, child.stderr);
+      assert.ok(JSON.parse(child.stdout).includes('ls -- docs/' + filename));
+    }
+  });
   it('a command with no quotes, escapes, expansions or heredoc has one view', () => {
     assert.deepStrictEqual(views('git status && ls -la src/'), ['git status && ls -la src/']);
   });
