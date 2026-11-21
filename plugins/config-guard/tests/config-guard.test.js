@@ -468,6 +468,14 @@ describe('Unit: installed guard code and guard state', () => {
       bashBlocked(`cat > ${PACK_CACHE}/lib/dispatch.js <<'EOF'\nmodule.exports = { GUARDS: [] };\nEOF`, 'claude-plugins');
     });
     it('blocks a delete inside a command substitution', () => bashBlocked('echo "$(rm -rf ~/.claude/plugins)"', 'claude-plugins'));
+    it('allows shell and native writes to config templates and backups', () => {
+      for (const file of ['docs/.claude.json.example', 'docs/.claude.json.backup']) {
+        bashAllowed(`cp template.json "${file}"`);
+        fileAllowed(file);
+      }
+      bashBlocked('cp template.json "docs/.claude.json"', 'claude-json');
+      fileBlocked('docs/.claude.json', 'claude-json');
+    });
     it('blocks writes to ~/.claude.json', () => {
       bashBlocked('echo \'{"mcpServers":{}}\' > ~/.claude.json', 'claude-json');
       bashBlocked('cp /tmp/evil.json ~/.claude.json', 'claude-json');

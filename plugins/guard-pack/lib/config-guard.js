@@ -124,7 +124,8 @@ const BASH_TOKENS = [
   { level: 'critical', id: 'hooks-manifest',   regex: /(^|[\s'"/=])hooks\.json/i,                     reason: 'hooks.json manifests register hooks' },
   { level: 'critical', id: 'spawn-cap-state',  regex: /\.claude\/subagent-spawn-cap(?=[/\s'";|&)`]|$)/i, reason: 'the spawn cap ledger is the session\'s subagent budget' },
   { level: 'high',     id: 'mcp-config',       regex: /\.mcp\.json/i,                                 reason: '.mcp.json adds MCP servers (new tools)' },
-  { level: 'high',     id: 'claude-json',      regex: /(^|[\s'"/=])\.claude\.json/i,                  reason: '~/.claude.json holds user and local MCP servers (new tools)' },
+  // An expansion may leave the filename unchanged. Only a literal suffix rules it out.
+  { level: 'high',     id: 'claude-json',      regex: /(^|[\s'"/=])\.claude\.json(?=$|[\s'";&|<>()`$\\*?{},\[]|[+@!]\()/i,                  reason: '~/.claude.json holds user and local MCP servers (new tools)' },
   { level: 'high',     id: 'plugin-manifest',  regex: /\.claude-plugin([/\s'"]|$)/i,                  reason: 'plugin manifests install hooks and skills' },
   { level: 'strict',   id: 'claude-md',        regex: /(^|[\s'"/=])CLAUDE(\.local)?\.md/i,            reason: 'CLAUDE.md instructions steer the agent' },
   { level: 'strict',   id: 'rules-dir',        regex: /\.claude\/(rules|agents|commands)([/\s'"]|$)/i, reason: 'rules, agents, and commands steer the agent' },
