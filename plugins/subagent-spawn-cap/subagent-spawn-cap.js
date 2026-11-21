@@ -134,12 +134,14 @@ function shouldAsk(count, t) {
   return count >= t.ask && (count - t.ask) % t.step === 0;
 }
 
-// Ask reasons are shown to the user, deny reasons to Claude (hooks reference).
+// Ask reasons are shown to the user, deny reasons to Claude (hooks reference),
+// so only the ask text names the ledger: a model told which file holds its
+// budget can delete it and carry on.
 function buildReason(decision, n, t, file) {
-  const ledger = displayPath(file);
   if (decision === 'deny') {
-    return `[spawn-cap] Subagent spawn #${n} in this session hit the hard cap (SPAWN_CAP_DENY=${t.deny}). Do not retry: finish with the results you already have and tell the user the session's spawn budget is spent. The user can reset it by deleting ${ledger}, or raise SPAWN_CAP_DENY in the settings.json env block and restart.`;
+    return `[spawn-cap] Subagent spawn #${n} in this session hit the hard cap (SPAWN_CAP_DENY=${t.deny}). Do not retry: finish with the results you already have and tell the user the session's spawn budget is spent. Only the user can lift it, by raising SPAWN_CAP_DENY in the settings.json env block and restarting.`;
   }
+  const ledger = displayPath(file);
   const silent = Math.min(t.step - 1, t.deny - n - 1);
   const nextCheck = n + t.step < t.deny ? `next check at #${n + t.step}, ` : '';
   const after = silent > 0
