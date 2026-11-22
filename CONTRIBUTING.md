@@ -138,6 +138,11 @@ any commands.
   `data.hook_event_name`.
 - **Never crash the agent loop**: on any error (bad JSON included) print `{}` and
   `exit 0`. Wrap `main()` in try/catch.
+- **Guards are the exception.** A plugin that returns a `permissionDecision` must
+  refuse the call when its check throws after the input parsed: print a deny with a
+  `[guard-error]` reason (Codex: exit 2 with the reason on stderr), or `{}` only when
+  `HOOK_FAIL_OPEN=true`. Its `hooks.json` entry sets `"timeout": 10` and
+  `"onFailure": "block"`, and its Codex command ends in `|| exit 2`.
 - Keep the `require.main === module` guard and `module.exports` your **pure
   functions** so tests can import them without spawning.
 - Card plugins: implement a **`--render`** branch (`process.argv.includes('--render')`)

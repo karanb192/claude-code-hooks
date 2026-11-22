@@ -42,7 +42,7 @@ What changes under Codex:
 - **Typing into an open shell is not checked.** Codex does not send hooks the input it types into a shell session it already started, so a command entered that way runs unchecked.
 - **Codex configuration is protected.** config-guard checks `.codex/config.toml`, installed plugins under `.codex/plugins/`, and a custom `CODEX_HOME`. The installed Claude Code plugins under `~/.claude/plugins/` are protected from a Codex agent too. It also checks `.codex-plugin/` manifests at `high` and `AGENTS.md` / `AGENTS.override.md` at `strict`. Native patches resolve paths against the event's working directory and follow symlinks. Shell checks remain text-based, with [known limits](../config-guard#known-limits).
 
-The answer to Codex is exit code 2 with the reason on stderr, which Codex treats as a block. As on Claude Code, a crash in the pack lets the tool run. Log lines from Codex carry `"host":"codex"` in `~/.claude/hooks-logs/`, creating that directory even on a Codex-only setup. Checked live on Codex CLI 0.169.0 through a marketplace install, and the patch reader against Codex's own patch engine: [bench/codex-live/RESULTS.md](../../bench/codex-live/RESULTS.md).
+The answer to Codex is exit code 2 with the reason on stderr, which Codex treats as a block. A guard that throws blocks the call there too (see [When the pack fails](#when-the-pack-fails)). Log lines from Codex carry `"host":"codex"` in `~/.claude/hooks-logs/`, creating that directory even on a Codex-only setup. Checked live on Codex CLI 0.169.0 through a marketplace install, and the patch reader against Codex's own patch engine: [bench/codex-live/RESULTS.md](../../bench/codex-live/RESULTS.md).
 
 ## Configuration
 
@@ -51,7 +51,17 @@ The pack adds no configuration of its own; the guards' env vars pass straight th
 - `HOOK_SAFETY_LEVEL` = `critical` | `high` | `strict`: applies to the six pattern guards uniformly (each falls back to its own default on an invalid value). Want different levels per guard? Install the individual guard plugins instead. `subagent-spawn-cap` does not read it; see its own knobs below.
 - `HOOK_ASK_CRITICAL` / `HOOK_ASK_HIGH` / `HOOK_ASK_STRICT` = `true`: ask instead of deny, for the guards that support ask mode (config-guard, block-dangerous-commands, protect-secrets, case-insensitive-guard). protect-tests and git-safety always deny.
 - `CONFIG_GUARD_ALLOW` = `true`: skips config-guard for an intentional, human-approved config edit. The other six guards still run.
+- `HOOK_FAIL_OPEN` = `true`: a guard whose check throws is skipped, as before 1.5.0, instead of denying the call. See [When the pack fails](#when-the-pack-fails).
 - `SPAWN_CAP_ASK` (default 20) / `SPAWN_CAP_ASK_STEP` (default 10) / `SPAWN_CAP_DENY` (default 60): per session, the pack asks at spawn 20 and every 10 after that (30, 40, 50) and denies at 60. `SPAWN_CAP_ALLOW` = `true` lets spawns through for as long as it is set; each is still counted and logged `ALLOW_OVERRIDE`. Unattended (`-p` or `dontAsk`) runs cannot answer an ask, so there the ask threshold is the hard stop: set `SPAWN_CAP_ASK` equal to `SPAWN_CAP_DENY` for those. Details in the [subagent-spawn-cap README](../subagent-spawn-cap).
+
+## When the pack fails
+
+From 1.5.0, a pack that cannot finish its checks refuses the call instead of allowing it:
+
+- **A guard throws.** The other guards still run, so a real deny keeps its own reason. If none denies, the call is denied with a `[guard-error]` reason naming the broken guard and its error.
+- **The pack runs past its 10 s timeout, or cannot start** (`node` missing from PATH). Claude Code v2.1.295 or later blocks the call because the hook sets `"onFailure": "block"`; older versions ignore that key and let the call run. On Codex the command ends in `|| exit 2`, so a missing `node` blocks, but a timeout still lets the call run: Codex has no setting for it.
+
+`HOOK_FAIL_OPEN=true` restores the old behaviour for a throwing guard. [When a guard fails](../../README.md#-when-a-guard-fails) covers the timeout and missing-`node` cases.
 
 ## What gets recorded
 

@@ -50,7 +50,7 @@ describe('isolated Codex plugin installations', () => {
       const groups = JSON.parse(fs.readFileSync(path.join(dir, manifest.hooks))).hooks.PreToolUse;
       assert.equal(groups.length, 1);
       assert.equal(groups[0].matcher, name === 'subagent-spawn-cap' ? 'spawn_agent|collaborationspawn_agent' : 'Bash|apply_patch');
-      assert.equal(groups[0].hooks[0].command, 'node "${PLUGIN_ROOT}/codex.js"');
+      assert.equal(groups[0].hooks[0].command, 'node "${PLUGIN_ROOT}/codex.js" || exit 2');
       allowed(run(name, shell('cat notes.txt')));
       allowed(run(name, { tool_name: 'mcp__demo__read', tool_input: {} }));
     });

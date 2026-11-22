@@ -429,10 +429,19 @@ describe('Robustness', () => {
     assert.strictEqual(lineCount(ledger(home, 'sess-1')), 1);
   });
 
-  it('an unreadable ledger fails open (a directory where the file should be)', async () => {
+  it('an unreadable ledger fails closed (a directory where the file should be)', async () => {
     const home = freshHome();
     fs.mkdirSync(ledger(home, 'sess-1'), { recursive: true });
-    const { code, output } = await runHook(home, spawnPayload('sess-1'), { SPAWN_CAP_ASK: '1', SPAWN_CAP_DENY: '1' });
+    const { code, output } = await runHook(home, spawnPayload('sess-1'));
+    assert.strictEqual(code, 0);
+    assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /\[guard-error\] subagent-spawn-cap/);
+  });
+
+  it('an unreadable ledger allows with HOOK_FAIL_OPEN=true', async () => {
+    const home = freshHome();
+    fs.mkdirSync(ledger(home, 'sess-1'), { recursive: true });
+    const { code, output } = await runHook(home, spawnPayload('sess-1'), { HOOK_FAIL_OPEN: 'true' });
     assert.strictEqual(code, 0);
     assert.deepStrictEqual(output, {});
   });

@@ -6,7 +6,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/git-safety.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/git-safety.js\"",
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       }

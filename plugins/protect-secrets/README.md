@@ -60,6 +60,7 @@ All optional, set via environment variables (in the hook command, or exported wh
 | `HOOK_ASK_CRITICAL` | unset (deny) | Literal string `true` makes `critical`-level matches prompt you instead of blocking. |
 | `HOOK_ASK_HIGH` | unset (deny) | Same, for `high`-level matches. |
 | `HOOK_ASK_STRICT` | unset (deny) | Same, for `strict`-level matches. |
+| `HOOK_FAIL_OPEN` | unset (deny) | The literal string `true` lets the call through when the guard's own check throws, instead of denying it. See [When the guard fails](#when-the-guard-fails). |
 
 Ask mode is strictly opt-in and per level: only the literal string `true` enables it, and enabling it for one level never softens another. A common setup: keep `critical` on deny, set `HOOK_ASK_STRICT=true` so cautionary patterns prompt instead of blocking.
 
@@ -91,6 +92,10 @@ This hook sees the command string only, so a script that opens files itself is o
   "sandbox": { "enabled": true, "network": { "allowedDomains": ["github.com", "registry.npmjs.org"], "strictAllowlist": true } }
 }
 ```
+
+## When the guard fails
+
+From 1.3.0, a guard that cannot finish its check refuses the call instead of allowing it. A check that throws is denied with a `[guard-error]` reason. A timeout (10 s) or a missing `node` is blocked by `"onFailure": "block"` on Claude Code v2.1.295 or later; older versions ignore that key and let the call run. On Codex a missing `node` is blocked by the command's `|| exit 2`, but a timeout still lets the call run, because Codex has no setting for it. Set `HOOK_FAIL_OPEN=true` to let the call through when the check throws; [When a guard fails](../../README.md#-when-a-guard-fails) covers the rest of the way back.
 
 ## Data & privacy
 

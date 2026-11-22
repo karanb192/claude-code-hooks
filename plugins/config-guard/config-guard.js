@@ -299,12 +299,26 @@ function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL, cwd = p
   return { blocked: false };
 }
 
+// A check that throws must not read as an allow, so the call is denied.
+// HOOK_FAIL_OPEN=true restores the old allow-on-error behaviour.
+function guardError(e) {
+  if (process.env.HOOK_FAIL_OPEN === 'true') return '{}';
+  return JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: `🚨 [guard-error] config-guard could not check this call (${String(e && e.message).slice(0, 200)}), so it is blocked. Run it yourself if you meant it, or set HOOK_FAIL_OPEN=true to let calls through when a guard fails.`,
+    },
+  });
+}
+
 async function main() {
   let input = '';
   for await (const chunk of process.stdin) input += chunk;
 
+  let data;
   try {
-    const data = JSON.parse(input);
+    data = JSON.parse(input);
     const { tool_name, tool_input, session_id, cwd, permission_mode } = data;
 
     if (ALLOW_OVERRIDE) {
@@ -330,7 +344,7 @@ async function main() {
     console.log('{}');
   } catch (e) {
     log({ level: 'ERROR', error: e.message });
-    console.log('{}');
+    console.log(data !== null && typeof data === 'object' ? guardError(e) : '{}');
   }
 }
 
