@@ -259,7 +259,8 @@ function stripTextHeredocs(cmd) {
 }
 
 // Pure check for Bash commands - unit-testable.
-function checkBashCommand(rawCmd, safetyLevel = SAFETY_LEVEL) {
+function checkBashCommand(rawCmd = '', safetyLevel = SAFETY_LEVEL) {
+  if (typeof rawCmd !== 'string') throw new TypeError('Bash command must be a string');
   if (!rawCmd) return { blocked: false };
   const cmd = stripTextHeredocs(rawCmd);
   const threshold = LEVELS[safetyLevel] || 2;
@@ -294,7 +295,7 @@ function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL, cwd = p
     return checkFilePath(toolInput.file_path || '', safetyLevel, cwd);
   }
   if (toolName === 'Bash') {
-    return checkBashCommand(toolInput.command || '', safetyLevel);
+    return checkBashCommand(toolInput.command, safetyLevel);
   }
   return { blocked: false };
 }
