@@ -6,7 +6,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/protect-tests.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/protect-tests.js\"",
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       }

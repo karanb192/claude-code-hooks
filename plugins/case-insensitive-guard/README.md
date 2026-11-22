@@ -46,6 +46,7 @@ All optional, set via environment variables:
 | `HOOK_ASK_CRITICAL` | unset (deny) | Literal string `true`: `critical`-level hits prompt for approval instead of denying. |
 | `HOOK_ASK_HIGH` | unset (deny) | Literal string `true`: `high`-level hits prompt instead of denying. |
 | `HOOK_ASK_STRICT` | unset (deny) | Literal string `true`: `strict`-level hits prompt instead of denying. |
+| `HOOK_FAIL_OPEN` | unset (deny) | The literal string `true` lets the call through when the guard's own check throws, instead of denying it. See [When the guard fails](#when-the-guard-fails). |
 
 Safety levels are cumulative:
 
@@ -63,6 +64,10 @@ Set them inline in your hook command, or export them in your shell profile:
   "command": "HOOK_SAFETY_LEVEL=strict HOOK_ASK_STRICT=true node \"${CLAUDE_PLUGIN_ROOT}/case-insensitive-guard.js\""
 }
 ```
+
+## When the guard fails
+
+From 1.2.0, a guard that cannot finish its check refuses the call instead of allowing it. A check that throws is denied with a `[guard-error]` reason. A timeout (10 s) or a missing `node` is blocked by `"onFailure": "block"` on Claude Code v2.1.295 or later; older versions ignore that key and let the call run. On Codex a missing `node` is blocked by the command's `|| exit 2`, but a timeout still lets the call run, because Codex has no setting for it. Set `HOOK_FAIL_OPEN=true` to let the call through when the check throws; [When a guard fails](../../README.md#-when-a-guard-fails) covers the rest of the way back.
 
 ## Data & privacy
 

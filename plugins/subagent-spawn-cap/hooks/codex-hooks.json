@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/codex.js\"",
+            "command": "node \"${PLUGIN_ROOT}/codex.js\" || exit 2",
             "timeout": 10
           }
         ]
