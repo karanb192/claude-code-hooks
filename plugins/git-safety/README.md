@@ -61,6 +61,7 @@ Optional, set via environment variable:
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `HOOK_SAFETY_LEVEL` | `high` | Safety level: `critical`, `high`, or `strict`. Invalid values fall back to `high`. |
+| `HOOK_FAIL_OPEN` | unset (deny) | The literal string `true` lets the call through when the guard's own check throws, instead of denying it. See [When the guard fails](#when-the-guard-fails). |
 
 | Level | What's blocked |
 |-------|----------------|
@@ -69,6 +70,10 @@ Optional, set via environment variable:
 | `strict` | All of `high` plus any force-push, so the hook is self-sufficient standalone |
 
 The `SAFETY_LEVEL` constant in the script still exists, but prefer the env var: plugin updates overwrite installed files, so edits don't survive. This hook always denies; it has no ask mode.
+
+## When the guard fails
+
+From 1.2.0, a guard that cannot finish its check refuses the call instead of allowing it. A check that throws is denied with a `[guard-error]` reason. A timeout (10 s) or a missing `node` is blocked by `"onFailure": "block"` on Claude Code v2.1.295 or later; older versions ignore that key and let the call run. On Codex a missing `node` is blocked by the command's `|| exit 2`, but a timeout still lets the call run, because Codex has no setting for it. Set `HOOK_FAIL_OPEN=true` to let the call through when the check throws; [When a guard fails](../../README.md#-when-a-guard-fails) covers the rest of the way back.
 
 ## Data & privacy
 

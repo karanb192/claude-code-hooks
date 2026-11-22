@@ -383,10 +383,11 @@ describe('Integration: robustness', () => {
     assert.deepStrictEqual(output, {});
   });
 
-  it('non-string command passes without crashing', async () => {
+  it('non-string command is denied as a guard error, not allowed', async () => {
     const { code, output } = await runHook(payload('Bash', { command: 12345 }));
     assert.strictEqual(code, 0);
-    assert.deepStrictEqual(output, {});
+    assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny');
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /^🚨 \[guard-error\] block-dangerous-commands could not check this call/);
   });
 
   it('missing tool_input passes', async () => {

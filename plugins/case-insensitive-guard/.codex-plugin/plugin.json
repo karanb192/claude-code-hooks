@@ -1,7 +1,7 @@
 {
   "name": "case-insensitive-guard",
   "description": "Block shell commands that target the wrong filename case on case-insensitive filesystems in Codex CLI.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": {
     "name": "Karan Bansal",
     "url": "https://github.com/karanb192"

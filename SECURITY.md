@@ -12,6 +12,8 @@ You'll get a response within a few days. Once fixed, reporters are credited in t
 
 These hooks are **guardrails, not a sandbox**. They pattern-match tool calls Claude Code is about to make and block the obviously dangerous ones. A determined adversary (or a sufficiently creative agent) can construct commands that evade any regex; that is a known limitation, not a vulnerability by itself. Reports that meaningfully tighten a guard against realistic agent behavior are still very welcome as regular issues or PRs.
 
+When a guard itself fails (its check throws, it runs past its timeout, or it cannot start), it refuses the call rather than allowing it, within the limits of each host: Claude Code before v2.1.295 still lets a timed-out or unstartable hook through, and Codex CLI lets a timed-out hook through. `HOOK_FAIL_OPEN=true` turns this off for thrown errors. A way to make a guard allow a call by making it fail, on a host and version where the README says it should block, is in scope.
+
 Bypasses of `protect-secrets` that leak credentials through a *documented, blocked* channel, and any case where a hook itself executes untrusted input, are always in scope.
 
 ## Supported versions

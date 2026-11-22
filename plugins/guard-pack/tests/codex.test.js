@@ -325,7 +325,7 @@ describe('Codex manifest', () => {
   it('registers the Codex host on shell, patch and spawn tools', () => {
     const [group] = hooks.hooks.PreToolUse;
     assert.strictEqual(group.matcher, 'Bash|apply_patch|spawn_agent|collaborationspawn_agent');
-    assert.ok(group.hooks[0].command.endsWith('--host codex'), group.hooks[0].command);
+    assert.ok(group.hooks[0].command.endsWith('--host codex || exit 2'), group.hooks[0].command);
     assert.ok(group.hooks[0].command.includes('${PLUGIN_ROOT}/guard-pack.js'));
     assert.ok(!group.hooks[0].async);
   });

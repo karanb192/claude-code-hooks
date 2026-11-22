@@ -52,6 +52,7 @@ All optional, set via environment variables:
 | `HOOK_ASK_CRITICAL` | unset (deny) | The literal string `true` makes `critical`-level matches prompt instead of deny. |
 | `HOOK_ASK_HIGH` | unset (deny) | Same, for `high`-level matches. |
 | `HOOK_ASK_STRICT` | unset (deny) | Same, for `strict`-level matches. |
+| `HOOK_FAIL_OPEN` | unset (deny) | The literal string `true` lets the call through when the guard's own check throws, instead of denying it. See [When the guard fails](#when-the-guard-fails). |
 
 Ask mode is strictly opt-in and per level: only the literal string `true` enables it (`"1"` does not), and enabling it for one level never softens another. A common setup: keep `critical` on deny, set `HOOK_ASK_STRICT=true` so cautionary patterns prompt instead of blocking.
 
@@ -83,6 +84,10 @@ What that costs: a notes file and a commit in one line (`cat > notes.md <<'EOF' 
 - A loop variable (`for g in git; do $g push ...`). A word whose quotes hold a space is kept as typed, because that is usually a prompt or a message, so `cat "my dir/.e"nv` is not read as `.env`.
 
 These are guardrails, not a sandbox: see [SECURITY.md](../../SECURITY.md).
+
+## When the guard fails
+
+From 1.2.0, a guard that cannot finish its check refuses the call instead of allowing it. A check that throws is denied with a `[guard-error]` reason. A timeout (10 s) or a missing `node` is blocked by `"onFailure": "block"` on Claude Code v2.1.295 or later; older versions ignore that key and let the call run. On Codex a missing `node` is blocked by the command's `|| exit 2`, but a timeout still lets the call run, because Codex has no setting for it. Set `HOOK_FAIL_OPEN=true` to let the call through when the check throws; [When a guard fails](../../README.md#-when-a-guard-fails) covers the rest of the way back.
 
 ## Data & privacy
 
