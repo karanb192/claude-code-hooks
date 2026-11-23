@@ -59,8 +59,14 @@ const GIT_LONG_VAL = '(?:git-dir|work-tree|namespace|exec-path|super-prefix|conf
 const GIT = '\\bgit(?:\\s+(?:-[Cc]\\s*' + GIT_VAL + '|--' + GIT_LONG_VAL + '(?:=|\\s+)' + GIT_VAL + '|--(?!' + GIT_LONG_VAL + '\\b)[\\w-]+(?:=\\S+)?|-(?![Cc])[A-Za-z]))*\\s+';
 const MAIN_REF = '(?:[\\s:"\']|refs\\/heads\\/)(?:main|master)(?=$|[\\s;&|"\'])';
 // A shell word, not the "sh" in a *.sh file name; optional path (/bin/bash).
-const SHELL = '(?<![\\w.\\/-])(?:[^\\s|;&]*\\/)?(?:ba|z|da|k)?sh(?![\\w.-])';
+// It starts only at the start of a word, so a long run of path characters is
+// scanned once, not once per position.
+const SHELL = '(?<![^\\s|;&()<>"\'`$])(?:[^\\s|;&()<>"\'`$]*\\/)?(?:ba|z|da|k)?sh(?![\\w.-])';
 const FETCH = '(?:[^\\s|;&(]*\\/)?(?:curl|wget)\\b';
+// Shell options before -c or a script argument; never a word with c in it, so
+// a run of them stays linear before the -c check.
+const SHELL_FLAGS = '(?:\\s+[-+][abd-zA-Z]+)*';
+const SUBST = '(?:\\$\\(|`)\\s*';
 const FORCE_FLAG = '\\s["\']?(?:--force|-f)["\']?(?=\\s|$|[;&|"\'])';
 
 const PATTERNS = [
@@ -81,7 +87,10 @@ const PATTERNS = [
   // HIGH - Significant risk, data loss, security
   // The regex finds a fetch piped somewhere; pipesToShell walks the stages.
   { level: 'high', id: 'curl-pipe-sh',   regex: new RegExp(FETCH + '.*\\|'), confirm: pipesToShell,                    reason: 'piping URL to shell (RCE risk)' },
-  { level: 'high', id: 'curl-subst-sh',  regex: new RegExp('(?:' + SHELL + '|(?<![\\w.\\/-])source|(?:^|[;&|(]\\s*)\\.)\\s+<\\(\\s*' + FETCH + '|(?:' + SHELL + '\\s+-c|(?<![\\w.\\/-])eval)\\s+["\']?\\$\\(\\s*' + FETCH), reason: 'running a downloaded script through process or command substitution (RCE risk)' },
+  // Shell flags may come first (bash -x <(curl ...), bash -lc "$(curl ...)"); the
+  // download may arrive as a file, on stdin (< <(...), <<< "$(...)") or as -c
+  // text, in $(...) or backticks.
+  { level: 'high', id: 'curl-subst-sh',  regex: new RegExp('(?:' + SHELL + SHELL_FLAGS + '|(?<![\\w.\\/-])source|(?:^|[;&|(]\\s*)\\.)\\s+(?:<\\s*)?<\\(\\s*' + FETCH + '|' + SHELL + SHELL_FLAGS + '\\s+<<<\\s*["\']?' + SUBST + FETCH + '|(?:' + SHELL + SHELL_FLAGS + '\\s+-[A-Za-z]*c[A-Za-z]*|(?<![\\w.\\/-])eval)\\s+["\']?' + SUBST + FETCH), reason: 'running a downloaded script through process or command substitution (RCE risk)' },
   // Flag and branch in either order, within one command segment; +main is a force refspec.
   // A bare --force-with-lease never matches the (?=\s|...) after --force, so it needs no exception.
   { level: 'high', id: 'git-force-main', segment: true, regex: new RegExp(GIT + 'push\\b(?=[^;&|\\n]*' + FORCE_FLAG + ')(?=[^;&|\\n]*' + MAIN_REF + ')|' + GIT + 'push\\b[^;&|\\n]*\\s["\']?\\+(?:[^\\s:]*:)?(?:refs\\/heads\\/)?(?:main|master)(?=$|[\\s;&|"\'])'), reason: 'force push to main/master' },
@@ -596,6 +605,10 @@ function shellViews(cmd) {
 }
 // <<< shell-reading
 
+// Shells that run a script read on stdin. Wider than SHELL_NAME in the shared
+// reader, which only decides which -c programs it reads.
+const PIPE_SHELL = /^(?:ba|z|da|k|mk|a|c|tc|fi|y)?sh$/;
+
 // Wrappers that run the next command, with the short and long flags that take
 // a value. Walking words instead of matching one regex keeps this linear and
 // lets any depth of wrappers (sudo env FOO=1 nice -n 5 bash) reach the shell.
@@ -610,6 +623,9 @@ const WRAPPERS = {
   time: ['', []],
   timeout: ['sk', ['signal', 'kill-after']],
   stdbuf: ['ioe', ['input', 'output', 'error']],
+  setsid: ['', []],
+  unbuffer: ['', []],
+  busybox: ['', []],
 };
 // Shell words with quotes removed: "type your password" is one word.
 function shellWords(text) {
@@ -642,18 +658,45 @@ function firstCommand(stage) {
   return stage;
 }
 
+const COMPOUND = /^(?:[({!]|(?:if|while|until|for|select|case)(?=\s|$))/;
+
+// The commands of one pipe stage that read the pipe: the first one, or every
+// command of a compound stage ({ ...; }, ( ... ), if, while).
+function stageCommands(stage) {
+  const head = stage.replace(/^[\s&]+/, '');
+  if (!COMPOUND.test(head)) return [firstCommand(head)];
+  const out = [];
+  let q = '';
+  let start = 0;
+  for (let i = 0; i <= head.length; i++) {
+    const ch = head[i];
+    if (i < head.length) {
+      if (ch === '\\' && q !== "'") { i++; continue; }
+      if (q) { if (ch === q) q = ''; continue; }
+      if (ch === '"' || ch === "'") { q = ch; continue; }
+      if (!/[;&()\n]/.test(ch)) continue;
+    }
+    out.push(firstCommand(head.slice(start, i)));
+    start = i + 1;
+  }
+  return out;
+}
+
 function pipesToShell(cmd) {
   const fetch = new RegExp(FETCH).exec(cmd);
   if (!fetch) return false;
-  for (const raw of cmd.slice(fetch.index).split('|').slice(1)) {
+  for (const command of cmd.slice(fetch.index).split('|').slice(1).flatMap(stageCommands)) {
     // `bash; echo`, `bash>out`, `|& bash`, `(bash)`; a quoted `FOO="a;b"` does not end it.
     // Words sit on a stack (next word on top), so expanding env -S is O(words), not a splice.
-    const stack = shellWords(firstCommand(raw.replace(/^[\s&(]+/, ''))).reverse();
+    const stack = shellWords(command).reverse();
     const expand = (text) => { const more = shellWords(text); for (let k = more.length - 1; k >= 0; k--) stack.push(more[k]); };
     while (stack.length) {
       const word = stack.pop();
+      // VAR=x sh -, { bash; }, if ...; then bash; fi. A for, select or case word list is not a command.
+      if (/^(?:for|select|case)$/.test(word)) break;
+      if (KEYWORDS.has(word) || /^[A-Za-z_]\w*\+?=/.test(word)) continue;
       const name = word.slice(word.lastIndexOf('/') + 1);
-      if (SHELL_NAME.test(name)) return true;
+      if (PIPE_SHELL.test(name)) return true;
       const wrapper = Object.prototype.hasOwnProperty.call(WRAPPERS, name) ? WRAPPERS[name] : null;
       if (!wrapper) break;
       const [shortValue, longValue] = wrapper;
