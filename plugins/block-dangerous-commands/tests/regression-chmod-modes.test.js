@@ -36,3 +36,12 @@ describe('chmod 777 in other spellings', () => {
     for (const c of ['chmod 0755 x', 'chmod 0644 f', 'chmod a+x run.sh', 'chmod u+rwx x', 'chmod ugo+rx x', 'chmod 2775 dir']) shouldAllow(c);
   });
 });
+
+describe('chmod 777 only as the mode', () => {
+  it('allows a file named like the mode', () => {
+    for (const c of ['chmod 0644 0777', 'chmod 644 a+rwx', 'chmod -w 1777']) shouldAllow(c);
+  });
+  it('still blocks the mode after options', () => {
+    for (const c of ['chmod -R 0777 d', 'chmod -- 1777 /tmp/x', 'chmod -R a+rwx .']) shouldBlock(c, 'chmod-777');
+  });
+});

@@ -68,6 +68,12 @@ const FETCH = '(?:[^\\s|;&(]*\\/)?(?:curl|wget)\\b';
 // option run stays linear.
 const DOCKER_VALUE = '(?:-[cHl]|--(?:context|host|config|log-level|tlscacert|tlscert|tlskey))';
 const DOCKER = '\\bdocker(?:\\s+(?:' + DOCKER_VALUE + '(?:=|\\s+)\\S+|--(?!(?:context|host|config|log-level|tlscacert|tlscert|tlskey)(?:[=\\s]|$))[\\w-]+|-(?![cHl](?:[=\\s]|$))[A-Za-z][\\w-]*))*\\s+';
+// docker compose with its own options before the subcommand, so down is the
+// subcommand and not a service name (docker compose run down ls -v).
+const COMPOSE_VALUE = '(?:file|project-name|project-directory|env-file|profile|ansi|progress|parallel|context|host|log-level|tlscacert|tlscert|tlskey)';
+const COMPOSE = '\\bdocker(?:-compose|\\s+compose)(?:\\s+(?:(?:-[fpcH]|--' + COMPOSE_VALUE + ')(?:=|\\s+)\\S+|--(?!' + COMPOSE_VALUE + '(?:[=\\s]|$))[\\w-]+(?:=\\S*)?|-(?![fpcH](?:[=\\s]|$))[A-Za-z]\\S*))*\\s+';
+// chmod with its own options before the mode, so a file named 0777 is not the mode.
+const CHMOD = '\\bchmod(?:\\s+(?:-[RfvchHLP]+|--(?:recursive|verbose|changes|silent|quiet|dereference|no-dereference|preserve-root|no-preserve-root)?)(?=\\s))*\\s+';
 // -f alone or in a short-flag cluster (-fu, -uf, -vf). -o takes the rest of
 // its word as a value, so an f after it is not a flag.
 const FORCE_FLAG = '\\s["\']?(?:--force|-[A-Za-np-z0-9]*f[A-Za-z0-9]*)["\']?(?=\\s|$|[;&|"\'])';
@@ -95,17 +101,18 @@ const PATTERNS = [
   // A bare --force-with-lease never matches the (?=\s|...) after --force, so it needs no exception.
   { level: 'high', id: 'git-force-main', segment: true, regex: new RegExp(GIT + 'push\\b(?=[^;&|\\n]*' + FORCE_FLAG + ')(?=[^;&|\\n]*' + MAIN_REF + ')|' + GIT + 'push\\b[^;&|\\n]*\\s["\']?\\+(?:[^\\s:]*:)?(?:refs\\/heads\\/)?(?:main|master)(?=$|[\\s;&|"\'])'), reason: 'force push to main/master' },
   { level: 'high', id: 'git-reset-hard', regex: new RegExp(GIT + 'reset\\b[^;&|\\n]*\\s--h(?:a(?:rd?)?)?(?![\\w-])'),     reason: 'git reset --hard loses uncommitted work' },
-  { level: 'high', id: 'git-clean-f',    regex: new RegExp(GIT + 'clean\\b[^;&|\\n]*\\s["\']?(?:--f(?:o(?:r(?:ce?)?)?)?(?![\\w-])|-[A-Za-df-z]*f)'), reason: 'git clean -f deletes untracked files' },
-  // 777 with a leading 0 or a special bit (0777, 1777), or rwx for everyone spelled symbolically (a+rwx).
-  { level: 'high', id: 'chmod-777',      regex: /\bchmod\b.+\b777\b|\bchmod\b[^;&|\n]*\s["']?(?:0*[1-7]?777|(?:a|ugo|uog|gou|guo|ogu|oug)[+=](?=[rwxXst]*r)(?=[rwxXst]*w)(?=[rwxXst]*x)[rwxXst]+)["']?(?=\s|$|[;&|)<>])/, reason: 'chmod 777 is a security risk' },
+  { level: 'high', id: 'git-clean-f',    regex: new RegExp(GIT + 'clean\\s+(-\\w*f|-f)|' + GIT + 'clean\\b[^;&|\\n]*\\s["\']?(?:--f(?:o(?:r(?:ce?)?)?)?(?![\\w-])|-[A-Za-df-z]*f)'), confirm: (t) => cleanForces(t), reason: 'git clean -f deletes untracked files' },
+  // 777 with a leading 0 or a special bit (0777, 1777), or rwx for everyone spelled symbolically (a+rwx), as the mode.
+  { level: 'high', id: 'chmod-777',      regex: new RegExp('\\bchmod\\b.+\\b777\\b|' + CHMOD + '["\']?(?:0*[1-7]?777|(?:a|ugo|uog|gou|guo|ogu|oug)[+=](?=[rwxXst]*r)(?=[rwxXst]*w)(?=[rwxXst]*x)[rwxXst]+)["\']?(?=\\s|$|[;&|)<>])'), reason: 'chmod 777 is a security risk' },
   // docker volume rm|remove|prune after global options, compose down -v, system prune --volumes.
-  { level: 'high', id: 'docker-vol-rm',  regex: new RegExp(DOCKER + '(?:volume\\s+(?:rm|remove|prune)\\b|system\\s+prune\\b[^;&|\\n]*\\s--volumes(?![\\w-]))|\\bdocker(?:-compose|\\s+compose)\\b(?=[^;&|\\n]*\\sdown\\b)(?=[^;&|\\n]*\\s(?:-[A-Za-z]*v[A-Za-z]*|--volumes)(?![\\w-]))'), reason: 'docker volume deletion loses data' },
+  { level: 'high', id: 'docker-vol-rm',  regex: new RegExp(DOCKER + '(?:volume\\s+(?:rm|remove|prune)\\b|system\\s+prune\\b[^;&|\\n]*\\s--volumes(?![\\w-]))|' + COMPOSE + 'down(?![\\w-])(?=[^;&|\\n]*\\s(?:-[A-Za-z]*v[A-Za-z]*|--volumes)(?![\\w-]))'), reason: 'docker volume deletion loses data' },
 
   // STRICT - Cautionary, context-dependent
-  // A +ref refspec force-pushes that ref like --force does.
-  { level: 'strict', id: 'git-force-any',    segment: true, regex: new RegExp(GIT + 'push\\b(?=[^;&|\\n]*' + FORCE_FLAG + ')|' + GIT + 'push\\b[^;&|\\n]*\\s["\']?\\+[^\\s;&|]'), reason: 'force push (use --force-with-lease)' },
+  // A +ref refspec force-pushes that ref like --force does; the value of -o or
+  // --push-option (-o +build) is not a refspec.
+  { level: 'strict', id: 'git-force-any',    segment: true, regex: new RegExp(GIT + 'push\\b(?=[^;&|\\n]*' + FORCE_FLAG + ')|' + GIT + 'push\\b[^;&|\\n]*\\s(?<!\\s(?:-[A-Za-z0-9]*o|--push-option)\\s)["\']?\\+[^\\s;&|]'), reason: 'force push (use --force-with-lease)' },
   { level: 'strict', id: 'git-checkout-dot', regex: new RegExp(GIT + 'checkout\\s+\\.'),                                     reason: 'git checkout . discards changes' },
-  { level: 'strict', id: 'sudo-rm',          regex: /\bsudo\b[^;&|\n]*\brm\b/, confirm: sudoRunsRm,                         reason: 'sudo rm has elevated privileges' },
+  { level: 'strict', id: 'sudo-rm',          regex: /\bsudo\s+rm\b|\bsudo\b[^;&|\n]*\brm\b/, confirm: (t) => /\bsudo\s+rm\b/.test(t) || sudoRunsRm(t), reason: 'sudo rm has elevated privileges' },
   { level: 'strict', id: 'docker-prune',     regex: /\bdocker\s+(system|image|container|builder|buildx|network)\s+prune/,      reason: 'docker prune removes unused images, containers, networks or build cache' },
   { level: 'strict', id: 'crontab-r',        regex: /\bcrontab\s+-r/,                                                      reason: 'removes all cron jobs' },
 ];
@@ -701,10 +708,11 @@ function pipesToShell(cmd) {
   return false;
 }
 
-// sudo's own options (-n, -u root, --) and a path to rm still run rm.
+// sudo's own options (-n, -u root, --) and a path to rm still run rm, and sudo
+// named by its path (/usr/bin/sudo) is still sudo.
 function sudoRunsRm(cmd) {
   const [shortValue, longValue] = WRAPPERS.sudo;
-  for (const m of cmd.matchAll(/(?<![\w.\/-])sudo(?=\s)/g)) {
+  for (const m of cmd.matchAll(/(?<![\w.-])sudo(?=\s)/g)) {
     const words = shellWords(firstCommand(cmd.slice(m.index + 4).split('|')[0]));
     let k = 0;
     while (k < words.length) {
@@ -718,6 +726,40 @@ function sudoRunsRm(cmd) {
       if ([...letters].findIndex(c => shortValue.includes(c)) === letters.length - 1) k++;
     }
     if (words[k] !== undefined && base(words[k]) === 'rm') return true;
+  }
+  return false;
+}
+
+// git clean deletes only with a force flag and no dry run. The value of -e or
+// --exclude is a pattern (-e -foo), not a flag. A force flag in the first word
+// after clean (-f, -nf, -fn) counts on its own, as it always has.
+const GIT_CLEAN = new RegExp(GIT + 'clean\\b', 'g');
+const GIT_CLEAN_FIRST = new RegExp(GIT + 'clean\\s+(-\\w*f|-f)');
+function cleanForces(cmd) {
+  if (GIT_CLEAN_FIRST.test(cmd)) return true;
+  for (const m of cmd.matchAll(GIT_CLEAN)) {
+    const words = shellWords(firstCommand(cmd.slice(m.index + m[0].length).split('|')[0]));
+    let force = false;
+    let dry = false;
+    for (let k = 0; k < words.length; k++) {
+      const w = words[k];
+      if (w === '--') break;
+      if (w.startsWith('--')) {
+        const neg = w.startsWith('--no-');
+        const name = w.slice(neg ? 5 : 2);
+        if (!neg && /^e(?:x(?:c(?:l(?:u(?:de?)?)?)?)?)?$/.test(name)) k++;
+        else if (/^f(?:o(?:r(?:ce?)?)?)?$/.test(name)) force = !neg;
+        else if (/^d(?:r(?:y(?:-(?:r(?:un?)?)?)?)?)?$/.test(name)) dry = !neg;
+        continue;
+      }
+      if (!w.startsWith('-')) continue;
+      for (let j = 1; j < w.length; j++) {
+        if (w[j] === 'e') { if (j === w.length - 1) k++; break; }
+        if (w[j] === 'f') force = true;
+        if (w[j] === 'n') dry = true;
+      }
+    }
+    if (force && !dry) return true;
   }
   return false;
 }

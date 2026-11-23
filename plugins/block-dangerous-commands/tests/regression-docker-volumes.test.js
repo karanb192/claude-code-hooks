@@ -42,6 +42,14 @@ describe('docker volume deletion in other forms', () => {
     for (const c of ['docker compose down', 'docker compose up -d', 'docker volume ls', 'docker volume create v', 'docker -H ssh://h ps', 'docker system prune -f'])
       shouldAllow(c);
   });
+  it('allows a compose service named down', () => {
+    for (const c of ['docker compose run --rm down ls -v', 'docker compose restart down -v', 'docker compose -f dev.yml exec down ls -v'])
+      shouldAllow(c);
+  });
+  it('still blocks down -v after compose options', () => {
+    for (const c of ['docker compose --project-name p down -v', 'docker compose -p p down --volumes', 'docker compose --dry-run down -v'])
+      shouldBlock(c, 'docker-vol-rm');
+  });
   it('a long run of global options stays fast', () => {
     const { regex } = PATTERNS.find((p) => p.id === 'docker-vol-rm');
     for (const input of ['docker ' + '-H '.repeat(20000) + 'x', 'docker ' + '-c -c '.repeat(10000), 'docker compose ' + 'down '.repeat(20000) + 'x']) {

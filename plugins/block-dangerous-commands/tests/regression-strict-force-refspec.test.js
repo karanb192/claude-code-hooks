@@ -35,4 +35,9 @@ describe('force push by a +ref refspec at strict', () => {
     shouldAllow('git push origin feature && echo +x', 'strict');
   });
   it('allows a +feature refspec at the default level', () => shouldAllow('git push origin +feature'));
+  it('allows a push-option value that starts with +', () => {
+    shouldAllow('git push -o +build origin topic', 'strict');
+    shouldAllow('git push --push-option +build origin topic', 'strict');
+  });
+  it('still blocks a +ref after a push option', () => shouldBlock('git push -o +build origin +topic', 'git-force-any', 'strict'));
 });

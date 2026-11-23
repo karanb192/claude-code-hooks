@@ -70,3 +70,18 @@ describe('sudo rm behind sudo options or a path (strict)', () => {
     for (const c of ['sudo -u rm ls', 'sudo apt remove rm', 'sudo ls; rm x']) shouldAllow(c, 'strict');
   });
 });
+
+describe('git clean reads option values and dry runs', () => {
+  it('allows an exclude pattern that looks like a flag, and a dry run', () => {
+    for (const c of ['git clean -e -foo', 'git clean --exclude -f', 'git clean -n -f', 'git clean --dry-run --force', 'git clean -d -- -f']) shouldAllow(c);
+  });
+  it('still blocks force after an exclude pattern, a cancelled dry run and a force flag first', () => {
+    for (const c of ['git clean -e -foo -f', 'git clean -n --no-dry-run -f', 'git clean -nf', 'git clean -f -n']) shouldBlock(c, 'git-clean-f');
+  });
+});
+
+describe('sudo named by its path (strict)', () => {
+  it('blocks /usr/bin/sudo rm with or without sudo options', () => {
+    for (const c of ['/usr/bin/sudo rm -rf build', '/usr/bin/sudo -n rm x']) shouldBlock(c, 'sudo-rm', 'strict');
+  });
+});
