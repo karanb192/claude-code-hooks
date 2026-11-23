@@ -72,6 +72,17 @@ const TEST_TOKEN =
 // Latest.java or contests.cs is not a test.
 const CLASS_TEST_TOKEN = /(?:^|[\s'"/=*])(?:[\w*?-]*Tests?|Test[\w*?-]*)\.(?:java|kt|cs)(?![\w.])|[\w-]+\.Tests?(?=[\s'"/;&|)]|$)/;
 const testToken = (cmd) => TEST_TOKEN.test(cmd) || CLASS_TEST_TOKEN.test(cmd);
+// A literal test file name anywhere in the command keeps the long-standing
+// whole-command pairing with a delete or rename verb. A glob or class name
+// counts only in the same command as the verb, so `ls *.test.js && rm x.log`
+// is not a delete of tests, unless a loop, xargs or a substitution can feed
+// the glob's matches to the verb.
+const FEEDS_ITEMS = /\b(?:for|while|until|xargs)\b|\$\(|`/;
+const LITERAL_TEST_TOKEN =
+  /(test_[\w.-]+\.\w+|[\w.-]+_test\.\w+|[\w.-]+\.(test|spec)\.\w+|[\w.-]+_spec\.rb|(^|[\s'"/])(tests?|__tests__|specs?)\/)/i;
+const pairedWith = (cmd, verb) =>
+  ((LITERAL_TEST_TOKEN.test(cmd) || (FEEDS_ITEMS.test(cmd) && testToken(cmd))) && verb(cmd)) ||
+  shellCommands(cmd).some(part => testToken(part) && verb(part));
 
 // Rust keeps unit tests inline in src/, and a test class can sit outside any
 // test folder: a file whose own text defines tests is a test file too.
@@ -372,7 +383,8 @@ function shellAddsMarker(cmd, cwd) {
 // change itself has no test definition in it.
 function isTestFile(filePath, cwd, ...texts) {
   if (TEST_PATH.test(filePath)) return true;
-  const definition = TEST_DEFINITION[path.extname(filePath).slice(1).toLowerCase()];
+  const ext = path.extname(filePath).slice(1).toLowerCase();
+  const definition = Object.hasOwn(TEST_DEFINITION, ext) ? TEST_DEFINITION[ext] : null;
   if (!definition) return false;
   if (texts.some(t => typeof t === 'string' && definition.test(t))) return true;
   const existing = readExisting(filePath, cwd);
@@ -391,11 +403,9 @@ function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL, cwd = u
   if (toolName === 'Bash') {
     const cmd = toolInput.command || '';
     if (dropsTestSuite(cmd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
-    if (testToken(cmd)) {
-      if (DELETE_VERB.test(cmd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
-      if (RENAME_VERB.test(cmd) && DISABLED_DEST.test(cmd))
-        return deny('high', 'rename-test', 'renaming a test file to a disabled name');
-    }
+    if (pairedWith(cmd, c => DELETE_VERB.test(c))) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
+    if (pairedWith(cmd, c => RENAME_VERB.test(c) && DISABLED_DEST.test(c)))
+      return deny('high', 'rename-test', 'renaming a test file to a disabled name');
     // Runs without the TEST_TOKEN gate: it finds its own test target per command,
     // which a glob (find -name '*.test.js' | xargs sed -i) never puts in TEST_TOKEN.
     if (shellAddsMarker(cmd, cwd))

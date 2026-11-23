@@ -75,3 +75,19 @@ describe('Regression: recognising test files', () => {
     shouldAllow('Edit', { file_path: 'src/util.py', old_string: 'x', new_string: "pytest.skip('a')" });
   });
 });
+
+describe('Regression: glob names pair with the command that deletes them', () => {
+  it('does not treat a listing next to an unrelated delete as a delete of tests', () => {
+    for (const command of ['ls *.test.js && rm report.log', 'ls *_test.go; rm build.log', 'ls src/FooTest.java; rm build.log']) shouldAllow('Bash', { command });
+  });
+
+  it('still denies a glob fed to a delete through a loop, xargs or a substitution', () => {
+    for (const command of ['for f in *.test.js; do rm "$f"; done', 'find . -name "*.test.js" | while read f; do rm "$f"; done',
+      'rm $(ls *.test.js)', 'ls *.test.js | xargs rm']) shouldBlock('Bash', { command }, 'delete-test');
+  });
+
+  it('does not crash on a file named like an inherited property', () => {
+    for (const command of ['echo x > data.constructor', 'echo x > toString', 'echo x > a.__proto__']) shouldAllow('Bash', { command });
+    shouldAllow('Write', { file_path: 'x.constructor', content: "it.skip('a')" });
+  });
+});
