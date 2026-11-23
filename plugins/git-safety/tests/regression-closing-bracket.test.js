@@ -36,6 +36,19 @@ describe('push to main or master right before a closing paren or redirect', () =
     shouldAllow('(cd repo && git push origin main-menu-fix)', 'main-menu-fix'));
 });
 
+describe('a paren or angle bracket inside quotes is part of the ref', () => {
+  it('allows a push to the branch main)fix', () => shouldAllow("git push origin 'main)fix'", 'feature'));
+  it('allows a push to the branch master<preview', () => shouldAllow("git push origin 'master<preview'", 'feature'));
+  it('allows the same names double-quoted, escaped or as a refspec side', () => {
+    for (const c of ['git push origin "main)fix"', 'git push origin main\\)fix', "git push origin 'HEAD:main)fix'", "git push origin HEAD:'main>x'"])
+      shouldAllow(c, 'feature');
+  });
+  it('still blocks main before an unquoted paren or redirect on a line with quotes', () => {
+    for (const c of [`echo "x" ; (git push origin 'main')`, 'git commit -m "it is" && (git push origin main)', "git push origin 'main'>log", "cat <<EOF\nit's\nEOF\n(git push origin main)"])
+      shouldBlock(c, 'push-main', 'feature');
+  });
+});
+
 describe('force push right before a closing paren or redirect (strict)', () => {
   it('blocks the recorded input', () => shouldBlock('(git push --force)', 'force-push', 'feature', 'strict'));
   it('blocks -f before a redirect', () => shouldBlock('git push origin feature -f>/dev/null', 'force-push', 'feature', 'strict'));

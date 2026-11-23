@@ -590,11 +590,28 @@ function shellViews(cmd) {
 }
 // <<< shell-reading
 
+// Inside quotes, ( ) < > are part of the ref, not shell operators: git accepts
+// 'main)fix' and 'master<preview' as branch names, so they cannot end a ref.
+function maskQuotedOperators(s) {
+  let out = '';
+  let q = '';
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '\\' && q !== "'" && i + 1 < s.length) { out += ch + s[++i]; continue; }
+    if (q) {
+      if (ch === q) q = '';
+      else if (/[()<>]/.test(ch)) { out += '_'; continue; }
+    } else if (ch === '"' || ch === "'") q = ch;
+    out += ch;
+  }
+  return out;
+}
+
 function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL) {
   const threshold = LEVELS[safetyLevel] || LEVELS.high;
   // bash removes a backslash-newline outright, joining the two lines.
   cmd = cmd.replace(/\\\r?\n/g, '');
-  const views = shellViews(cmd);
+  const views = shellViews(cmd).map(v => ({ text: v.text, masked: maskQuotedOperators(v.masked) }));
   for (const p of PATTERNS) {
     if (LEVELS[p.level] > threshold) continue;
     if (!views.some(v => p.regex.test(p.segment ? v.masked : v.text))) continue;
