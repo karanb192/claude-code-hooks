@@ -9,17 +9,24 @@
  *
  * Idea credit: @yurukusa (https://github.com/karanb192/claude-code-hooks/pull/8)
  *
- * Covered commands: rm, rmdir, mv, mkdir, touch, and `find <path> … -delete`
- * (also `find … -exec rm/unlink`). Directory context is modeled as a set of
- * candidate cwds plus the last command's exit status: `cd`/`pushd` move it
+ * Covered commands: rm, rmdir, mv, mkdir, touch, `find <path> … -delete`
+ * (also `find … -exec rm/unlink/rmdir`, by any path), and `xargs` fed by a
+ * literal `echo` or by `find` (`find content -type f | xargs rm`). Every
+ * component of a typed path is compared with the disk, so a miscased parent
+ * (`content/sub` for `Content/sub`) counts too. Directory context is modeled
+ * as a set of candidate cwds plus the last command's exit status: `cd`/`pushd`
+ * move it
  * (honoring whether the target directory exists: including directories a
  * `mkdir` earlier in the same command line would create), `popd` restores the
  * matching `pushd`'s directory, a subshell `( … )` restores the outer cwd at
  * `)`, and connectors gate execution (`&&` runs only after success, `||` only
  * after failure, `;`/newline/`|`/`&` regardless: with `cd` in a background
  * (`&`) or pipeline (`|`) position not moving the parent shell). Heredoc
- * bodies are stripped before analysis, and wrapper prefixes (`nohup`, `exec`,
- * `command`, `env`, `sudo`, …) are peeled off.
+ * bodies, `#` comments and backslash-newline continuations are handled before
+ * analysis, brace lists (`{a,b}`) are expanded, redirects are not targets, and
+ * wrapper prefixes (`sudo`, `doas`, `env`, `exec`, `nohup`, `nice`, `timeout`,
+ * `stdbuf`, `ionice`, `xargs`, …) are peeled off together with their options
+ * (`sudo -u root`, `timeout 30`; `env -C DIR` moves the command's cwd).
  *
  * SAFETY_LEVEL: 'critical' | 'high' | 'strict' (default 'high')
  *   critical - recursive `rm -r/-rf` (and `find -delete`) onto a case-variant
@@ -41,7 +48,9 @@
  *   miscased glob matches nothing and cannot case-collide. (Limitation:
  *   `shopt -s nocaseglob` defeats this; not modeled.)
  * - `$VAR`, `$(…)`, backticks: not statically resolvable → conservatively
- *   allowed rather than guessed at.
+ *   allowed rather than guessed at. Literal targets beside them are checked.
+ * - The session cwd as reported, and the home dir, are trusted as spelled:
+ *   only path components beyond them are compared with the disk.
  * - Exact-case targets: `rm -rf Content` when `Content` exists as typed is an
  *   intentional delete, not a collision.
  * - A case-only rename (`mv readme.md README.md`) is the CANONICAL fix for a
@@ -108,35 +117,77 @@ function log(entry) {
 
 // ─── shell-aware parsing ─────────────────────────────────────────────────────
 
-// Remove heredoc bodies (`<<EOF … EOF`) so document text is never analyzed as
-// commands. Honors quoted delimiters, `<<-` tab stripping, and multiple
-// heredocs queued on one line. A purely numeric "delimiter" is treated as
-// arithmetic (`$((1<<2))`), not a heredoc.
-function stripHeredocs(command) {
-  let out = '', i = 0, quote = null;
+// Index just past a span the shell reads as one unit, starting at i: '…',
+// "…", $'…', $(…), ${…}, `…`, <(…), >(…). -1 when none starts there. An
+// unterminated span runs to the end (the shell rejects the line anyway).
+function spanEnd(s, i) {
+  const c = s[i], n = s[i + 1];
+  if (c === "'") { const e = s.indexOf("'", i + 1); return e === -1 ? s.length : e + 1; }
+  let j, close, open = null, nests;
+  if (c === '"') { j = i + 1; close = '"'; nests = 'subst'; }
+  else if (c === '`') { j = i + 1; close = '`'; nests = 'none'; }
+  else if (c === '$' && n === "'") { j = i + 2; close = "'"; nests = 'none'; }
+  else if ((c === '$' || c === '<' || c === '>') && n === '(') { j = i + 2; open = '('; close = ')'; nests = 'all'; }
+  else if (c === '$' && n === '{') { j = i + 2; open = '{'; close = '}'; nests = 'all'; }
+  else return -1;
+  let depth = 0;
+  while (j < s.length) {
+    const d = s[j];
+    if (d === '\\') { j += 2; continue; }
+    if (depth === 0 && d === close) return j + 1;
+    // Inside "…" only $(…), ${…} and `…` nest: a ' there is a literal character.
+    if (nests === 'all' || (nests === 'subst' && (d === '`' || (d === '$' && (s[j + 1] === '(' || s[j + 1] === '{'))))) {
+      const e = spanEnd(s, j);
+      if (e !== -1) { j = e; continue; }
+    }
+    if (d === open) depth++;
+    else if (d === close) depth--;
+    j++;
+  }
+  return s.length;
+}
+
+// Prepare a command line for segmenting: join backslash-newline
+// continuations, drop `#` comments, and remove heredoc bodies (`<<EOF … EOF`)
+// so document text is never analyzed as commands. Honors quoted delimiters
+// (spaces included), `<<-` tab stripping, and several heredocs queued on one
+// line. A purely numeric "delimiter" is arithmetic (`((1<<2))`), not a heredoc.
+function preprocess(command) {
+  let out = '', i = 0, wordStart = true;
   const pending = []; // delimiters whose bodies start at the next newline
   while (i < command.length) {
     const c = command[i];
-    if (quote) {
-      out += c;
-      if (c === quote && command[i - 1] !== '\\') quote = null;
-      i++; continue;
+    if (c === '\\') {
+      if (command[i + 1] !== '\n') { out += command.slice(i, i + 2); wordStart = false; }
+      i += 2; continue;
     }
-    if (c === "'" || c === '"') { quote = c; out += c; i++; continue; }
+    const e = spanEnd(command, i);
+    if (e !== -1) { out += command.slice(i, e); i = e; wordStart = false; continue; }
+    // `#` opens a comment only at the start of a word (not `a#b`, `$#`, `\ #`).
+    if (c === '#' && wordStart) {
+      while (i < command.length && command[i] !== '\n') i++;
+      continue;
+    }
     if (c === '<' && command[i + 1] === '<' && command[i + 2] !== '<' && command[i - 1] !== '<') {
       let j = i + 2;
       if (command[j] === '-') j++;
       while (command[j] === ' ' || command[j] === '\t') j++;
-      let q = null;
-      if (command[j] === "'" || command[j] === '"') { q = command[j]; j++; }
       let delim = '';
-      while (j < command.length && /[^\s'"();&|<>]/.test(command[j])) { delim += command[j]; j++; }
-      if (q && command[j] === q) j++;
+      while (j < command.length && !/[\s;&|()<>]/.test(command[j])) {
+        const d = command[j];
+        if (d === "'" || d === '"') {
+          let q = command.indexOf(d, j + 1);
+          if (q === -1) q = command.length;
+          delim += command.slice(j + 1, q); j = q + 1; continue;
+        }
+        if (d === '\\') { delim += command[j + 1] || ''; j += 2; continue; }
+        delim += d; j++;
+      }
       if (delim && !/^\d+$/.test(delim)) { pending.push(delim); out += ' '; i = j; continue; }
       out += c; i++; continue;
     }
     if (c === '\n' && pending.length) {
-      out += '\n'; i++;
+      out += '\n'; i++; wordStart = true;
       while (pending.length && i < command.length) {
         let eol = command.indexOf('\n', i);
         if (eol === -1) eol = command.length;
@@ -146,17 +197,19 @@ function stripHeredocs(command) {
       continue;
     }
     out += c; i++;
+    wordStart = /[\s;&|()<>]/.test(c);
   }
   return out;
 }
 
 // Split a command line into { text, connector } segments, where connector is
 // the operator that PRECEDES the segment (null for the first). Operators inside
-// single/double quotes are ignored. A single `&` (background) is a separator
-// too: the command after it still runs; `&>`, `>&`, `<&` redirects are not.
+// quotes, substitutions or after a backslash are ignored. A single `&`
+// (background) is a separator too: the command after it still runs; `&>`,
+// `>&`, `<&` redirects are not.
 function splitSegments(command) {
   const segments = [];
-  let cur = '', quote = null, connector = null;
+  let cur = '', connector = null;
   const push = (nextConnector) => {
     const text = cur.trim();
     if (text) segments.push({ text, connector });
@@ -165,12 +218,9 @@ function splitSegments(command) {
   };
   for (let i = 0; i < command.length; i++) {
     const c = command[i];
-    if (quote) {
-      cur += c;
-      if (c === quote && command[i - 1] !== '\\') quote = null;
-      continue;
-    }
-    if (c === "'" || c === '"') { quote = c; cur += c; continue; }
+    if (c === '\\') { cur += command.slice(i, i + 2); i++; continue; }
+    const e = spanEnd(command, i);
+    if (e !== -1) { cur += command.slice(i, e); i = e - 1; continue; }
     if (c === '&' && command[i + 1] === '&') { push('&&'); i++; continue; }
     if (c === '&' && command[i + 1] !== '>' && command[i - 1] !== '>' && command[i - 1] !== '<') { push('&'); continue; }
     if (c === '|' && command[i + 1] === '|') { push('||'); i++; continue; }
@@ -183,23 +233,80 @@ function splitSegments(command) {
   return segments;
 }
 
-// Tokenize one segment on whitespace, respecting quotes. Each token records
-// whether any part was quoted (quoted globs are literal to the shell). Unquoted
-// `(` / `)` are shell operators and become standalone tokens even unspaced.
+// Expand unquoted brace lists (`{a,b}`, `x{,-old}`) the way the shell does
+// before the command sees them. Sequences (`{1..3}`) are left literal. Returns
+// null past BRACE_LIMIT words: a partial list would leave the rest unchecked.
+const BRACE_LIMIT = 64;
+function expandBraces(word) {
+  for (let a = 0; a < word.length; a++) {
+    if (word[a] !== '{') continue;
+    let depth = 0, b = -1;
+    const commas = [];
+    for (let k = a; k < word.length; k++) {
+      if (word[k] === '{') depth++;
+      else if (word[k] === '}') { if (--depth === 0) { b = k; break; } }
+      else if (word[k] === ',' && depth === 1) commas.push(k);
+    }
+    if (b === -1) return [word];
+    if (!commas.length) continue;
+    const pre = word.slice(0, a), post = word.slice(b + 1), out = [];
+    let from = a + 1;
+    for (const k of [...commas, b]) {
+      const sub = expandBraces(pre + word.slice(from, k) + post);
+      if (!sub || out.length + sub.length > BRACE_LIMIT) return null;
+      out.push(...sub);
+      from = k + 1;
+    }
+    return out;
+  }
+  return [word];
+}
+
+// Tokenize one segment into words, respecting quotes, escapes and
+// substitutions. Each token records whether any part was quoted or escaped
+// (quoted globs and `~` are literal to the shell). Substitutions stay raw, so
+// their `$` or backtick marks the word unresolvable, as does a brace list too
+// large to expand (`unresolvable: true`). Unquoted `(` / `)` are
+// shell operators and become standalone tokens even unspaced. Redirections
+// (`>out`, `2>&1`, `<<<word`) and their targets are not arguments: dropped.
 function tokenize(segment) {
   const tokens = [];
-  let text = '', quoted = false, quote = null, started = false;
-  const push = () => { if (started) tokens.push({ text, quoted }); text = ''; quoted = false; started = false; };
+  let text = '', quoted = false, started = false, redirect = false;
+  const push = () => {
+    if (started) {
+      if (redirect) redirect = false;
+      else if (quoted || /[$`]/.test(text)) tokens.push({ text, quoted });
+      else {
+        const words = expandBraces(text);
+        if (!words) tokens.push({ text, quoted, unresolvable: true });
+        else for (const t of words) tokens.push({ text: t, quoted });
+      }
+    }
+    text = ''; quoted = false; started = false;
+  };
   for (let i = 0; i < segment.length; i++) {
     const c = segment[i];
-    if (quote) {
-      if (c === quote) { quote = null; } else { text += c; }
+    if (c === '\\') {
+      if (i + 1 < segment.length) { text += segment[i + 1]; quoted = true; started = true; i++; }
       continue;
     }
-    if (c === "'" || c === '"') { quote = c; quoted = true; started = true; continue; }
+    const e = spanEnd(segment, i);
+    if (e !== -1) {
+      const closed = e - 1 > i && segment[e - 1] === c;
+      if (c === "'") text += segment.slice(i + 1, closed ? e - 1 : e);
+      else if (c === '"') text += segment.slice(i + 1, closed ? e - 1 : e).replace(/\\([$`"\\\n])/g, (m, ch) => ch === '\n' ? '' : ch);
+      else text += segment.slice(i, e);
+      if (c === "'" || c === '"') quoted = true;
+      started = true; i = e - 1; continue;
+    }
+    if (c === '<' || c === '>') {
+      if (!quoted && /^(\d+|&)$/.test(text)) { text = ''; started = false; } else push();
+      while (/[<>&|]/.test(segment[i + 1] || '')) i++;
+      redirect = true;
+      continue;
+    }
     if (c === '(' || c === ')') { push(); tokens.push({ text: c, quoted: false }); continue; }
     if (/\s/.test(c)) { push(); continue; }
-    if (c === '\\' && i + 1 < segment.length) { text += segment[i + 1]; started = true; i++; continue; }
     text += c; started = true;
   }
   push();
@@ -207,22 +314,165 @@ function tokenize(segment) {
 }
 
 const SHELL_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'function', '{', '}']);
-// Wrappers that just run their argument as the real command.
-const PREFIX_CMDS = new Set(['command', 'builtin', 'exec', 'time', 'nohup', 'env', 'sudo']);
 
-// Strip subshell parens, leading env assignments (FOO=bar) and `sudo`.
-function commandTokens(tokens) {
-  let toks = tokens.filter(t => t.text !== '(' && t.text !== ')');
-  let i = 0;
-  while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i].text)) i++;
-  if (i < toks.length && toks[i].text === 'sudo') {
-    i++;
-    while (i < toks.length && toks[i].text.startsWith('-')) i++;
+// Wrappers that run their argument as the real command. `arg`: short options
+// that take a value (so the value is not mistaken for the command); `long`:
+// long options that take one as the next word; `skip`: positionals before the
+// command (timeout's duration); `chdir`: options that set the command's cwd.
+const TIMEOUT_OPTS = { arg: 'sk', long: ['signal', 'kill-after'], skip: 1 };
+const WRAPPERS = {
+  command: {}, builtin: {}, nohup: {},
+  exec: { arg: 'a' },
+  time: { arg: 'fo', long: ['format', 'output'] },
+  env: { arg: 'uCSP', long: ['unset', 'chdir', 'split-string'], chdir: ['-C', '--chdir'] },
+  sudo: { arg: 'ugpChrtTUDR', long: ['user', 'group', 'prompt', 'close-from', 'host', 'role', 'type', 'command-timeout', 'other-user', 'chdir', 'chroot'], chdir: ['-D', '--chdir'] },
+  doas: { arg: 'uC' },
+  nice: { arg: 'n', long: ['adjustment'] },
+  timeout: TIMEOUT_OPTS, gtimeout: TIMEOUT_OPTS,
+  stdbuf: { arg: 'ioe', long: ['input', 'output', 'error'] },
+  ionice: { arg: 'cnp', long: ['class', 'classdata', 'pid'] },
+  caffeinate: { arg: 'tw' },
+  xargs: { arg: 'IJELnPsdaRS', long: ['arg-file', 'delimiter', 'max-args', 'max-procs', 'max-chars', 'process-slot-var'] },
+};
+const ENV_ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+// Peel env assignments, shell keywords, `!` and wrapper prefixes (with their
+// options) off a token list. Reports a wrapper's working-directory option and,
+// for xargs, its replacement string, since both change what the command hits.
+function peelWrappers(tokens) {
+  let chdir = null, xargs = null, negated = false;
+  for (let guard = 0; guard < 1000 && tokens.length; guard++) {
+    let lead = 0;
+    while (lead < tokens.length && ENV_ASSIGN.test(tokens[lead].text)) lead++;
+    tokens = tokens.slice(lead);
+    if (!tokens.length) break;
+    const t = tokens[0].text;
+    if (SHELL_KEYWORDS.has(t) || t === '!') {
+      if (t === '!') negated = true;
+      tokens = tokens.slice(1);
+      continue;
+    }
+    const name = path.basename(t);
+    const w = WRAPPERS[name];
+    if (!w) break;
+    const opts = [];
+    let i = 1;
+    while (i < tokens.length) {
+      const a = tokens[i].text;
+      if (a === '--') { i++; break; }
+      if (!a.startsWith('-') || a === '-') break;
+      i++;
+      if (a.startsWith('--')) {
+        const eq = a.indexOf('=');
+        const nm = a.slice(0, eq === -1 ? undefined : eq);
+        if (eq !== -1) opts.push([nm, a.slice(eq + 1)]);
+        else if ((w.long || []).includes(nm.slice(2))) { opts.push([nm, tokens[i]?.text]); i++; }
+        else opts.push([nm, null]);
+        continue;
+      }
+      if (name === 'xargs' && /^-[iel]/.test(a)) { opts.push([a.slice(0, 2), a.slice(2)]); continue; }
+      for (let k = 1; k < a.length; k++) {
+        if (!(w.arg || '').includes(a[k])) { opts.push(['-' + a[k], null]); continue; }
+        if (k + 1 < a.length) opts.push(['-' + a[k], a.slice(k + 1)]);
+        else { opts.push(['-' + a[k], tokens[i]?.text]); i++; }
+        break;
+      }
+    }
+    for (let s = 0; s < (w.skip || 0) && i < tokens.length; s++) i++;
+    for (const [f, v] of opts) if ((w.chdir || []).includes(f) && v) chdir = v;
+    if (name === 'xargs') {
+      // How input splits into arguments: on blanks by default (-L and -J
+      // too), whole lines for -I/-i/--replace, NULs for -0, a given -d char.
+      xargs = { repl: null, split: 'blank', delim: null };
+      for (const [f, v] of opts) {
+        if ((f === '-I' || f === '-i' || f === '--replace') && (v || f !== '-I')) { xargs.repl = v || '{}'; xargs.split = 'line'; }
+        else if (f === '-J' && v) xargs.repl = v;
+        else if (f === '-0' || f === '--null') xargs.split = 'nul';
+        else if ((f === '-d' || f === '--delimiter') && v) { xargs.split = 'delim'; xargs.delim = v === '\\n' ? '\n' : v === '\\t' ? '\t' : v[0]; }
+      }
+    }
+    tokens = tokens.slice(i);
   }
-  return toks.slice(i);
+  return { tokens, chdir, xargs, negated };
 }
 
-function hasUnresolvable(text) { return /[$`]/.test(text); }
+// `find [-H|-L|-P|-E|-X|-s|-x|-d|-D opts|-O<n>|-f path]… <paths…> <expression>`:
+// leading options come before the paths, which run to the first predicate,
+// `(` or `!`.
+function findArgs(rest) {
+  const paths = [];
+  let i = 0;
+  while (i < rest.length) {
+    const t = rest[i].text;
+    if (/^-[HLPEXsxd]+$/.test(t) || /^-O\d*$/.test(t)) { i++; continue; }
+    if (t === '-D') { i += 2; continue; }
+    if (t === '-f') { if (rest[i + 1]) paths.push(rest[i + 1]); i += 2; continue; }
+    break;
+  }
+  while (i < rest.length && !/^[-(!]/.test(rest[i].text)) paths.push(rest[i++]);
+  return { paths, expr: rest.slice(i) };
+}
+
+const DELETERS = /^(rm|unlink|rmdir)$/;
+const FIND_EXEC = /^-(exec|execdir|ok|okdir)$/;
+
+// The -exec/-ok clauses of a find expression: { at, cmd, args } up to `;`/`+`.
+function findExecs(expr) {
+  const out = [];
+  for (let i = 0; i < expr.length; i++) {
+    if (!FIND_EXEC.test(expr[i].text)) continue;
+    let j = i + 1;
+    while (j < expr.length && expr[j].text !== ';' && expr[j].text !== '+') j++;
+    out.push({ at: i, end: j, cmd: path.basename(expr[i + 1]?.text || ''), args: expr.slice(i + 2, j) });
+    i = j;
+  }
+  return out;
+}
+
+// Does find write the matched paths to stdout? -print, -print0, a -printf
+// with %p/%P, an -exec/-ok that passes {} on, or no action at all (the
+// implicit -print). A fixed -printf or -fprint string is not a matched path.
+function findPrintsPaths(expr) {
+  const execs = findExecs(expr);
+  if (execs.some(e => e.args.some(a => a.text.includes('{}')))) return true;
+  let action = execs.length > 0;
+  for (let i = 0; i < expr.length; i++) {
+    const t = expr[i].text;
+    const ex = execs.find(e => e.at === i);
+    if (ex) { i = ex.end; continue; }
+    if (t === '-print' || t === '-print0') return true;
+    if (t === '-printf' && /%[pP]/.test(expr[i + 1]?.text || '')) return true;
+    if (/^-(printf|fprint0?|fprintf|ls|fls|delete|quit)$/.test(t)) action = true;
+    if (/^-(printf|fprint0?|fls)$/.test(t)) i++;
+    else if (t === '-fprintf') i += 2;
+  }
+  return !action;
+}
+
+// What `echo ARGS` writes, split the way xargs reads it. Records the shell
+// output cannot pin down (globbed args, backslashes that some echos expand,
+// quotes xargs would reinterpret) are left out.
+function xargsItems(echoArgs, mode) {
+  let k = 0, newline = true;
+  while (k < echoArgs.length && /^-[neE]+$/.test(echoArgs[k].text)) { if (echoArgs[k].text.includes('n')) newline = false; k++; }
+  let args = echoArgs.slice(k);
+  if (args.some(hasGlob)) {
+    if (mode.split !== 'blank') return [];
+    args = args.filter(t => !hasGlob(t));
+  }
+  const output = args.map(t => t.text).join(' ') + (newline ? '\n' : '');
+  let records;
+  if (mode.split === 'nul') records = output.split('\0');
+  else if (mode.split === 'delim') records = output.split(mode.delim);
+  else if (mode.split === 'line') records = output.split('\n').flatMap(l => [l.replace(/^[ \t]+/, ''), l.trim()]);
+  else records = output.split(/[ \t\n]+/);
+  const literal = mode.split === 'nul' || mode.split === 'delim';
+  return [...new Set(records)]
+    .filter(r => r && !r.includes('\\') && (literal || !/['"]/.test(r)))
+    .map(text => ({ text, quoted: true })); // xargs never globs or expands ~
+}
+
+function hasUnresolvable(text) { return /[$`]|^[<>]\(/.test(text); }
 function hasGlob(tok) { return !tok.quoted && /[*?[]/.test(tok.text); }
 
 function resolveTarget(text, cwd, quoted = false) {
@@ -245,32 +495,47 @@ const realFsx = {
   isDirectory(p) { try { return fs.statSync(p).isDirectory(); } catch { return false; } },
 };
 
-// A collision exists when the typed basename is NOT an on-disk entry of the
-// parent, yet a differently-cased entry is: and the typed path still exists
-// (proving the volume folds case, no probe file needed).
-function findCollision(resolved, fsx) {
-  const parent = path.dirname(resolved);
-  const base = path.basename(resolved);
-  if (!base || base === '.' || base === '..') return null;
-  const entries = fsx.listDir(parent);
-  if (!entries || entries.includes(base)) return null;
-  const variant = entries.find(e => e.toLowerCase() === base.toLowerCase());
-  if (!variant) return null;
-  if (!fsx.pathExists(resolved)) return null; // case-sensitive volume: harmless miss
-  const isDir = fsx.isDirectory(path.join(parent, variant));
-  return { typed: base, actual: variant, parent, actualIsDir: isDir };
+// A collision exists when some component of the typed path is NOT an on-disk
+// entry of its parent, yet a differently-cased entry is: and the typed path
+// still exists (proving the volume folds case, no probe file needed). A
+// miscased parent (`content/sub` for `Content/sub`) counts as much as a
+// miscased leaf. Components shared with a trusted root (the session cwd, the
+// home dir) are not checked: that cwd can itself be spelled in another case
+// than the disk (`cd ~/github` into `GitHub`), and that is not the agent's typo.
+function findCollision(resolved, fsx, roots = []) {
+  const { root } = path.parse(resolved);
+  const parts = resolved.slice(root.length).split(path.sep).filter(Boolean);
+  let trusted = 0;
+  for (const r of roots) {
+    if (!r || !path.isAbsolute(r) || path.parse(r).root !== root) continue;
+    const rp = r.slice(root.length).split(path.sep).filter(Boolean);
+    let k = 0;
+    while (k < rp.length && k < parts.length && rp[k] === parts[k]) k++;
+    trusted = Math.max(trusted, k);
+  }
+  for (let i = trusted; i < parts.length; i++) {
+    const parent = root + parts.slice(0, i).join(path.sep);
+    const entries = fsx.listDir(parent);
+    if (!entries || entries.includes(parts[i])) continue;
+    const variant = entries.find(e => e.toLowerCase() === parts[i].toLowerCase());
+    if (!variant) return null;
+    if (!fsx.pathExists(resolved)) return null; // case-sensitive volume: harmless miss
+    return { typed: parts[i], actual: variant, parent, actualIsDir: fsx.isDirectory(resolved) };
+  }
+  return null;
 }
 
 const RECURSIVE_FLAG = (f) => /^-[A-Za-z]*[rR]/.test(f) || f === '--recursive';
 const DIR_FLAG = (f) => /^-[A-Za-z]*d/.test(f) || f === '--dir';
 
 // Split flags from operands for a token list (POSIX `--` ends option parsing).
+// Quoting does not matter here: the command still sees `"-rf"` as a flag.
 function splitArgs(tokens) {
   const flags = [], operands = [];
   let sawDoubleDash = false;
   for (const t of tokens) {
-    if (!sawDoubleDash && t.text === '--' && !t.quoted) { sawDoubleDash = true; continue; }
-    if (!sawDoubleDash && t.text.startsWith('-') && !t.quoted && t.text !== '-') { flags.push(t.text); continue; }
+    if (!sawDoubleDash && t.text === '--') { sawDoubleDash = true; continue; }
+    if (!sawDoubleDash && t.text.startsWith('-') && t.text !== '-') { flags.push(t.text); continue; }
     operands.push(t);
   }
   return { flags, operands };
@@ -299,17 +564,19 @@ function analyzeCommand(command, cwd, fsx = realFsx) {
     return [...new Set([...a, ...b])];
   };
 
-  const segs = splitSegments(stripHeredocs(command));
+  const roots = [cwd, os.homedir()];
+  const segs = splitSegments(preprocess(command));
+  let pipeSrc = null; // the previous segment's command, read by a piped xargs
   for (let si = 0; si < segs.length; si++) {
     const { text, connector } = segs[si];
     const nextConn = si + 1 < segs.length ? segs[si + 1].connector : null;
+    const src = connector === '|' ? pipeSrc : null;
+    pipeSrc = null;
 
     const runs = connector === '&&' ? (lastStatus === 'ok' ? true : lastStatus === 'fail' ? false : 'maybe')
                : connector === '||' ? (lastStatus === 'fail' ? true : lastStatus === 'ok' ? false : 'maybe')
                : true;
     if (runs === false) continue; // this segment cannot execute
-
-    if (/\$\(|`/.test(text)) { lastStatus = 'unknown'; continue; } // command substitution: not resolvable
 
     const raw = tokenize(text);
     let lo = 0, hi = raw.length;
@@ -323,21 +590,12 @@ function analyzeCommand(command, cwd, fsx = realFsx) {
       }
     };
 
-    let tokens = commandTokens(raw.slice(lo, hi));
-    let negated = false;
-    for (let guard = 0; guard < raw.length && tokens.length; guard++) {
-      const t = tokens[0].text;
-      if (SHELL_KEYWORDS.has(t) || t === '!') {
-        if (t === '!') negated = true;
-        tokens = tokens.slice(1);
-      } else if (PREFIX_CMDS.has(t)) {
-        tokens = tokens.slice(1);
-        while (tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0].text)) tokens = tokens.slice(1);
-        while (tokens.length && tokens[0].text.startsWith('-')) tokens = tokens.slice(1);
-      } else break;
-    }
+    const peeled = peelWrappers(raw.slice(lo, hi).filter(t => t.quoted || (t.text !== '(' && t.text !== ')')));
+    let tokens = peeled.tokens;
+    const negated = peeled.negated;
     if (!tokens.length) { closeSubshells(); continue; }
     const cmd = path.basename(tokens[0].text);
+    pipeSrc = { cmd, args: tokens.slice(1) };
 
     // A `cd` followed by `&` (background) or `|` (pipeline) runs in a subshell
     // and never moves the parent: keep the old cwd, add the new fail-closed.
@@ -346,9 +604,12 @@ function analyzeCommand(command, cwd, fsx = realFsx) {
     if (cmd === 'cd' || cmd === 'pushd') {
       const before = shell;
       const target = tokens[1];
+      // `cd "$(git rev-parse --show-toplevel)"` usually lands where we already
+      // are, so keep checking the current cwd rather than forgetting it.
+      if (target && /\$\(|`/.test(target.text)) { lastStatus = 'unknown'; closeSubshells(); continue; }
       let afters = null, exists;
       if (cmd === 'cd' && !target) { afters = [os.homedir()]; exists = true; }
-      else if (!target || hasUnresolvable(target.text) || target.text === '-') { afters = null; exists = undefined; }
+      else if (!target || target.unresolvable || hasUnresolvable(target.text) || target.text === '-') { afters = null; exists = undefined; }
       else {
         const dirs = shell === null ? [null] : shell;
         afters = [...new Set(dirs.map(d => resolveTarget(target.text, d, target.quoted)).filter(Boolean))];
@@ -387,17 +648,42 @@ function analyzeCommand(command, cwd, fsx = realFsx) {
       continue;
     }
 
-    const dirs = shell === null ? [null] : shell;
+    let dirs = shell === null ? [null] : shell;
+    if (peeled.chdir) { // `env -C DIR` / `sudo -D DIR` run the command there
+      dirs = [...new Set(dirs.map(d => resolveTarget(peeled.chdir, d)).filter(Boolean))];
+      if (!dirs.length) dirs = [null];
+    }
     const check = (tok) => {
-      if (hasGlob(tok) || hasUnresolvable(tok.text)) return null;
+      if (tok.unresolvable || hasGlob(tok) || hasUnresolvable(tok.text)) return null;
       for (const d of dirs) {
         const resolved = resolveTarget(tok.text, d, tok.quoted);
         if (!resolved) continue;
-        const hit = findCollision(resolved, fsx);
+        const hit = findCollision(resolved, fsx, roots);
         if (hit) return hit;
       }
       return null;
     };
+
+    // xargs appends what the pipe feeds it, or substitutes it for -I's string.
+    // Only literal feeds are modeled: `echo WORDS`, and `find PATHS …`, whose
+    // output lies under PATHS, so deleting it is a delete under those paths.
+    if (peeled.xargs && src) {
+      const found = src.cmd === 'find' ? findArgs(src.args) : null;
+      if (found && DELETERS.test(cmd) && findPrintsPaths(found.expr)) {
+        for (const tok of found.paths) {
+          const hit = check(tok);
+          if (hit) return { level: 'critical', cmd: `find | xargs ${cmd}`, ...hit };
+        }
+      } else if (src.cmd === 'echo') {
+        const items = xargsItems(src.args, peeled.xargs);
+        const repl = peeled.xargs.repl;
+        tokens = repl
+          ? [tokens[0], ...tokens.slice(1).flatMap(t => t.text.includes(repl)
+            ? items.map(it => ({ text: t.text.split(repl).join(it.text), quoted: t.quoted || it.quoted }))
+            : [t])]
+          : [...tokens, ...items];
+      }
+    }
 
     const { flags, operands } = splitArgs(tokens.slice(1));
 
@@ -450,16 +736,12 @@ function analyzeCommand(command, cwd, fsx = realFsx) {
         }
       }
     } else if (cmd === 'find') {
-      // `find <paths…> <expression>`: paths are the operands before the first
-      // predicate (a token starting with '-'). Only destructive if the
-      // expression deletes.
-      const rest = tokens.slice(1);
-      const predicateIdx = rest.findIndex(t => t.text.startsWith('-'));
-      const paths = (predicateIdx === -1 ? rest : rest.slice(0, predicateIdx));
-      const expr = predicateIdx === -1 ? [] : rest.slice(predicateIdx);
-      const deletes = expr.some((t, i) =>
-        t.text === '-delete' ||
-        ((t.text === '-exec' || t.text === '-execdir') && /^(rm|unlink)$/.test(expr[i + 1]?.text || '')));
+      // Only destructive if the expression deletes: -delete, or -exec /
+      // -execdir / -ok / -okdir running rm, unlink or rmdir (any path to them)
+      // with {} among its arguments; without {} it never sees a matched path.
+      const { paths, expr } = findArgs(tokens.slice(1));
+      const deletes = expr.some(t => t.text === '-delete') ||
+        findExecs(expr).some(e => DELETERS.test(e.cmd) && e.args.some(a => a.text.includes('{}')));
       if (deletes) {
         for (const tok of paths) {
           const hit = check(tok);
@@ -532,5 +814,5 @@ if (require.main === module) {
     console.log(guardError(e));
   });
 } else {
-  module.exports = { SAFETY_LEVEL, LEVELS, ASK, stripHeredocs, splitSegments, tokenize, commandTokens, resolveTarget, findCollision, analyzeCommand, checkCommand, realFsx };
+  module.exports = { SAFETY_LEVEL, LEVELS, ASK, preprocess, splitSegments, tokenize, peelWrappers, resolveTarget, findCollision, analyzeCommand, checkCommand, realFsx };
 }

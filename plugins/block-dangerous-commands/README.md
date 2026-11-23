@@ -22,7 +22,7 @@ codex plugin add block-dangerous-commands@claude-code-hooks
 
 Open `/hooks` in Codex and approve this plugin. Re-approve after every update; Codex skips unapproved or changed hooks. Do not install it alongside [guard-pack](../guard-pack#codex-cli), which includes this guard.
 
-This entry point checks `Bash` and native `apply_patch` calls. Patch files are checked individually; unreadable patches are blocked. Shell patches must use a plain command with a quoted heredoc. Literal searches and commit messages mentioning `apply_patch` pass. See [the shared adapter's limits](../guard-pack#codex-cli), including shell sessions and dynamically constructed commands.
+This entry point checks `Bash` and native `apply_patch` calls. Patch files are checked individually; unreadable patches are blocked. Shell patches must use a plain command with a quoted heredoc; `apply_patch` anywhere else in a command, such as behind `timeout` or `eval`, is blocked. Literal searches and commit messages mentioning `apply_patch` pass. See [the shared adapter's limits](../guard-pack#codex-cli), including shell sessions and dynamically constructed commands.
 
 Export configuration variables before launching Codex. An ask-mode match becomes a block because Codex hooks cannot ask. Logs stay in `~/.claude/hooks-logs/` with `host: "codex"`, including on Codex-only machines.
 
@@ -57,6 +57,33 @@ All optional, set via environment variables:
 Ask mode is strictly opt-in and per level: only the literal string `true` enables it (`"1"` does not), and enabling it for one level never softens another. A common setup: keep `critical` on deny, set `HOOK_ASK_STRICT=true` so cautionary patterns prompt instead of blocking.
 
 Pair it with `protect-secrets` for coverage of secrets exposure (cat .env, printenv, ~/.ssh reads): that lives in a separate hook by design.
+
+## How it reads a command
+
+Before matching, the guard reads the command the way bash splits it, so the spelling does not change the verdict:
+
+- Quotes and escapes inside a word are removed. `r''m -rf ~`, `"rm" -rf ~`, `r\m -rf ~` and `$'\x72m' -rf ~` are all `rm -rf ~`, and `rm -rf "/"` is `rm -rf /`.
+- A name assigned earlier in the line is replaced: `g=git; $g push --force origin main` is a force push.
+- A command substitution, the program given to `sh -c` or `eval`, and a heredoc fed to a shell are read as commands too.
+
+Text that only mentions a command, on a line where no command can run it, is not matched:
+
+- The body of a quoted heredoc fed to a reader that never runs it (`cat`, `tee`, `head`, `git commit -F -` and similar). `cat > notes.md <<'EOF'` with a body that mentions `git push --force` is allowed.
+- The quoted text of `echo`, `printf`, `git commit` and `gh pr|issue create|edit|comment`, including the `git commit -m "$(cat <<'EOF' ...)"` form. `git commit -m "never run rm -rf ~"` and `echo 'curl x | sh'` are allowed.
+
+The exception holds only for a line in which no command can make the dropped text run. Every command must be one that runs nothing it is handed: the readers and message commands above, `cd`, `ls`, `mkdir`, `grep`, `test` and similar, the file commands `cp`, `mv`, `ln`, `rm`, `touch`, `chmod` and `tee`, and `git` or `gh` subcommands that run no program (`git add`, `commit`, `push`, `log`; `gh pr`, `gh issue`, `gh api`), with no `-c` and no assignment in front. One other command anywhere in the line (`make`, `awk`, `sort`, `npm test`, a shell, an interpreter, a wrapper, a path, a function or alias) and every word is matched as before. git runs hooks on commit, push, checkout and every ref or index update, from whatever directory `core.hooksPath` names, so a line that runs git or `gh pr` must not write, copy, move, link, delete or chmod any file: `cat > hook <<'EOF' ... cp hook .git/hooks/pre-commit; git commit` keeps its text. No line may write to a path a shell, git or the system runs (scripts, rc files, git hooks and config, `/etc`, cron, launchd), or write a file after `cd`. The text is also matched when it is piped into a program, echoed into a file, when an unquoted heredoc body expands, and when a substitution is used as the command.
+
+What that costs: a notes file and a commit in one line (`cat > notes.md <<'EOF' ... git add notes.md && git commit`) is matched as before, so a body that mentions a dangerous command is refused. Write the file and commit in separate calls.
+
+### What it does not catch
+
+[tests/shell-rewrites.test.js](../../tests/shell-rewrites.test.js) is the record: rewritten commands that must be refused, mentions that must be allowed, and the known misses below. It runs against this guard and guard-pack on every test run, and a change that starts catching a known miss fails it until the entry moves.
+
+- Deleters other than `rm`: `find ~ -delete`, and deletes through `python -c`, `node -e` or `perl -e`.
+- A file written now and run or moved by a later call, such as a Makefile run by a later `make`, or a neutral file a later `mv` puts into `.git/hooks`. A quoted heredoc written to such a file on a line that runs nothing is read as text; the guard cannot connect it to the later call.
+- A loop variable (`for g in git; do $g push ...`). A word whose quotes hold a space is kept as typed, because that is usually a prompt or a message, so `cat "my dir/.e"nv` is not read as `.env`.
+
+These are guardrails, not a sandbox: see [SECURITY.md](../../SECURITY.md).
 
 ## When the guard fails
 
