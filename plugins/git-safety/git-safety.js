@@ -62,8 +62,9 @@ const PATTERNS = [
   // STRICT - force-push is normally handled by block-dangerous-commands.js.
   // Only enforced here at 'strict' so git-safety is self-sufficient standalone.
   // -f may sit in a short-flag cluster (-fu, -uf), but not after -o, whose value is the rest of the word.
-  // A refspec with a leading + (origin +feature) force-updates that ref.
-  { level: 'strict', id: 'force-push',              segment: true, regex: new RegExp(GIT + 'push\\b[^;&|\\n]*\\s["\']?(?:(?:--force|-[A-Za-eg-np-z0-9]*f[A-Za-z0-9]*)["\']?(?=\\s|$|[;&|"\'])|\\+[^\\s;&|])'), reason: 'Force-pushing is not allowed' },
+  // A refspec with a leading + (origin +feature) force-updates that ref; the word after -o or
+  // --push-option is that option's value (-o +build), not a refspec.
+  { level: 'strict', id: 'force-push',              segment: true, regex: new RegExp(GIT + 'push\\b[^;&|\\n]*\\s["\']?(?:(?:--force|-[A-Za-eg-np-z0-9]*f[A-Za-z0-9]*)["\']?(?=\\s|$|[;&|"\'])|(?<!(?:^|\\s)(?:-[A-Za-z0-9]*o|--push-option)\\s+["\']?)\\+[^\\s;&|])'), reason: 'Force-pushing is not allowed' },
 
   // HIGH - complementary coverage the sibling hook does not provide
 

@@ -36,3 +36,17 @@ describe('force push through a + refspec (strict)', () => {
   it('high still delegates it to the sibling hook', () => shouldAllow('git push origin +feature', 'feature', 'high'));
   it('high still blocks +main through push-main', () => shouldBlock('git push origin +main', 'push-main', 'feature', 'high'));
 });
+
+describe('a push-option value is not a refspec (strict)', () => {
+  it('allows -o +build', () => shouldAllow('git push -o +build origin topic', 'feature', 'strict'));
+  it('allows the value after --push-option, quoted or in a short-flag cluster', () => {
+    for (const c of ['git push --push-option +build origin topic', "git push -o '+build' origin topic", 'git push -uo +build origin topic'])
+      shouldAllow(c, 'feature', 'strict');
+  });
+  it('still blocks a + refspec later in the same call', () => {
+    for (const c of ['git push -o +build origin +topic', 'git push -o ci.skip origin +topic', 'git push -ou origin +topic'])
+      shouldBlock(c, 'force-push', 'feature', 'strict');
+  });
+  it('still blocks a force flag given as the option value, as main does', () =>
+    shouldBlock('git push -o -f origin topic', 'force-push', 'feature', 'strict'));
+});
