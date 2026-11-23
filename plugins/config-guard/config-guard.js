@@ -123,22 +123,24 @@ const BASH_TOKENS = [
   { level: 'critical', id: 'settings-file',    regex: /\.claude\/settings(\.local)?\.json/i,          reason: 'Claude Code settings wire hooks and permissions' },
   { level: 'critical', id: 'managed-settings', regex: /managed-settings\.json/i,                      reason: 'managed policy settings' },
   { level: 'critical', id: 'hook-script',      regex: /\.claude\/hooks([/\s'"]|$)/i,                  reason: 'hook scripts are the guardrails themselves' },
-  { level: 'critical', id: 'hooks-manifest',   regex: /(^|[\s'"/=])hooks\.json/i,                     reason: 'hooks.json manifests register hooks' },
+  { level: 'critical', id: 'hooks-manifest',   regex: /(^|[\s'"/=>])hooks\.json/i,                     reason: 'hooks.json manifests register hooks' },
   { level: 'critical', id: 'spawn-cap-state',  regex: /\.claude\/subagent-spawn-cap(?=[/\s'";|&)`]|$)/i, reason: 'the spawn cap ledger is the session\'s subagent budget' },
   { level: 'high',     id: 'mcp-config',       regex: /\.mcp\.json/i,                                 reason: '.mcp.json adds MCP servers (new tools)' },
   // An expansion may leave the filename unchanged. Only a literal suffix rules it out.
   { level: 'high',     id: 'claude-json',      regex: /(^|[\s'"/=])\.claude\.json(?=$|[\s'";&|<>()`$\\*?{},\[]|[+@!]\()/i,                  reason: '~/.claude.json holds user and local MCP servers (new tools)' },
   { level: 'high',     id: 'plugin-manifest',  regex: /\.claude-plugin([/\s'"]|$)/i,                  reason: 'plugin manifests install hooks and skills' },
-  { level: 'strict',   id: 'claude-md',        regex: /(^|[\s'"/=])CLAUDE(\.local)?\.md/i,            reason: 'CLAUDE.md instructions steer the agent' },
+  { level: 'strict',   id: 'claude-md',        regex: /(^|[\s'"/=>])CLAUDE(\.local)?\.md/i,            reason: 'CLAUDE.md instructions steer the agent' },
   { level: 'strict',   id: 'rules-dir',        regex: /\.claude\/(rules|agents|commands)([/\s'"]|$)/i, reason: 'rules, agents, and commands steer the agent' },
 ];
 
 // Mutation forms in shell commands. Reads (cat, jq, grep, ls, diff, node) pass.
 // All case-insensitive: on the case-insensitive filesystems macOS and Windows
 // default to, `RM` and `SED` resolve to the same binaries.
-const DELETE_VERB    = /(\brm\b|\bunlink\b|\bshred\b|\btrash\b|\bgit\s+rm\b)/i;
-const MOVE_COPY_VERB = /\b(mv|cp|rsync|install|ln)\b/i;
-const WRITE_VERB     = /\b(tee|truncate|dd)\b/i;
+const DELETE_VERB    = /(\brm\b|\bunlink\b|\bshred\b|\btrash\b|\bgit\s+rm\b|\bfind\b[^|;&]*\s-delete\b)/i;
+const MOVE_COPY_VERB = /\b(mv|cp|rsync|install|ln|ditto)\b/i;
+// Tools that take the file to write as an argument: downloaders with an
+// output flag, sponge, patch, touch (creating counts) and archive extraction.
+const WRITE_VERB     = /\b(tee|truncate|dd|sponge|patch|touch)\b|\bcurl\b[^|;&]*\s(?:-[a-zA-Z]*o|--output(?:-dir)?)\b|\bwget\b[^|;&]*\s(?:-[a-zA-Z]*[OP]|--output-document|--directory-prefix)|\b(?:unzip|tar|bsdtar)\b[^|;&]*\s-[a-zA-Z]*[dxC]\b/i;
 const INPLACE_EDIT   = /\b(sed|gsed)\s+[^|;&]*-i\b|\bperl\s+[^|;&]*-\w*i\b|\bgawk\s+[^|;&]*-i\s*inplace\b/i;
 
 // CLI commands that rewrite agent config without naming a settings path.
@@ -165,7 +167,7 @@ BASH_TOKENS.push(
   { level: 'critical', id: 'codex-config', regex: new RegExp(`(?:^|[\\s'"/=])${codexPrefix}(?:/config\\.toml|/plugins(?:/[^\\s'";|&]*)?|/\\*?)?(?=[\\s'";|&]|$)`, 'i'), reason: 'Codex configuration and installed plugins control hook enforcement' },
   { level: 'critical', id: 'claude-plugins', regex: new RegExp(`\\.claude/plugins(?=[/\\s'";|&)\`]|$)|(?:^|[\\s'"=(\`])${claudePrefix}(?:/plugins(?:/[^\\s'";|&)\`]*)?|/\\*?)?(?=[\\s'";|&)\`]|$)`, 'i'), reason: 'installed plugins are the guardrails\' own code' },
   { level: 'high', id: 'codex-plugin-manifest', regex: /\.codex-plugin([/\s'"]|$)/i, reason: 'Codex plugin manifests register hooks' },
-  { level: 'strict', id: 'agents-md', regex: /(^|[\s'"/=])AGENTS(?:\.override)?\.md(?=[\s'";|&]|$)/i, reason: 'AGENTS.md instructions steer the agent' },
+  { level: 'strict', id: 'agents-md', regex: /(^|[\s'"/=>])AGENTS(?:\.override)?\.md(?=[\s'";|&]|$)/i, reason: 'AGENTS.md instructions steer the agent' },
 );
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
@@ -183,8 +185,9 @@ function log(data) {
 // True when the command redirects output into a protected token:
 // "> path", ">> path", "2> path", ">| path" (with optional quoting/prefix).
 function redirectsInto(cmd, tokenRegex) {
-  const re = new RegExp(`(^|[^<>])>{1,2}\\|?\\s*['"]?[^'"\\s;|&]*(${tokenRegex.source})`, 'i');
-  return re.test(cmd);
+  const re = new RegExp(`(^|[^<>])>{1,2}[|&]?\\s*['"]?[^'"\\s;|&]*(${tokenRegex.source})`, 'i');
+  // A target glued to the operator (>hooks.json) reads like one after a space.
+  return re.test(cmd.replace(/(>[|&]?)(?=[^\s>|&])/g, '$1 '));
 }
 
 // The typed path plus its symlink-resolved form: a write through
@@ -386,7 +389,8 @@ function stripTextHeredocs(cmd) {
 function checkBashCommand(rawCmd = '', safetyLevel = SAFETY_LEVEL, cwd = process.cwd()) {
   if (typeof rawCmd !== 'string') throw new TypeError('Bash command must be a string');
   if (!rawCmd) return { blocked: false };
-  const cmd = stripTextHeredocs(rawCmd);
+  // Quotes around part of a word do not change the path: .claude/"settings.json".
+  const cmd = stripTextHeredocs(rawCmd).replace(/(?<=[\w./~-])(["'])([^"'\s]*)\1|(["'])([^"'\s]*)\3(?=[\w./-])/g, '$2$4');
   const threshold = LEVELS[safetyLevel] || 2;
 
   if (LEVELS.high <= threshold && CLAUDE_CLI_WRITE.test(cmd)) {
