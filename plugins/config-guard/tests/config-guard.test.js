@@ -609,6 +609,90 @@ describe('Integration: self-protection through the hook process', () => {
   });
 });
 
+// Inputs that once switched a guard off: each was allowed before this guard
+// protected the plugin cache, the CLI aliases and registered hook scripts.
+describe('Regression: guard self-protection inputs', () => {
+  it('denies writes and deletes in the installed plugin cache and plugin lists', () => {
+    for (const file of [
+      '/Users/dev/.claude/plugins/cache/claude-code-hooks/config-guard/1.0.0/config-guard.js',
+      '/Users/dev/.claude/plugins/cache/claude-code-hooks/guard-pack/1.4.0/lib/dispatch.js',
+      '/Users/dev/.claude/plugins/installed_plugins.json',
+      '/Users/dev/.claude/plugins/known_marketplaces.json',
+    ]) fileBlocked(file, 'claude-plugins');
+    bashBlocked('echo \'process.stdout.write("{}")\' > ~/.claude/plugins/cache/claude-code-hooks/guard-pack/1.4.0/guard-pack.js', 'claude-plugins');
+    bashBlocked('rm -rf ~/.claude/plugins/cache/claude-code-hooks', 'claude-plugins');
+  });
+
+  it('denies a Write to ~/.claude.json that adds an MCP server', () => {
+    fileBlocked('/Users/alice/.claude.json', 'claude-json');
+  });
+
+  it('denies the uninstall, install and prune aliases of the plugin CLI', () => {
+    for (const cmd of [
+      'claude plugin remove config-guard@claude-code-hooks',
+      'claude plugin rm guard-pack@claude-code-hooks',
+      'claude plugins uninstall config-guard@claude-code-hooks',
+      'claude plugin i some-plugin@some-market',
+      'claude plugins install some-plugin@some-market',
+      'claude plugin prune',
+      'claude plugins autoremove',
+    ]) bashBlocked(cmd, 'claude-cli-config');
+  });
+
+  it('denies config CLI writes behind global options', () => {
+    bashBlocked('claude --debug plugin uninstall config-guard@claude-code-hooks', 'claude-cli-config');
+    bashBlocked('claude -d mcp add x -- npx some-server', 'claude-cli-config');
+    bashBlocked('claude --model opus --settings "/tmp/a b.json" plugin rm x@y', 'claude-cli-config');
+  });
+
+  it('still allows the read-only plugin and mcp commands', () => {
+    for (const cmd of ['claude plugin list', 'claude plugins list', 'claude plugin details x', 'claude plugin marketplace list', 'claude --debug mcp list', 'claude --version']) bashAllowed(cmd);
+  });
+
+  it('answers a long option run without backtracking', () => {
+    const start = Date.now();
+    bashAllowed(`claude ${'-a b '.repeat(2000)}x`);
+    assert.ok(Date.now() - start < 1000);
+  });
+});
+
+describe('Regression: hook scripts registered outside .claude/hooks', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'config-guard-registered-'));
+  const project = path.join(home, 'proj');
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+  fs.mkdirSync(path.join(project, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [
+    { type: 'command', command: 'node /Users/dev/hooks/block-dangerous-commands.js' },
+    { type: 'command', command: 'bash ~/guards/gate.sh --strict' },
+  ] }] } }));
+  fs.writeFileSync(path.join(project, '.claude', 'settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ hooks: [
+    { type: 'command', command: 'python3 "$CLAUDE_PROJECT_DIR/hooks/tier_gate.py"' },
+  ] }] } }));
+  const at = (toolName, toolInput) => ({ ...toolPayload(toolName, toolInput), cwd: project });
+  const denied = async (payload) => {
+    const { output } = await runHook(payload, { HOME: home, CLAUDE_PROJECT_DIR: project });
+    assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny', JSON.stringify(payload.tool_input));
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /\[hook-script\]/);
+  };
+  const passed = async (payload) => {
+    const { output } = await runHook(payload, { HOME: home, CLAUDE_PROJECT_DIR: project });
+    assert.deepStrictEqual(output, {}, JSON.stringify(payload.tool_input));
+  };
+
+  it('denies a Write to a script the user settings register as a hook', () => denied(at('Write', { file_path: '/Users/dev/hooks/block-dangerous-commands.js', content: 'x' })));
+  it('denies an Edit of a project hook named through $CLAUDE_PROJECT_DIR', () => denied(at('Edit', { file_path: 'hooks/tier_gate.py', old_string: 'deny', new_string: 'allow' })));
+  it('denies a shell redirect and a delete of registered scripts', async () => {
+    await denied(at('Bash', { command: 'echo exit 0 > ~/guards/gate.sh' }));
+    await denied(at('Bash', { command: 'rm /Users/dev/hooks/block-dangerous-commands.js' }));
+  });
+  it('passes reads and files the settings do not register', async () => {
+    await passed(at('Read', { file_path: '/Users/dev/hooks/block-dangerous-commands.js' }));
+    await passed(at('Bash', { command: 'cat /Users/dev/hooks/block-dangerous-commands.js' }));
+    await passed(at('Write', { file_path: '/Users/dev/hooks/notes.md', content: 'x' }));
+    await passed(at('Write', { file_path: 'hooks/helper.py', content: 'x' }));
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Config validation
 // ─────────────────────────────────────────────────────────────────────────────

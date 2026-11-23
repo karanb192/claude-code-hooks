@@ -21,13 +21,15 @@
  * so edit env, not this file; invalid values fall back to the default)
  *   critical - the enforcement chain: .claude/settings.json,
  *              .claude/settings.local.json, managed-settings.json,
- *              anything under .claude/hooks/, hooks.json manifests,
+ *              anything under .claude/hooks/, scripts that settings
+ *              register as hook commands, hooks.json manifests,
  *              installed plugins under ~/.claude/plugins/ (or
  *              $CLAUDE_CONFIG_DIR/plugins/), the Claude config dir itself,
  *              and the spawn cap's ledger under ~/.claude/subagent-spawn-cap/
  *   high     - + config supply chain: .mcp.json, ~/.claude.json, .claude-plugin/,
  *              `claude config set|add|remove`, `claude mcp add|remove`, and
- *              `claude plugin install|uninstall|enable|disable|marketplace`
+ *              `claude plugin install|uninstall|enable|disable|marketplace`,
+ *              their aliases, and global options before the subcommand
  *   strict   - + instruction files: CLAUDE.md, CLAUDE.local.md,
  *              .claude/rules/, .claude/agents/, .claude/commands/
  *
@@ -142,8 +144,12 @@ const INPLACE_EDIT   = /\b(sed|gsed)\s+[^|;&]*-i\b|\bperl\s+[^|;&]*-\w*i\b|\bgaw
 // CLI commands that rewrite agent config without naming a settings path.
 // `claude plugin install` registers arbitrary hooks and skills, so it is a
 // config write in everything but name; list/get/read forms stay allowed.
-const CLAUDE_CLI_WRITE = /\bclaude\s+(config\s+(set|add|remove|rm)|mcp\s+(add|add-json|add-from-claude-desktop|remove|rm)|plugin\s+(install|uninstall|enable|disable|update|marketplace\s+(add|remove|rm|update)))\b/i;
+// The CLI also takes `plugins` for `plugin`, `i` for install, `remove` and
+// `rm` for uninstall, `autoremove` for prune, and global options such as
+// --debug before the subcommand.
 const CLI_VALUE = '(?:"[^"\\n]*"|\'[^\'\\n]*\'|[^\\s"\';|&]+)';
+const CLAUDE_OPTION = `-[\\w-]+(?:=${CLI_VALUE})?(?:\\s+(?!-|(?:plugins?|mcp|config)\\b)${CLI_VALUE})?`;
+const CLAUDE_CLI_WRITE = new RegExp(`\\bclaude(?:\\s+${CLAUDE_OPTION})*\\s+(?:config\\s+(?:set|add|remove|rm)|mcp\\s+(?:add|add-json|add-from-claude-desktop|remove|rm)|plugins?\\s+(?:install|i|uninstall|remove|rm|enable|disable|update|prune|autoremove|marketplace\\s+(?:add|remove|rm|update)))\\b`, 'i');
 const CODEX_OPTION = `(?:--(?:profile|cd|model|config|sandbox|ask-for-approval|enable|disable|add-dir|image|local-provider|remote|remote-auth-token-env)(?:=|\\s+)${CLI_VALUE}|-[pCmcsai]\\s*${CLI_VALUE}|--(?:search|no-alt-screen|oss|strict-config|approve-for-me|dangerously-bypass-approvals-and-sandbox|dangerously-bypass-hook-trust|yolo|worktree|no-daemon|full-auto))`;
 const CODEX_CLI_WRITE = new RegExp(`\\bcodex(?:\\s+${CODEX_OPTION})*\\s+(?:plugin\\s+(?:add|remove|marketplace\\s+(?:add|remove|upgrade))|mcp\\s+(?:add|remove)|features\\s+(?:enable|disable))\\b`, 'i');
 
@@ -203,6 +209,72 @@ function resolveCandidates(filePath) {
   return [...new Set(candidates)];
 }
 
+// A classic install can keep a hook script anywhere, so the scripts that the
+// user, project and managed settings register as hook commands are protected
+// wherever they live. Words with an expansion other than ~, $HOME or
+// $CLAUDE_PROJECT_DIR are skipped: their target cannot be known here.
+const REGISTERED_HOOK = { level: 'critical', id: 'hook-script', reason: 'a script registered as a hook is a guardrail itself' };
+
+function settingsFiles(project) {
+  const files = [path.join(CLAUDE_HOME, 'settings.json'), path.join(CLAUDE_HOME, 'settings.local.json'),
+    path.join(project, '.claude', 'settings.json'), path.join(project, '.claude', 'settings.local.json')];
+  if (process.platform === 'darwin') files.push('/Library/Application Support/ClaudeCode/managed-settings.json');
+  else if (process.platform === 'win32') files.push('C:\\Program Files\\ClaudeCode\\managed-settings.json');
+  else files.push('/etc/claude-code/managed-settings.json');
+  return files;
+}
+
+// One hook call is one process, so the settings are read once per project.
+const hookScriptCache = new Map();
+
+function registeredHookScripts(cwd = process.cwd()) {
+  const project = path.resolve(process.env.CLAUDE_PROJECT_DIR || cwd || process.cwd());
+  if (hookScriptCache.has(project)) return hookScriptCache.get(project);
+  const scripts = new Set();
+  for (const file of settingsFiles(project)) {
+    let settings;
+    try { settings = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { continue; }
+    const events = settings && typeof settings.hooks === 'object' && settings.hooks ? Object.values(settings.hooks) : [];
+    for (const groups of events) {
+      for (const group of Array.isArray(groups) ? groups : []) {
+        for (const hook of Array.isArray(group && group.hooks) ? group.hooks : []) {
+          if (typeof (hook && hook.command) !== 'string') continue;
+          for (const word of hook.command.match(/"[^"]*"|'[^']*'|[^\s"';|&<>()]+/g) || []) {
+            const expanded = word.replace(/^(["'])(.*)\1$/s, '$2')
+              .replace(/^~(?=[\\/])/, HOME_DIR)
+              .replace(/\$(?:HOME|\{HOME\})(?=[\\/])/g, HOME_DIR)
+              .replace(/\$(?:CLAUDE_PROJECT_DIR|\{CLAUDE_PROJECT_DIR\})(?=[\\/])/g, project);
+            if (!/[\\/]/.test(expanded) || /[$`*?]/.test(expanded)) continue;
+            for (const p of resolveCandidates(path.resolve(project, expanded))) scripts.add(p.replace(/\\/g, '/'));
+          }
+        }
+      }
+    }
+  }
+  hookScriptCache.set(project, [...scripts]);
+  return hookScriptCache.get(project);
+}
+
+const hookTokenCache = new Map();
+
+// Shell spellings of the registered scripts: the absolute path, plus ~ and
+// $HOME forms for scripts under the home directory.
+function registeredHookTokens(cwd) {
+  const scripts = registeredHookScripts(cwd);
+  if (hookTokenCache.has(scripts)) return hookTokenCache.get(scripts);
+  const home = HOME_DIR.replace(/\\/g, '/');
+  const tokens = scripts.map((script) => {
+    const spellings = [escapeRegex(script)];
+    if (script.startsWith(`${home}/`)) {
+      const rest = escapeRegex(script.slice(home.length));
+      spellings.push(`~${rest}`, `\\$HOME${rest}`, `\\$\\{HOME\\}${rest}`);
+    }
+    return { ...REGISTERED_HOOK, regex: new RegExp(`(?:^|[\\s'"=(\`])(?:${spellings.join('|')})(?=[\\s'";|&)\`]|$)`) };
+  });
+  hookTokenCache.set(scripts, tokens);
+  return tokens;
+}
+
 // Check for Edit/MultiEdit/Write file paths - unit-testable (touches the
 // filesystem only to resolve symlinks; unresolvable paths check as typed).
 function checkFilePath(filePath, safetyLevel = SAFETY_LEVEL, cwd = process.cwd()) {
@@ -210,6 +282,7 @@ function checkFilePath(filePath, safetyLevel = SAFETY_LEVEL, cwd = process.cwd()
   const threshold = LEVELS[safetyLevel] || 2;
   const homes = resolveCandidates(CODEX_HOME).map((p) => p.replace(/\\/g, '/'));
   const claudeHomes = resolveCandidates(CLAUDE_HOME).map((p) => p.replace(/\\/g, '/'));
+  const hookScripts = registeredHookScripts(cwd);
   for (const raw of resolveCandidates(path.resolve(cwd, filePath))) {
     const candidate = raw.replace(/\\/g, '/');
     if (homes.some((home) => candidate === home || candidate === `${home}/config.toml` || candidate === `${home}/plugins` || candidate.startsWith(`${home}/plugins/`))) {
@@ -217,6 +290,10 @@ function checkFilePath(filePath, safetyLevel = SAFETY_LEVEL, cwd = process.cwd()
     }
     if (claudeHomes.some((home) => candidate === `${home}/plugins` || candidate.startsWith(`${home}/plugins/`))) {
       return { blocked: true, id: 'claude-plugins', level: 'critical', reason: 'installed plugins are the guardrails\' own code' };
+    }
+    if (hookScripts.includes(candidate)) {
+      const { level, id, reason } = REGISTERED_HOOK;
+      return { blocked: true, id, level, reason };
     }
     for (const p of PROTECTED_PATHS) {
       if (LEVELS[p.level] <= threshold && p.regex.test(candidate)) {
@@ -259,7 +336,7 @@ function stripTextHeredocs(cmd) {
 }
 
 // Pure check for Bash commands - unit-testable.
-function checkBashCommand(rawCmd = '', safetyLevel = SAFETY_LEVEL) {
+function checkBashCommand(rawCmd = '', safetyLevel = SAFETY_LEVEL, cwd = process.cwd()) {
   if (typeof rawCmd !== 'string') throw new TypeError('Bash command must be a string');
   if (!rawCmd) return { blocked: false };
   const cmd = stripTextHeredocs(rawCmd);
@@ -272,7 +349,7 @@ function checkBashCommand(rawCmd = '', safetyLevel = SAFETY_LEVEL) {
     return { blocked: true, id: 'codex-cli-config', level: 'high', reason: 'Codex CLI write changes plugin or agent configuration' };
   }
 
-  for (const t of BASH_TOKENS) {
+  for (const t of [...BASH_TOKENS, ...registeredHookTokens(cwd)]) {
     if (LEVELS[t.level] > threshold || !t.regex.test(cmd)) continue;
     if (redirectsInto(cmd, t.regex))
       return { blocked: true, id: t.id, level: t.level, reason: `shell redirect into protected config: ${t.reason}` };
@@ -295,7 +372,7 @@ function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL, cwd = p
     return checkFilePath(toolInput.file_path || '', safetyLevel, cwd);
   }
   if (toolName === 'Bash') {
-    return checkBashCommand(toolInput.command, safetyLevel);
+    return checkBashCommand(toolInput.command, safetyLevel, cwd);
   }
   return { blocked: false };
 }
@@ -354,6 +431,6 @@ if (require.main === module) {
 } else {
   module.exports = {
     PROTECTED_PATHS, BASH_TOKENS, LEVELS, SAFETY_LEVEL, ASK,
-    checkTool, checkFilePath, checkBashCommand, stripTextHeredocs,
+    checkTool, checkFilePath, checkBashCommand, stripTextHeredocs, registeredHookScripts,
   };
 }
