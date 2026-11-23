@@ -265,39 +265,48 @@ function shellCommands(cmd) {
 // A cd or pushd earlier in the command moves where later operands land:
 // after `cd tests`, `rm -r unit` deletes tests. Each top-level command is
 // paired with the directory it runs in; a ( ) group keeps its cd inside.
-const CD = /^\s*(?:cd|pushd)\s+(?:--\s+)?("[^"]*"|'[^']*'|[^\s;&|()]+)\s*$/;
+const CD = /^\s*(cd|pushd)\s+(?:--\s+)?("[^"]*"|'[^']*'|[^\s;&|()]+)\s*$/;
+const POPD = /^\s*popd\s*$/;
 
 function commandsWithDir(cmd, cwd) {
   const out = [];
-  const walk = (text, dir, moved) => {
+  const base = path.resolve(cwd || process.cwd());
+  const walk = (text, dir, stack) => {
     for (const part of shellCommands(text)) {
       const group = part.match(/^\s*\(([\s\S]*)\)\s*$/);
-      if (group) { walk(group[1], dir, moved); continue; }
+      if (group) { walk(group[1], dir, [...stack]); continue; }
+      if (POPD.test(part)) { dir = stack.length ? stack.pop() : dir; continue; }
       const cd = part.match(CD);
       if (cd) {
-        const arg = cd[1].replace(/^(["'])(.*)\1$/, '$2');
-        if (/[$`~*?]/.test(arg)) { moved = false; continue; }
-        dir = path.resolve(dir, arg);
-        moved = true;
+        const arg = cd[2].replace(/^(["'])(.*)\1$/, '$2');
+        if (cd[1] === 'pushd') stack.push(dir);
+        dir = /[$`~*?]/.test(arg) ? base : path.resolve(dir, arg);
         continue;
       }
-      out.push({ part, dir, moved });
+      out.push({ part, dir, moved: dir !== base });
     }
   };
-  walk(cmd, path.resolve(cwd || process.cwd()), false);
+  walk(cmd, base, []);
   return out;
 }
 
-const inTestDir = (dir) => TEST_PATH.test(dir.replace(/\\/g, '/') + '/x');
+// Words of a command after its name, resolved against the directory it runs
+// in: the paths it can act on. Scripts are usually quoted, so an in-place
+// editor's operands are its unquoted words.
+function operandPaths(part, dir, unquotedOnly = false) {
+  return [...part.matchAll(/(?:^|\s)(?:"([^"]*)"|'([^']*)'|([^\s"';&|<>()]+))/g)].slice(1)
+    .map(([, dq, sq, bare]) => unquotedOnly ? bare : dq ?? sq ?? bare)
+    .filter(w => w && !w.startsWith('-'))
+    .map(w => ({ word: w, abs: path.resolve(dir, w).replace(/\\/g, '/') }));
+}
+
 // Build and cache output that lives next to tests and is safe to clear.
 const GENERATED = /(?:^|\/)(?:__pycache__|\.pytest_cache|node_modules|coverage|\.cache|tmp|temp|dist|build|out)(?:\/|$)|\.(?:pyc|pyo|log|tmp)$/;
 
 function deletesInTestDir(cmd, cwd) {
   return commandsWithDir(cmd, cwd).some(({ part, dir, moved }) => {
-    if (!moved || !inTestDir(dir) || !DELETE_VERB.test(part)) return false;
-    const m = part.match(/(?:\b(?:rm|unlink|shred|trash)|\bgit\s+rm)\s+(.*)$/);
-    const operands = m ? m[1].split(/\s+/).filter(w => w && !w.startsWith('-')).map(w => w.replace(/^(["'])(.*)\1$/, '$2')) : [];
-    return operands.length === 0 || operands.some(w => !GENERATED.test(w));
+    if (!moved || !DELETE_VERB.test(part)) return false;
+    return operandPaths(part, dir).some(({ word, abs }) => TEST_PATH.test(abs) && !GENERATED.test(word));
   });
 }
 
@@ -377,7 +386,8 @@ function shellAddsMarker(cmd, cwd) {
     // $PWD is the directory the command runs in, after any cd.
     const part = raw.replace(/\$\{?PWD\}?(?=\/)/g, () => dir.replace(/\\/g, '/'));
     cwd = dir;
-    if (IN_PLACE.test(part) && (TEST_TOKEN.test(part) || TEST_NAME_GLOB.test(part) || (moved && inTestDir(dir)))) {
+    if (IN_PLACE.test(part) && (TEST_TOKEN.test(part) || TEST_NAME_GLOB.test(part) ||
+        (moved && operandPaths(part, dir, true).some(({ abs }) => TEST_PATH.test(abs))))) {
       for (const [, , pat, rep] of part.matchAll(SUBST)) {
         if (substAddsMarker(unesc(pat), unesc(rep))) return true;
       }

@@ -43,6 +43,15 @@ describe('Regression: a cd earlier in the command', () => {
     assert.strictEqual(run(`printf "it.skip('adds', () => {})\\n" > "$PWD/tests/a.test.js"`).id, 'skip-test');
   });
 
+  it('judges each operand by where it resolves, and follows popd', () => {
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'app.js'), "it('x', () => {});\n");
+    for (const command of ['cd tests && rm ../report.txt', 'pushd tests && popd && rm x.py', "cd tests && sed -i 's/it(/it.skip(/' ../src/app.js"]) {
+      assert.strictEqual(run(command).blocked, false, command);
+    }
+    assert.strictEqual(run('cd tests && git rm -r unit').id, 'delete-test');
+  });
+
   it('still allows cleanup, test runs and commands after leaving the folder', () => {
     for (const command of ['cd tests && rm -rf __pycache__', 'cd tests && rm -f *.pyc .pytest_cache', 'cd tests && pytest -q', 'cd src && rm old.js',
       'cd tests; cd ..; rm foo.txt', '(cd tests && npm test) && rm -rf build', 'cd tests && echo hi > notes.txt', 'cd tests && sed -i s/foo/bar/ a.js']) {
