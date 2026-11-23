@@ -262,6 +262,45 @@ function shellCommands(cmd) {
   return parts;
 }
 
+// A cd or pushd earlier in the command moves where later operands land:
+// after `cd tests`, `rm -r unit` deletes tests. Each top-level command is
+// paired with the directory it runs in; a ( ) group keeps its cd inside.
+const CD = /^\s*(?:cd|pushd)\s+(?:--\s+)?("[^"]*"|'[^']*'|[^\s;&|()]+)\s*$/;
+
+function commandsWithDir(cmd, cwd) {
+  const out = [];
+  const walk = (text, dir, moved) => {
+    for (const part of shellCommands(text)) {
+      const group = part.match(/^\s*\(([\s\S]*)\)\s*$/);
+      if (group) { walk(group[1], dir, moved); continue; }
+      const cd = part.match(CD);
+      if (cd) {
+        const arg = cd[1].replace(/^(["'])(.*)\1$/, '$2');
+        if (/[$`~*?]/.test(arg)) { moved = false; continue; }
+        dir = path.resolve(dir, arg);
+        moved = true;
+        continue;
+      }
+      out.push({ part, dir, moved });
+    }
+  };
+  walk(cmd, path.resolve(cwd || process.cwd()), false);
+  return out;
+}
+
+const inTestDir = (dir) => TEST_PATH.test(dir.replace(/\\/g, '/') + '/x');
+// Build and cache output that lives next to tests and is safe to clear.
+const GENERATED = /(?:^|\/)(?:__pycache__|\.pytest_cache|node_modules|coverage|\.cache|tmp|temp|dist|build|out)(?:\/|$)|\.(?:pyc|pyo|log|tmp)$/;
+
+function deletesInTestDir(cmd, cwd) {
+  return commandsWithDir(cmd, cwd).some(({ part, dir, moved }) => {
+    if (!moved || !inTestDir(dir) || !DELETE_VERB.test(part)) return false;
+    const m = part.match(/(?:\b(?:rm|unlink|shred|trash)|\bgit\s+rm)\s+(.*)$/);
+    const operands = m ? m[1].split(/\s+/).filter(w => w && !w.startsWith('-')).map(w => w.replace(/^(["'])(.*)\1$/, '$2')) : [];
+    return operands.length === 0 || operands.some(w => !GENERATED.test(w));
+  });
+}
+
 // Infer only small literal sed/perl substitutions or grep filters. Unsupported
 // syntax uses the command-text heuristic; no submitted command is executed.
 function simpleRedirectOutput(cmd, cwd) {
@@ -334,8 +373,11 @@ function simpleRedirectOutput(cmd, cwd) {
 
 function shellAddsMarker(cmd, cwd) {
   const unesc = (s) => s.replace(/\\(.)/g, '$1');
-  for (const part of shellCommands(cmd)) {
-    if (IN_PLACE.test(part) && (TEST_TOKEN.test(part) || TEST_NAME_GLOB.test(part))) {
+  for (const { part: raw, dir, moved } of commandsWithDir(cmd, cwd)) {
+    // $PWD is the directory the command runs in, after any cd.
+    const part = raw.replace(/\$\{?PWD\}?(?=\/)/g, () => dir.replace(/\\/g, '/'));
+    cwd = dir;
+    if (IN_PLACE.test(part) && (TEST_TOKEN.test(part) || TEST_NAME_GLOB.test(part) || (moved && inTestDir(dir)))) {
       for (const [, , pat, rep] of part.matchAll(SUBST)) {
         if (substAddsMarker(unesc(pat), unesc(rep))) return true;
       }
@@ -343,7 +385,7 @@ function shellAddsMarker(cmd, cwd) {
     const output = simpleRedirectOutput(part, cwd);
     for (const [, op, dq, sq, bare] of part.matchAll(REDIRECT)) {
       const target = dq ?? sq ?? unesc(bare);
-      if (!TEST_PATH.test(target)) continue;
+      if (!TEST_PATH.test(target) && !TEST_PATH.test(path.resolve(dir, target).replace(/\\/g, '/'))) continue;
       const existing = op.startsWith('>>') || op.includes('-a') ? '' : readExisting(target, cwd);
       if (existing !== null && addedMarker(existing, output ?? unesc(part))) return true;
     }
@@ -362,7 +404,7 @@ function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL, cwd = u
 
   if (toolName === 'Bash') {
     const cmd = toolInput.command || '';
-    if (dropsTestSuite(cmd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
+    if (dropsTestSuite(cmd) || deletesInTestDir(cmd, cwd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
     if (TEST_TOKEN.test(cmd)) {
       if (DELETE_VERB.test(cmd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
       if (RENAME_VERB.test(cmd) && DISABLED_DEST.test(cmd))
