@@ -127,8 +127,73 @@ function dropsTestSuite(cmd) {
     (RENAME_VERB.test(seg) && testNameGlob(seg) && DISCARD_DEST.test(seg.replace(MV_TAIL, ''))));
 }
 
-// Markers that turn an existing test off in place. Dots may be split by
-// whitespace or a newline, as formatters and chained calls write them.
+// mv and git mv read as words: -t names the target first, a brace list
+// such as a.test.js{,.bak} expands, and the call ends at ; | & ) or a
+// newline whatever follows the name. Only a command in command position
+// counts (after a separator, a group opener or a wrapper), so a mention
+// such as `echo mv a b` is text.
+const MOVE = /(?:^|[;&|(\n{])\s*(?:(?:sudo|doas|env|command|nohup|nice|time|exec)\s+(?:-\S+\s+)*)*(git\s+mv|mv)\s+([^;&|\n)]*)/g;
+const TEST_NAME = /(?:^|\/)(?:test_[^/]+\.py|[^/]+_test\.\w+|[^/]+\.(?:test|spec)\.\w+|[^/]+_spec\.rb)$|(?:^|\/)(?:[^/]*Tests?|Test[^/]*)\.(?:java|kt|cs)$/;
+const TEST_DIR_NAME = /(?:^|\/)(?:tests?|__tests__|specs?)$/i;
+const DISABLED_NAME = /(?:\.(?:bak|backup|old|orig|disabled|off|skip|skipped|ignore|ignored|tmp)|~)$/i;
+const TEMP_DEST = /^(?:\/tmp|\/var\/tmp|\/private\/(?:var\/)?tmp|\/(?:private\/)?var\/folders|\/dev\/null|\$\{?TMPDIR(?::-[^}]*)?\}?|(?:~|\$\{?HOME\}?)\/\.Trash)(?:\/|$)|^\$MKTEMP\b/;
+
+function moveWords(args) {
+  const words = [];
+  for (const [, dq, sq, bare] of args.matchAll(/"([^"]*)"|'([^']*)'|((?:\\.|[^\s"'\\])+)/g)) {
+    const word = dq ?? sq ?? bare.replace(/\\(.)/g, '$1');
+    const brace = bare && word.match(/^(.*)\{([^{}]*,[^{}]*)\}(.*)$/);
+    if (brace) for (const alt of brace[2].split(',')) words.push(brace[1] + alt + brace[3]);
+    else words.push(word);
+  }
+  return words;
+}
+
+const isDirectory = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
+
+// A test moved to a temp or trash folder is a delete; one renamed to a
+// disabled suffix, or from a test name to a name no runner collects, or a
+// test folder renamed to a non-test name, is a rename-away.
+// Returns the most severe verdict across every mv in the command, so a
+// rename found first cannot hide a later move to a temp folder.
+function moveVerdict(cmd, cwd) {
+  let verdict = null;
+  const text = cmd.replace(/\\\r?\n/g, '').replace(/\$\(\s*mktemp\b[^)]*\)|`\s*mktemp\b[^`]*`/g, '$MKTEMP');
+  for (const [, verb, args] of text.matchAll(MOVE)) {
+    const words = moveWords(args.replace(MV_TAIL, ''));
+    // git mv -n is a dry run; plain mv -n only refuses to overwrite.
+    const end = words.indexOf('--');
+    const options = end < 0 ? words : words.slice(0, end);
+    if (verb !== 'mv' && options.some(w => w === '--dry-run' || /^-[a-zA-Z]*n[a-zA-Z]*$/.test(w))) continue;
+    const operands = [];
+    let target = null;
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i];
+      if (w === '--') { operands.push(...words.slice(i + 1)); break; }
+      if (w.startsWith('--target-directory=')) target = w.slice(19);
+      else if (w === '--target-directory' || /^-[a-zA-Z]*t$/.test(w)) target = words[++i];
+      else if (!w.startsWith('-') || w === '-') operands.push(w);
+    }
+    const flagged = target !== null;
+    if (!flagged) target = operands.pop();
+    if (!target || !operands.length) continue;
+    const intoDir = flagged || operands.length > 1 || /\/$/.test(target) || isDirectory(path.resolve(cwd || process.cwd(), target));
+    for (const raw of operands) {
+      const src = raw.replace(/\/+$/, '');
+      const file = TEST_NAME.test(src);
+      const folder = TEST_DIR_NAME.test(src);
+      if (!file && !folder && !TEST_PATH.test(src)) continue;
+      if (TEMP_DEST.test(target)) return 'delete-test';
+      const final = intoDir ? `${target.replace(/\/+$/, '')}/${path.basename(src)}` : target;
+      if (DISABLED_NAME.test(final) ||
+          (file && !TEST_NAME.test(final) && !/(?:^|\/)__tests__\//.test(final)) ||
+          (folder && !TEST_DIR_NAME.test(final.replace(/\/+$/, '')))) verdict = 'rename-test';
+    }
+  }
+  return verdict;
+}
+
+// Markers that turn an existing test off in place.
 const SKIP_MARKERS = [
   /\bpytest\s*\.\s*mark\s*\.\s*(?:skip|skipif|xfail)(?!\w)/, // pytest decorator or pytestmark
   /@mark\s*\.\s*(?:skip|skipif|xfail)(?!\w)/,                 // from pytest import mark
@@ -614,6 +679,10 @@ function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL, cwd = u
   if (toolName === 'Bash') {
     const cmd = toolInput.command || '';
     if (dropsTestSuite(cmd) || deletesInTestDir(cmd, cwd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
+    const moved = moveVerdict(cmd, cwd);
+    if (moved === 'delete-test') return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
+    // At the critical level a rename is allowed, but the delete checks below must still run.
+    if (moved === 'rename-test' && LEVELS.high <= threshold) return deny('high', 'rename-test', 'renaming a test file to a disabled name');
     if (pairedWith(cmd, c => DELETE_VERB.test(c))) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
     if (pairedWith(cmd, c => RENAME_VERB.test(c) && DISABLED_DEST.test(c)))
       return deny('high', 'rename-test', 'renaming a test file to a disabled name');

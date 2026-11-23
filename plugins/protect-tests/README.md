@@ -30,8 +30,8 @@ Export configuration variables before launching Codex. An ask-mode match becomes
 
 | Tool | Blocked when | Level | Deny id |
 |------|--------------|-------|---------|
-| `Bash` | `rm` / `unlink` / `shred` / `trash` / `git rm` targets a test file or test directory (`tests/` or a bare `tests`), `find` deletes test files (`-delete`, `-exec rm`), or `mv` moves tests into `/tmp`, `$TMPDIR`, `~/.Trash` or `/dev/null` | `critical` | `delete-test` |
-| `Bash` | `mv` renames a test file to a disabled name (`.bak`, `.old`, `.orig`, `.disabled`, `.skip`, `.ignore`, `.tmp`, `~`) | `high` | `rename-test` |
+| `Bash` | `rm` / `unlink` / `shred` / `trash` / `git rm` targets a test file or test directory (`tests/` or a bare `tests`), `find` deletes test files (`-delete`, `-exec rm`), or `mv` / `git mv` moves tests into `/tmp`, `/var/tmp`, `/private/var/tmp`, `$TMPDIR`, `$(mktemp -d)`, `~/.Trash` or `/dev/null` (including `mv -t DIR`) | `critical` | `delete-test` |
+| `Bash` | `mv` / `git mv` renames a test file to a disabled name (`.bak`, `.backup`, `.old`, `.orig`, `.disabled`, `.off`, `.skip`, `.skipped`, `.ignore`, `.ignored`, `.tmp`, `~`, also as `a.test.js{,.bak}`), renames it from a test name to a name the runner does not collect (`a.test.js` to `a.js`), or renames a test folder to a non-test name | `high` | `rename-test` |
 | `Edit` / `MultiEdit` | the edit adds a skip/xfail/ignore marker to an existing test file, judged on the file as it will be after the edit (so `.skip` inserted right after `it` counts) | `high` | `skip-test` |
 | `Write` | it rewrites an existing test file and the new content has more skip/xfail/ignore markers than the file on disk | `high` | `skip-test` |
 | `Bash` | `sed -i`, `perl -pi`, `ruby -pi` or `awk -i inplace` writes a marker into a test file named in the same command (a glob such as `find -name '*.test.js' \| xargs sed -i` counts), or `>`, `>>`, `>\|` or `tee` (any flags, any file operand) writes one into a test file, or a script's output is moved, copied or redirected back over a test file | `high` | `skip-test` |
