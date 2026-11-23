@@ -413,3 +413,39 @@ describe('Integration (stdin/stdout)', () => {
     assert.match(out.hookSpecificOutput.permissionDecisionReason, /\[skip-test\]/);
   });
 });
+
+// An edit whose replaced span starts after the test function's name can still
+// write a marker into the file. These inputs once passed.
+describe('Regression: markers completed by the text around an edit', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'protect-tests-edit-'));
+  fs.mkdirSync(path.join(dir, 'tests'));
+  fs.writeFileSync(path.join(dir, 'tests', 'a.test.js'), "it('adds', () => { expect(1+1).toBe(2); });\ntest('subs', () => { expect(2-1).toBe(1); });\n");
+  fs.writeFileSync(path.join(dir, 'sum.test.js'), "it(\"adds numbers\", () => {\n  expect(1+1).toBe(2);\n});\n");
+  const check = (tool, input) => checkTool(tool, input, undefined, dir);
+
+  it('denies an Edit that inserts .skip right after the test name', () => {
+    assert.strictEqual(check('Edit', { file_path: 'tests/a.test.js', old_string: "('adds'", new_string: ".skip('adds'" }).id, 'skip-test');
+    assert.strictEqual(check('Edit', { file_path: 'tests/a.test.js', old_string: "t('subs'", new_string: "t.skip('subs'" }).id, 'skip-test');
+    assert.strictEqual(check('Edit', { file_path: 'sum.test.js', old_string: '("adds numbers"', new_string: '.skip("adds numbers"' }).id, 'skip-test');
+  });
+
+  it('denies a MultiEdit that builds the marker across two edits', () => {
+    const edits = [{ old_string: "it('adds'", new_string: "it.sk('adds'" }, { old_string: '.sk(', new_string: '.skip(' }];
+    assert.strictEqual(check('MultiEdit', { file_path: 'tests/a.test.js', edits }).id, 'skip-test');
+  });
+
+  it('honours replace_all when it judges the resulting file', () => {
+    assert.strictEqual(check('Edit', { file_path: 'tests/a.test.js', old_string: "('", new_string: ".skip('", replace_all: true }).id, 'skip-test');
+  });
+
+  it('falls back to the test-name prefixes when the file cannot be read', () => {
+    shouldBlock('Edit', { file_path: '/nonexistent/a.test.js', old_string: "('adds'", new_string: ".skip('adds'" }, 'skip-test');
+    shouldBlock('Edit', { file_path: '/nonexistent/a.test.js', old_string: "t('subs'", new_string: "t.skip('subs'" }, 'skip-test');
+  });
+
+  it('still allows edits that change a test without disabling it', () => {
+    assert.strictEqual(check('Edit', { file_path: 'tests/a.test.js', old_string: "('adds'", new_string: "('adds two numbers'" }).blocked, false);
+    assert.strictEqual(check('Edit', { file_path: 'sum.test.js', old_string: 'toBe(2)', new_string: 'toBe(2); // .skip( is not used here' }).blocked, false);
+    assert.strictEqual(check('MultiEdit', { file_path: 'tests/a.test.js', edits: [{ old_string: 'toBe(2)', new_string: 'toEqual(2)' }] }).blocked, false);
+  });
+});
