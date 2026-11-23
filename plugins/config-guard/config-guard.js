@@ -140,8 +140,13 @@ const DELETE_VERB    = /(\brm\b|\bunlink\b|\bshred\b|\btrash\b|\bgit\s+rm\b)/i;
 const MOVE_COPY_VERB = /\b(mv|cp|rsync|install|ln)\b/i;
 const WRITE_VERB     = /\b(tee|truncate|dd)\b/i;
 // Short flags cluster (-Ei, -ni), GNU spells it --in-place, ruby takes -pi
-// like perl, and GNU awk is often installed as plain awk.
-const INPLACE_EDIT   = /\b(?:sed|gsed)\b[^|;&]*\s(?:-[a-zA-Z]*i|--in-place)\b|\b(?:perl|ruby)\b[^|;&]*\s-[a-zA-Z0-9]*i|\bg?awk\b[^|;&]*\s-i\s*inplace\b/i;
+// like perl, and GNU awk is often installed as plain awk. BSD sed's -I is
+// in-place too, so sed stays case-insensitive.
+const INPLACE_EDIT   = /\b(?:sed|gsed)\b[^|;&]*\s(?:-[a-zA-Z]*i|--in-place)\b|\bg?awk\b[^|;&]*\s-i\s*inplace\b/i;
+// For perl and ruby only lowercase -i edits in place: -I is the library path.
+// A switch that takes an argument (-I, -M, -e, -r, ...) swallows the rest of
+// its cluster, so -Ilib or -MList::Util is not an -i.
+const SCRIPT_INPLACE = /\b(?:[pP][eE][rR][lL]|[rR][uU][bB][yY])\b[^|;&]*\s-[abcdfghijklnopqstuvwyzABDGHJLNOPQRSTUWXYZ0-9]*i/;
 
 // CLI commands that rewrite agent config without naming a settings path.
 // `claude plugin install` registers arbitrary hooks and skills, so it is a
@@ -402,7 +407,7 @@ function checkBashCommand(rawCmd = '', safetyLevel = SAFETY_LEVEL, cwd = process
     if (LEVELS[t.level] > threshold || !t.regex.test(cmd)) continue;
     if (redirectsInto(cmd, t.regex))
       return { blocked: true, id: t.id, level: t.level, reason: `shell redirect into protected config: ${t.reason}` };
-    if (INPLACE_EDIT.test(cmd))
+    if (INPLACE_EDIT.test(cmd) || SCRIPT_INPLACE.test(cmd))
       return { blocked: true, id: t.id, level: t.level, reason: `in-place edit of protected config: ${t.reason}` };
     if (DELETE_VERB.test(cmd))
       return { blocked: true, id: t.id, level: t.level, reason: `deleting protected config: ${t.reason}` };

@@ -42,6 +42,25 @@ describe('Regression: in-place edit spellings', () => {
 
   it('denies sed -Ei on CLAUDE.md at strict', () => bashBlocked("sed -Ei 's/always/never/' CLAUDE.md", 'claude-md', 'strict'));
 
+  it('allows perl and ruby with a -I library path that only read', () => {
+    for (const cmd of [
+      'perl -Ilib -ne print .claude/settings.json',
+      'ruby -Ilib -ne print .claude/settings.json',
+      'perl -MList::Util -ne print .claude/settings.json',
+    ]) bashAllowed(cmd);
+  });
+
+  it('still denies an in-place edit next to a -I library path', () => {
+    for (const cmd of [
+      'perl -Ilib -pi -e s/a/b/ .claude/settings.json',
+      'perl -Ilib -i -pe s/a/b/ .claude/settings.json',
+      'ruby -Ilib -pi -e x .claude/settings.json',
+      'PERL -pi -e s/a/b/ .claude/settings.json',
+      'perl -i.bak -pe s/a/b/ .claude/settings.json',
+      'sed -I "" s/a/b/ .claude/settings.json',
+    ]) bashBlocked(cmd, 'settings-file');
+  });
+
   it('still allows reading with sed, perl and awk', () => {
     for (const cmd of ["sed -n p .claude/settings.json", "sed -e 's/x/y/' .claude/settings.json", 'perl -ne print .claude/settings.json', "awk '{print}' .claude/settings.json"]) bashAllowed(cmd);
   });
