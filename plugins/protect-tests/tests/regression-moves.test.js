@@ -52,3 +52,19 @@ describe('Regression: moving tests away', () => {
     }
   });
 });
+
+describe('Regression: move verdicts across a whole command', () => {
+  it('still denies a delete at the critical level after a rename earlier in the command', () => {
+    shouldBlock('Bash', { command: 'mv tests/a.test.js a.js && rm tests/b.test.js' }, 'delete-test', 'critical');
+    shouldAllow('Bash', { command: 'mv tests/a.test.js a.js' }, 'critical');
+  });
+
+  it('reports the most severe of several moves', () => {
+    shouldBlock('Bash', { command: 'mv tests/a.test.js a.js; mv tests /tmp' }, 'delete-test');
+  });
+
+  it('treats mv as a command only in command position, and honours git mv dry runs', () => {
+    for (const command of ['echo mv example.test.js example.js', 'git mv -n example.test.js example.js', 'git mv --dry-run tests attic']) shouldAllow('Bash', { command });
+    shouldBlock('Bash', { command: 'sudo mv tests ../graveyard' }, 'rename-test');
+  });
+});
