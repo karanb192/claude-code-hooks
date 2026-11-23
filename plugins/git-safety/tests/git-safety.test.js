@@ -289,6 +289,24 @@ describe('Unit: checkCommand()', () => {
       it(`allows: ${cmd}`, () => shouldAllow(cmd, 'feature-branch'));
     }
   });
+
+  // The full record runs in tests/shell-rewrites.test.js; these pin this guard.
+  describe('Shell reading: quoting does not change the verdict', () => {
+    it('blocks a quoted push to main', () => shouldBlock("git 'push' origin main", 'push-main', 'feature'));
+    it('blocks a double-quoted push on main', () => shouldBlock('git "push" origin HEAD', 'push-on-protected', 'main'));
+    it('blocks git held in a variable', () => shouldBlock('g=git; $g push origin main', 'push-main', 'feature'));
+    it('blocks a quoted branch name', () => shouldBlock("git push origin 'ma'in", 'push-main', 'feature'));
+    it('blocks a quoted gh subcommand', () => shouldBlock("gh pr 'merge' 12", 'gh-pr-merge', 'feature'));
+    it('blocks a quoted commit on main', () => shouldBlock("git 'commit' -m x", 'commit-on-protected', 'main'));
+  });
+
+  describe('Shell reading: text that only mentions a command', () => {
+    it('allows a commit message that mentions gh pr merge', () => shouldAllow('git commit -m "run gh pr merge after review"', 'feature'));
+    it('allows a PR body that mentions a push to main', () =>
+      shouldAllow("gh pr create --title x --body \"$(cat <<'EOF'\nnever git push origin main\nEOF\n)\"", 'feature'));
+    it('allows a heredoc that only writes text', () => shouldAllow("cat > notes.md <<'EOF'\ngit push --force origin main\nEOF", 'feature'));
+    it('blocks the same heredoc fed to a shell', () => shouldBlock("bash <<'EOF'\ngit push origin main\nEOF", 'push-main', 'feature'));
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

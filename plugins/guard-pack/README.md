@@ -6,6 +6,8 @@ One PreToolUse registration on `Bash|Read|Edit|MultiEdit|Write|Agent|Task|Grep` 
 
 The guard scripts in `lib/` are byte-identical copies of the individual plugin scripts, pinned by a test, so the pack can never drift from the standalone guards.
 
+The pack also guards its own install. Through config-guard, the agent cannot edit, overwrite, move or delete the installed plugin files under `~/.claude/plugins/` (or a custom `CLAUDE_CONFIG_DIR`), write `~/.claude.json`, or reset the spawn cap by deleting its ledger. Reads pass, and installing, updating or removing plugins yourself through `/plugin` is untouched. Details and limits: [config-guard](../config-guard#known-limits).
+
 `Grep` reaches protect-secrets through the same checks as the standalone plugin, including Windows paths and directory/filter combinations. Its [search limitations](../protect-secrets#search-and-windows-coverage) also apply here; broad searches can still expose secrets.
 
 ## Install
@@ -23,6 +25,8 @@ Restart Claude Code, done.
 
 From 1.3.0 the pack also runs in Codex CLI. Version 1.4.0 adds the spawn cap and Codex configuration protection; each of the seven guards also has its own Codex entry point.
 
+In 1.7.0, block-dangerous-commands, git-safety and protect-secrets share a shell reader. It recognizes common quoting, escaping and variable assignments. It skips literal text in supported message and heredoc forms. See [how it reads a command and its limits](../block-dangerous-commands#how-it-reads-a-command).
+
 ```
 codex plugin marketplace add karanb192/claude-code-hooks
 codex plugin add guard-pack@claude-code-hooks
@@ -33,12 +37,12 @@ Then open `/hooks` in Codex and approve guard-pack. Codex skips a hook nobody ha
 What changes under Codex:
 
 - **Edits are checked through the patch.** The pack reads Codex's native `apply_patch` input and checks each file as Claude Code's `Write` (new file), `Edit` (changed file) or a shell `rm` / `mv` (deleted or moved file). A patch it cannot read is blocked with `[unreadable-patch]`. A moved file also gets a destination Write check using its added lines; this conservative approximation can reject a move onto an existing test file.
-- **Shell patches accept only literal quoted heredocs.** Use plain `apply_patch <<'EOF'` or `applypatch <<'EOF'`, with the full patch and closing delimiter on separate lines. Multiple such commands on separate lines are supported. Detected patch calls using other forms, including wrappers, expansions, pipes and file redirection, are blocked. Detection recognises common command positions, quoting and wrappers; it is not a shell interpreter and cannot resolve aliases or dynamically constructed command names. Prefer the native patch tool.
+- **Shell patches accept only literal quoted heredocs.** Use plain `apply_patch <<'EOF'` or `applypatch <<'EOF'`, with the full patch and closing delimiter on separate lines. Multiple such commands on separate lines are supported. Any other command that names `apply_patch` or `applypatch` as a word is blocked, wherever the word stands: behind a program that runs its arguments (`timeout`, `eval`, `stdbuf`, `doas`, `env -S`, `find -exec`), in an expansion, a pipe or a file redirection. Literal searches and commit messages that only mention the name pass. Detection is not a shell interpreter and cannot resolve aliases or dynamically constructed command names. Prefer the native patch tool.
 - **Ask becomes a block.** Codex hooks cannot ask, so a guard set to ask (`HOOK_ASK_*`) blocks, and its reason says why.
 - **Seven guards, with a per-thread spawn budget.** `spawn_agent` is counted without an ask tier: `SPAWN_CAP_DENY=60` permits the first 59 calls and denies the 60th. Resuming a thread keeps its count; nested threads have separate budgets. Parallel calls can overshoot the threshold. See [the cap's Codex policy](../subagent-spawn-cap#codex-cli).
 - **Reads are shell commands.** Codex has no Read or Grep tool, so protect-secrets sees a read only when the command names the file.
 - **Typing into an open shell is not checked.** Codex does not send hooks the input it types into a shell session it already started, so a command entered that way runs unchecked.
-- **Codex configuration is protected.** config-guard checks `.codex/config.toml`, installed plugins under `.codex/plugins/`, and a custom `CODEX_HOME`. It also checks `.codex-plugin/` manifests at `high` and `AGENTS.md` / `AGENTS.override.md` at `strict`. Native patches resolve paths against the event's working directory and follow symlinks. Shell checks remain text-based, with [known limits](../config-guard#known-limits).
+- **Codex configuration is protected.** config-guard checks `.codex/config.toml`, installed plugins under `.codex/plugins/`, and a custom `CODEX_HOME`. The installed Claude Code plugins under `~/.claude/plugins/` are protected from a Codex agent too. It also checks `.codex-plugin/` manifests at `high` and `AGENTS.md` / `AGENTS.override.md` at `strict`. Native patches resolve paths against the event's working directory and follow symlinks. Shell checks remain text-based, with [known limits](../config-guard#known-limits).
 
 The answer to Codex is exit code 2 with the reason on stderr, which Codex treats as a block. A guard that throws blocks the call there too (see [When the pack fails](#when-the-pack-fails)). Log lines from Codex carry `"host":"codex"` in `~/.claude/hooks-logs/`, creating that directory even on a Codex-only setup. Checked live on Codex CLI 0.169.0 through a marketplace install, and the patch reader against Codex's own patch engine: [bench/codex-live/RESULTS.md](../../bench/codex-live/RESULTS.md).
 

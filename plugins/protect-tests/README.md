@@ -22,7 +22,7 @@ codex plugin add protect-tests@claude-code-hooks
 
 Open `/hooks` in Codex and approve this plugin. Re-approve after every update; Codex skips unapproved or changed hooks. Do not install it alongside [guard-pack](../guard-pack#codex-cli), which includes this guard.
 
-This entry point checks `Bash` and native `apply_patch` calls. Patch files are checked individually; unreadable patches are blocked. Shell patches must use a plain command with a quoted heredoc. Literal searches and commit messages mentioning `apply_patch` pass. See [the shared adapter's limits](../guard-pack#codex-cli), including shell sessions and dynamically constructed commands.
+This entry point checks `Bash` and native `apply_patch` calls. Patch files are checked individually; unreadable patches are blocked. Shell patches must use a plain command with a quoted heredoc; `apply_patch` anywhere else in a command, such as behind `timeout` or `eval`, is blocked. Literal searches and commit messages mentioning `apply_patch` pass. See [the shared adapter's limits](../guard-pack#codex-cli), including shell sessions and dynamically constructed commands.
 
 Export configuration variables before launching Codex. An ask-mode match becomes a block because Codex hooks cannot ask. Logs stay in `~/.claude/hooks-logs/` with `host: "codex"`, including on Codex-only machines.
 
@@ -32,16 +32,18 @@ Export configuration variables before launching Codex. An ask-mode match becomes
 |------|--------------|-------|---------|
 | `Bash` | `rm` / `unlink` / `shred` / `trash` / `git rm` targets a test file or test directory (`tests/` or a bare `tests`), `find` deletes test files (`-delete`, `-exec rm`), or `mv` moves tests into `/tmp`, `$TMPDIR`, `~/.Trash` or `/dev/null` | `critical` | `delete-test` |
 | `Bash` | `mv` renames a test file to a disabled name (`.bak`, `.old`, `.orig`, `.disabled`, `.skip`, `.ignore`, `.tmp`, `~`) | `high` | `rename-test` |
-| `Edit` / `MultiEdit` | the edit adds a skip/xfail/ignore marker to an existing test file | `high` | `skip-test` |
+| `Edit` / `MultiEdit` | the edit adds a skip/xfail/ignore marker to an existing test file, judged on the file as it will be after the edit (so `.skip` inserted right after `it` counts) | `high` | `skip-test` |
 | `Write` | it rewrites an existing test file and the new content has more skip/xfail/ignore markers than the file on disk | `high` | `skip-test` |
-| `Bash` | `sed -i`, `perl -pi` or `ruby -pi` substitutes a marker into a test file named in the same command (a glob such as `find -name '*.test.js' \| xargs sed -i` counts), or `>`, `>>` or `tee` writes one into a test file | `high` | `skip-test` |
+| `Bash` | `sed -i`, `perl -pi`, `ruby -pi` or `awk -i inplace` writes a marker into a test file named in the same command (a glob such as `find -name '*.test.js' \| xargs sed -i` counts), or `>`, `>>`, `>\|` or `tee` (any flags, any file operand) writes one into a test file, or a script's output is moved, copied or redirected back over a test file | `high` | `skip-test` |
 | `Write` | a brand-new test file's content is already skipped/ignored | `strict` | `write-skipped-test` |
+
+The markers recognised include pytest `@pytest.mark.skip`/`skipif`/`xfail` (also as `pytestmark = ...` and `@mark.skip`) and `pytest.skip(`/`pytest.xfail(`; unittest `@unittest.skip*`, `@unittest.expectedFailure` and `self.skipTest(`; jest/mocha/vitest `.skip`, `.skipIf`, `.todo` (also after `.each` or `.concurrent`), `xit(` and `this.skip()`; Go `t.Skip(`, `t.Skipf(`, `t.SkipNow(`; JUnit `@Disabled*` and `@Ignore`, TestNG `@Test(enabled = false)`; NUnit/MSTest `[Ignore]` with or without a reason, xUnit `Skip =`; RSpec `xit 'name'`, `skip '...'` and `pending '...'`; Rust `#[ignore]` and `#[ignore = "..."]`. A line break or spaces around a dot do not hide one.
 
 Markers are counted, not just detected, so adding a second `it.skip(` to a file that already has one still counts. Direct edits that remove skips are allowed. For `Write` and shell redirects the hook reads the target file (relative paths resolve against the session's working directory; files over 2 MB are not read). Each complete command joined by `;`, `&&`, `||` or `&` is judged on its own. Groups and continued pipelines, including a comment after `|`, keep their output with the destination. Literal braces in command arguments do not join unrelated commands.
 
 For a small, literal `sed` substitution, `perl -pe` substitution, or `grep` filter with one source file and one redirect or `tee` destination, the hook reads the source and compares the resulting content. This allows a command that removes all skips while still denying a positive `grep` that copies skipped tests. Output inference supports a restricted pattern syntax and ASCII text, with limits on command length, matching work and output size. Unsupported commands use the command-text heuristic, so they may be conservatively denied. Search-looking text inside `printf` arguments or heredocs is always treated as literal content, not stripped away.
 
-An in-place replacement counts when it completes a marker with the text around it (`s/test/test.skip/` on `test(`). This remains a guardrail, not a shell evaluator or sandbox: arbitrary language scripts, `cp` of a skipped file over a test, and a heredoc that creates a brand-new skipped file still pass at `high`.
+An in-place replacement counts when it completes a marker with the text around it (`s/test/test.skip/` on `test(`) or through a backreference (`s/^(it)\(/\1.skip(/`, `s/^it/x&/`). The script is read for `s` commands with any delimiter and perl's `s{}{}`, sed `a`, `i` and `c` text commands, perl `print`, and ruby or awk `sub`/`gsub`. This remains a guardrail, not a shell evaluator or sandbox: arbitrary language scripts, `cp` of a skipped file over a test, and a heredoc that creates a brand-new skipped file still pass at `high`.
 
 Anything at or below the active safety level is denied with a reason Claude sees ("Fix the code, don't disable the test"); everything else passes through. On malformed input the hook fails open (emits `{}`), so it can never wedge a session.
 

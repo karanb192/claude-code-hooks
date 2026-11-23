@@ -22,11 +22,14 @@ const FIXTURES = path.join(__dirname, 'fixtures', 'codex-0.167.1');
 const host = require(path.join(PACK_DIR, 'lib', 'host.js'));
 
 const TMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-pack-codex-home-'));
-const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-pack-codex-work-'));
+// The real path: macOS's tmpdir is under /var, and a delete under /var is
+// rm-system to block-dangerous-commands, which would answer before protect-tests.
+const WORK = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'guard-pack-codex-work-'));
 before(() => {
   fs.mkdirSync(path.join(WORK, 'tests'), { recursive: true });
   fs.writeFileSync(path.join(WORK, 'sum.js'), 'function sum(a,b){return a+b}\nmodule.exports={sum}\n');
   fs.writeFileSync(path.join(WORK, 'tests', 'sum.test.js'), "test('adds',()=>{a.strictEqual(sum(2,3),5)});\n");
+  fs.writeFileSync(path.join(WORK, 'tests', 'a.test.js'), "test('a',()=>{});\n");
   fs.writeFileSync(path.join(WORK, '.env'), 'DB_PASSWORD=placeholder\n');
   fs.writeFileSync(path.join(WORK, 'notes.txt'), 'hi\n');
 });
@@ -284,6 +287,44 @@ describe('host.codexCalls()', () => {
       const r = await run({ tool_name: 'Bash', tool_input: { command }, cwd: WORK });
       assert.strictEqual(r.code, 2, command);
       assert.match(r.stderr, /\[unreadable-patch\]/);
+    }
+  });
+
+  it('refuses a shell patch started by any program that runs its arguments', async () => {
+    const del = "<<'EOF'\n*** Begin Patch\n*** Delete File: tests/a.test.js\n*** End Patch\nEOF";
+    for (const command of [
+      `timeout 5 apply_patch ${del}`,
+      `eval apply_patch ${del}`,
+      `stdbuf -o0 apply_patch ${del}`,
+      `doas apply_patch ${del}`,
+      `builtin command apply_patch ${del}`,
+      `nice apply_patch ${del}`,
+      'env -S"apply_patch < p.txt"',
+      'find . -name "*.patch" -exec apply_patch {} +',
+      'git commit -m x && timeout 5 apply_patch < p.txt',
+      'echo apply_patch | sh',
+    ]) {
+      const r = await run({ tool_name: 'Bash', tool_input: { command }, cwd: WORK });
+      assert.strictEqual(r.code, 2, command);
+      assert.match(r.stderr, /\[unreadable-patch\]/);
+    }
+    const plain = await run({ tool_name: 'Bash', tool_input: { command: `apply_patch ${del}` }, cwd: WORK });
+    assert.strictEqual(plain.code, 2);
+    assert.match(plain.stderr, /\[delete-test\]/);
+  });
+
+  it('still allows literal mentions chained with other commands', () => {
+    for (const command of ['git add -A && git commit -m "use apply_patch"', 'rg -c apply_patch . && echo done', 'cat apply_patch.md', 'ls codex-rs/apply-patch',
+      'git grep apply_patch', 'git log -S apply_patch --oneline', 'cat apply_patch', 'which apply_patch', 'ag apply_patch src/',
+      'rg -n apply_patch . | head', 'git grep -n apply_patch | tail -5', 'git status # apply_patch', 'git log -Sapply_patch', 'rg -eapply_patch .']) {
+      assert.deepStrictEqual(host.codexCalls({ tool_name: 'Bash', tool_input: { command } }), [{ tool: 'Bash', input: { command } }], command);
+    }
+  });
+
+  it('refuses a literal-looking command whose options start a program', () => {
+    for (const command of ['git grep -Oapply_patch x', 'git grep -nOapply_patch x', 'git grep --open-files-in-pager=apply_patch x', 'ag --pager=apply_patch x',
+      'git log --ext-diff -S apply_patch', 'grep apply_patch src/ | sh']) {
+      assert.notDeepStrictEqual(host.codexCalls({ tool_name: 'Bash', tool_input: { command } }), [{ tool: 'Bash', input: { command } }], command);
     }
   });
 

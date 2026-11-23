@@ -22,7 +22,7 @@ codex plugin add git-safety@claude-code-hooks
 
 Open `/hooks` in Codex and approve this plugin. Re-approve after every update; Codex skips unapproved or changed hooks. Do not install it alongside [guard-pack](../guard-pack#codex-cli), which includes this guard.
 
-This entry point checks `Bash` and native `apply_patch` calls. Patch files are checked individually; unreadable patches are blocked. Shell patches must use a plain command with a quoted heredoc. Literal searches and commit messages mentioning `apply_patch` pass. See [the shared adapter's limits](../guard-pack#codex-cli), including shell sessions and dynamically constructed commands.
+This entry point checks `Bash` and native `apply_patch` calls. Patch files are checked individually; unreadable patches are blocked. Shell patches must use a plain command with a quoted heredoc; `apply_patch` anywhere else in a command, such as behind `timeout` or `eval`, is blocked. Literal searches and commit messages mentioning `apply_patch` pass. See [the shared adapter's limits](../guard-pack#codex-cli), including shell sessions and dynamically constructed commands.
 
 Export configuration variables before launching Codex. An ask-mode match becomes a block because Codex hooks cannot ask. Logs stay in `~/.claude/hooks-logs/` with `host: "codex"`, including on Codex-only machines.
 
@@ -42,6 +42,17 @@ Blocked at the default `high` level:
 `strict` adds any force-push (`--force` or `-f`; `--force-with-lease` stays allowed). `critical` applies no git-safety rules at all, deferring entirely to `block-dangerous-commands`.
 
 **Composition with `block-dangerous-commands`:** that hook already blocks force-push (any, and to main/master) and `git reset --hard` on any branch, so at `high` the two don't overlap. Run git-safety at `strict` if you use it on its own.
+
+## How it reads a command
+
+It shares its command reader with [block-dangerous-commands](../block-dangerous-commands#how-it-reads-a-command), so quotes, escapes and variables do not change the verdict. `git 'push' origin main` and `g=git; $g push origin main` are refused, and so is `git "push" origin HEAD` while on main. Quoted commit messages, PR bodies and heredoc text that only mention a command are not matched, so `git commit -m "run gh pr merge after review"` is allowed on a feature branch.
+
+### What it does not catch
+
+- The branch-aware rules read the branch of the session's working directory, not the branch or repository the command reaches. `git checkout main && git commit -m x` and `git -C <repo on main> commit -m x` pass while the session is on another branch.
+- A loop variable: `for g in git; do $g push origin main; done`.
+
+[tests/shell-rewrites.test.js](../../tests/shell-rewrites.test.js) lists these with the rest of the record and fails when one starts being caught.
 
 ## Configuration
 

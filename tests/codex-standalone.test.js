@@ -24,7 +24,7 @@ const patch = (...lines) => ({ tool_name: 'apply_patch', tool_input: { command: 
 const spawn = (session_id) => ({ tool_name: 'spawn_agent', session_id, tool_input: { message: 'Inspect the source' } });
 function run(name, payload, extra = {}, cwd = work) {
   const env = { ...process.env, HOME: home, USERPROFILE: home, CODEX_HOME: codexHome };
-  for (const key of Object.keys(env)) if (/^(HOOK_|CONFIG_GUARD_|SPAWN_CAP_)/.test(key)) delete env[key];
+  for (const key of Object.keys(env)) if (/^(HOOK_|CONFIG_GUARD_|SPAWN_CAP_|CLAUDE_CONFIG_DIR$)/.test(key)) delete env[key];
   Object.assign(env, extra);
   const script = name === 'guard-pack' ? path.join(root, 'plugins', name, 'guard-pack.js') : path.join(temp, name, 'codex.js');
   const args = name === 'guard-pack' ? [script, '--host', 'codex'] : [script];
@@ -91,6 +91,14 @@ describe('literal shell patch mentions', () => {
       allowed(run('guard-pack', shell(command)));
     }
   });
+  it('refuses a shell patch behind any program that runs its arguments', () => {
+    const del = "<<'EOF'\n*** Begin Patch\n*** Delete File: tests/a.test.js\n*** End Patch\nEOF";
+    for (const name of ['guard-pack', ...names.filter((n) => n !== 'subagent-spawn-cap')]) {
+      for (const prefix of ['timeout 5', 'eval', 'stdbuf -o0', 'doas', 'builtin command']) {
+        blocked(run(name, shell(`${prefix} apply_patch ${del}`)), 'unreadable-patch');
+      }
+    }
+  });
   it('still refuses substitutions, mixed commands and shell-running rg options', () => {
     for (const command of ['grep -c "$(apply_patch < p.txt)" .', 'echo `apply_patch < p.txt`', 'git commit -m "$(apply_patch < p.txt)"', 'rg -c apply_patch .; apply_patch < p.txt', 'printf x | apply_patch', 'rg --pre "bash -c apply_patch" foo']) {
       blocked(run('guard-pack', shell(command)), 'unreadable-patch');
@@ -123,6 +131,15 @@ describe('Codex configuration protection', () => {
         blocked(run(name, shell(command)), command.startsWith('codex ') ? 'codex-cli-config' : 'codex-config');
       }
       for (const command of ['cat ~/.codex/config.toml', 'codex plugin marketplace list', 'codex --profile p plugin marketplace list', 'codex features list', 'mv notes.codex notes.txt']) allowed(run(name, shell(command)));
+    });
+    it(`${name}: a Codex agent cannot delete or patch the installed Claude Code guards either`, () => {
+      for (const command of ['rm -rf ~/.claude/plugins/cache/claude-code-hooks', "sed -i 's/a/b/' ~/.claude/plugins/cache/claude-code-hooks/guard-pack/1.5.0/lib/dispatch.js", 'rm -rf ~/.claude']) {
+        blocked(run(name, shell(command)), 'claude-plugins');
+      }
+      blocked(run(name, patch(`*** Add File: ${path.join(home, '.claude/plugins/cache/x/1.0.0/hook.js')}`, '+x')), 'claude-plugins');
+      blocked(run(name, patch(`*** Add File: ${path.join(home, '.claude.json')}`, '+{}')), 'claude-json');
+      blocked(run(name, shell('rm ~/.claude/subagent-spawn-cap/codex-t1.jsonl')), 'spawn-cap-state');
+      allowed(run(name, shell('cat ~/.claude/plugins/installed_plugins.json')));
     });
     it(`${name}: respects levels and the config override`, () => {
       blocked(run(name, shell('codex --yolo plugin remove guard-pack')), 'codex-cli-config');
