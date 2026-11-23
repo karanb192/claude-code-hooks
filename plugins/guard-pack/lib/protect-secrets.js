@@ -224,7 +224,9 @@ const BASH_PATTERNS = [
   { level: 'high', id: 'truncate-secrets',       regex: /\btruncate\b.*\.(env|pem|key)\b|(?:^|[;&|]\s*)>\s*\.env\b/i,      reason: 'Truncating secrets file' },
 
   // HIGH - Process environ
-  { level: 'high', id: 'proc-environ',           regex: /\/proc\/+(?:[^/\s]+\/+)*environ\b|\b(?:cd|pushd)\s+["']?\/proc\b[\s\S]*?\benviron\b/, reason: 'Reading process environment' },
+  // After cd /proc, a later command that names environ as an operand reads it, unless a cd to an
+  // absolute path, a bare cd or popd came between. echo and printf only print the word.
+  { level: 'high', id: 'proc-environ',           regex: /\/proc\/+(?:[^/\s]+\/+)*environ\b|\b(?:cd|pushd)\s+["']?\/proc(?![\w.-])(?:(?!\b(?:cd|pushd)\s+["']?[/~]|\bcd\s*(?:$|[;&|)\n])|\bpopd\b)[\s\S])*?[;&|\n(`]\s*(?!\s|(?:echo|printf)\b)[^;&|\n]*?[\s<='"](?:[^\s/;&|'"]+\/+)*environ(?![\w.-])/, reason: 'Reading process environment' },
   { level: 'high', id: 'xargs-cat-env',          regex: /xargs.*cat|\.env.*xargs/i,                                         reason: 'Reading .env via xargs' },
   { level: 'high', id: 'find-exec-cat-env',      regex: /find\b.*\.env.*-exec|find\b.*-exec.*(cat|less)/i,                 reason: 'Finding and reading .env files' },
 
@@ -787,7 +789,11 @@ function commandDumpsEnvironment(cmd) {
   while (k < words.length && !words[k].spans.length
     && ((KEYWORDS.has(words[k].value) && !DECLARATIONS.has(words[k].value)) || /^[A-Za-z_]\w*\+?=/.test(words[k].lead || ''))) k++;
   while (k < words.length && !words[k].dynamic && DUMP_WRAPPERS.test(base(words[k].value))) {
-    for (k++; k < words.length && /^-./.test(words[k].value); k++);
+    const wrapper = base(words[k].value);
+    for (k++; k < words.length && /^-./.test(words[k].value); k++) {
+      // command -v and -V look the name up without running it.
+      if (wrapper === 'command' && /^-[A-Za-z]*[vV]/.test(words[k].value)) return false;
+    }
   }
   const w = words[k];
   if (!w || w.dynamic) return false;
@@ -797,6 +803,8 @@ function commandDumpsEnvironment(cmd) {
     let j = 0;
     for (; j < ops.length && /^-/.test(ops[j]); j++) {
       if (/^(?:-S|--split-string)/.test(ops[j])) return false;
+      // An emptied environment, help or version text prints none of the caller's variables.
+      if (/^(?:-[0v]*i[0iv]*|-|--ignore-environment|--help|--version)$/.test(ops[j])) return false;
       if (ENV_VALUE_OPT.test(ops[j])) j++;
     }
     while (j < ops.length && /^[A-Za-z_]\w*=/.test(ops[j])) j++;

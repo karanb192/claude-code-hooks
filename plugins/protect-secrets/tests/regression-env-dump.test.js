@@ -29,6 +29,8 @@ const REFUSED = [
   ["SEC-05-j", "export -p", 'high'],
   ["SEC-05-k", "declare -p", 'high'],
   ["SEC-05-l", "env -0", 'high'],
+  ["unset-cluster", "env -ui", 'high'],
+  ["command-p", "command -p env", 'high'],
 ];
 
 const ALLOWED = [
@@ -41,6 +43,12 @@ const ALLOWED = [
   ['command -v node', 'high'],
   ['echo "run env to debug"', 'high'],
   ['envsubst < template.yml', 'high'],
+  // A lookup, help or version text, or an emptied environment prints none of the caller's variables.
+  ['command -v env', 'high'],
+  ['command -V env', 'high'],
+  ['env --version', 'high'],
+  ['env --help', 'high'],
+  ['env -i', 'high'],
 ];
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {

@@ -19,6 +19,9 @@ const REFUSED = [
   ["SEC-10-b", "cat /proc//self/environ", 'high'],
   ["SEC-10-c", "cd /proc/self && cat environ", 'high'],
   ["SEC-10-d", "tr \"\\0\" \"\\n\" < /proc/self/./environ", 'high'],
+  ["relative-cd", "cd /proc && cd self && cat environ", 'high'],
+  ["next-line", "cd /proc/self\ncat environ", 'high'],
+  ["substitution", "cd /proc/self && echo \"$(<environ)\"", 'high'],
 ];
 
 const ALLOWED = [
@@ -26,6 +29,10 @@ const ALLOWED = [
   ['ls /proc/self/fd', 'high'],
   ['cd /proc && ls', 'high'],
   ['grep -r environ src/', 'high'],
+  // echo only prints the word, and a cd to an absolute path leaves /proc.
+  ['cd /proc && cd / && echo environ', 'high'],
+  ['cd /proc && echo environ', 'high'],
+  ['cd /proc && cd / && cat environ', 'high'],
 ];
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {
