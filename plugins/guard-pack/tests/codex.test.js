@@ -313,8 +313,16 @@ describe('host.codexCalls()', () => {
 
   it('still allows literal mentions chained with other commands', () => {
     for (const command of ['git add -A && git commit -m "use apply_patch"', 'rg -c apply_patch . && echo done', 'cat apply_patch.md', 'ls codex-rs/apply-patch',
-      'git grep apply_patch', 'git log -S apply_patch --oneline', 'cat apply_patch', 'which apply_patch', 'ag apply_patch src/']) {
+      'git grep apply_patch', 'git log -S apply_patch --oneline', 'cat apply_patch', 'which apply_patch', 'ag apply_patch src/',
+      'rg -n apply_patch . | head', 'git grep -n apply_patch | tail -5', 'git status # apply_patch']) {
       assert.deepStrictEqual(host.codexCalls({ tool_name: 'Bash', tool_input: { command } }), [{ tool: 'Bash', input: { command } }], command);
+    }
+  });
+
+  it('refuses a literal-looking command whose options start a program', () => {
+    for (const command of ['git grep -Oapply_patch x', 'git grep --open-files-in-pager=apply_patch x', 'ag --pager=apply_patch x',
+      'git log --ext-diff -S apply_patch', 'grep apply_patch src/ | sh']) {
+      assert.notDeepStrictEqual(host.codexCalls({ tool_name: 'Bash', tool_input: { command } }), [{ tool: 'Bash', input: { command } }], command);
     }
   });
 

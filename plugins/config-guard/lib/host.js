@@ -179,12 +179,17 @@ const RUNS_APPLY_PATCH = /(?:^|[^\w.-]|(?:^|[\s=])-[A-Za-z]+)(?:apply_patch|appl
 const LITERAL_COMMANDS = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'echo', 'printf', 'cat', 'head', 'tail', 'ls', 'which']);
 const LITERAL_GIT = new Set(['commit', 'grep', 'log', 'show', 'diff', 'blame']);
 
+// Options that make a search or git command start another program.
+const RUNS_PROGRAM = /^(?:-O|--open-files-in-pager|--ext-diff|--textconv|--pager|--pre(?:=|$)|--hostname-bin)/;
+
 // These commands consume literal arguments rather than shell programs. Only
-// exempt simple commands joined by ; && || or newlines, never substitutions,
-// redirects or pipelines, and only when every one naming apply_patch is one.
+// exempt pipelines joined by ; && || or newlines, never substitutions or
+// redirects, and only when every pipeline naming apply_patch is made of
+// these commands alone (rg -n apply_patch . | head, not echo apply_patch | sh).
+// A # at the start of a word begins a comment.
 function literalMention(command) {
-  const segments = [[]];
-  let words = segments[0];
+  const segments = [[[]]];
+  let words = segments[0][0];
   let word = '', quote = null, started = false;
   const push = () => { if (started) words.push(word); word = ''; started = false; };
   for (let i = 0; i < command.length; i++) {
@@ -203,12 +208,22 @@ function literalMention(command) {
       continue;
     }
     if (c === "'" || c === '"') { quote = c; started = true; continue; }
+    if (c === '#' && !started) {
+      while (i + 1 < command.length && command[i + 1] !== '\n') i++;
+      continue;
+    }
     const pair = (c === '&' || c === '|') && command[i + 1] === c;
     if (c === ';' || c === '\n' || pair) {
       push();
       if (pair) i++;
       words = [];
-      segments.push(words);
+      segments.push([words]);
+      continue;
+    }
+    if (c === '|' && command[i + 1] !== '&') {
+      push();
+      words = [];
+      segments[segments.length - 1].push(words);
       continue;
     }
     if (/[&|<>(){}\r]/.test(c)) return false;
@@ -217,11 +232,12 @@ function literalMention(command) {
   }
   if (quote) return false;
   push();
+  const names = (w) => w.some((x) => RUNS_APPLY_PATCH.test(x));
   const literal = (w) => {
-    if (w[0] === 'rg' && w.some((x) => /^--(?:pre|hostname-bin)(?:=|$)/.test(x))) return false;
+    if (w.some((x) => RUNS_PROGRAM.test(x) || (x.startsWith('-') && RUNS_APPLY_PATCH.test(x)))) return false;
     return LITERAL_COMMANDS.has(w[0]) || (w[0] === 'git' && LITERAL_GIT.has(w[1]));
   };
-  return segments.every((w) => literal(w) || !w.some((x) => RUNS_APPLY_PATCH.test(x)));
+  return segments.every((pipeline) => !pipeline.some(names) || pipeline.every(literal));
 }
 
 // Consume the entire command as literal, quoted heredocs. Patch marker text
