@@ -179,8 +179,9 @@ const RUNS_APPLY_PATCH = /(?:^|[^\w.-]|(?:^|[\s=])-[A-Za-z]+)(?:apply_patch|appl
 const LITERAL_COMMANDS = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'echo', 'printf', 'cat', 'head', 'tail', 'ls', 'which']);
 const LITERAL_GIT = new Set(['commit', 'grep', 'log', 'show', 'diff', 'blame']);
 
-// Options that make a search or git command start another program.
-const RUNS_PROGRAM = /^(?:-O|--open-files-in-pager|--ext-diff|--textconv|--pager|--pre(?:=|$)|--hostname-bin)/;
+// Options that make a search or git command start another program,
+// including -O inside a short-option cluster (git grep -nO<cmd>).
+const RUNS_PROGRAM = /^(?:-[A-Za-z]*O|--open-files-in-pager|--ext-diff|--textconv|--pager|--pre(?:=|$)|--hostname-bin)/;
 
 // These commands consume literal arguments rather than shell programs. Only
 // exempt pipelines joined by ; && || or newlines, never substitutions or
@@ -234,7 +235,8 @@ function literalMention(command) {
   push();
   const names = (w) => w.some((x) => RUNS_APPLY_PATCH.test(x));
   const literal = (w) => {
-    if (w.some((x) => RUNS_PROGRAM.test(x) || (x.startsWith('-') && RUNS_APPLY_PATCH.test(x)))) return false;
+    const end = w.indexOf('--');
+    if ((end < 0 ? w : w.slice(0, end)).some((x) => RUNS_PROGRAM.test(x))) return false;
     return LITERAL_COMMANDS.has(w[0]) || (w[0] === 'git' && LITERAL_GIT.has(w[1]));
   };
   return segments.every((pipeline) => !pipeline.some(names) || pipeline.every(literal));
