@@ -20,7 +20,7 @@ const os = require('node:os');
 const {
   splitSegments,
   tokenize,
-  stripHeredocs,
+  preprocess,
   analyzeCommand,
   checkCommand,
   LEVELS,
@@ -483,24 +483,139 @@ describe('Unit: round-2 hardening: false positives removed', () => {
   });
 });
 
-describe('Unit: stripHeredocs()', () => {
+describe('Unit: preprocess()', () => {
   it('removes the body but keeps commands after the terminator', () => {
-    const out = stripHeredocs('cat <<EOF\nrm -rf x\nEOF\necho done');
+    const out = preprocess('cat <<EOF\nrm -rf x\nEOF\necho done');
     assert.ok(!out.includes('rm -rf x'));
     assert.ok(out.includes('echo done'));
   });
   it('handles <<- with tab-indented terminators', () => {
-    const out = stripHeredocs('cat <<-END\nrm -rf x\n\tEND\necho after');
+    const out = preprocess('cat <<-END\nrm -rf x\n\tEND\necho after');
     assert.ok(!out.includes('rm -rf x'));
     assert.ok(out.includes('echo after'));
   });
   it('queues multiple heredocs on one line in order', () => {
-    const out = stripHeredocs('diff <(cat) - <<A <<B\nbody a\nA\nbody b\nB\necho tail');
+    const out = preprocess('diff <(cat) - <<A <<B\nbody a\nA\nbody b\nB\necho tail');
     assert.ok(!out.includes('body a') && !out.includes('body b'));
     assert.ok(out.includes('echo tail'));
   });
   it('leaves <<< here-strings and quoted << alone', () => {
-    assert.ok(stripHeredocs('grep x <<< "input"').includes('<<<'));
-    assert.ok(stripHeredocs('echo "a << b"').includes('a << b'));
+    assert.ok(preprocess('grep x <<< "input"').includes('<<<'));
+    assert.ok(preprocess('echo "a << b"').includes('a << b'));
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regression: recorded inputs that used to pass. The layout has `Content`
+// (holding keep.txt and sub/f.txt), `build` and README.md; every command types
+// `content`. Each group also lists the form that was already blocked.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CASEFS_GROUPS = {
+  'a miscased parent directory, not just the last component': ["rm -rf content/sub","rm content/keep.txt","cd content && rm -rf sub","rmdir content/sub","find content/sub -delete","rm -rf content"],
+  'wrapper options that take a value': ["sudo -u root rm -rf content","sudo -E -u root rm -rf content","env -u DEBUG rm -rf content","exec -a x rm -rf content","sudo A=1 rm -rf content","sudo -n rm -rf content"],
+  'more wrappers: timeout, nice, doas, stdbuf, xargs fed by echo': ["timeout 30 rm -rf content","nice -n 5 rm -rf content","doas rm -rf content","stdbuf -o0 rm -rf content","echo content | xargs rm -rf","nohup rm -rf content"],
+  'comments, escaped quotes, arithmetic and spaced heredoc delimiters': ["# don't keep the old output\nrm -rf content","echo cleaning # it's stale\nrm -rf content","echo it\\'s gone; rm -rf content","echo $((1<<n))\nrm -rf content","cat <<\"E OF\"\nhi\nE OF\nrm -rf content","# do not keep the old output\nrm -rf content"],
+  'line continuations, brace expansion and glued redirects': ["rm -rf \\\n  content","rm \\\n -rf content","rm -rf {content,build}","rm -rf content{,-old}","rm -rf content>/dev/null","rm -rf content \\\n  build"],
+  'a literal target beside a command substitution': ["rm -rf content build-$(date +%F)","rm -rf content \"$(mktemp -d)\"","rm -rf content `cat old.txt`","rm -rf content build-$STAMP"],
+  'find options before the paths, -exec by full path, find piped to xargs rm': ["find -L content -delete","find -H content -delete","find content -exec /bin/rm -rf {} +","find content -type f | xargs rm","find content -delete"],
+};
+
+function casefsFsx(root = '/casefs') {
+  return makeFsx(
+    { [root]: ['build', 'Content', 'README.md'], [`${root}/Content`]: ['keep.txt', 'sub'], [`${root}/Content/sub`]: ['f.txt'], [`${root}/build`]: [] },
+    [root, `${root}/Content`, `${root}/Content/sub`, `${root}/build`],
+  );
+}
+
+describe('Unit: recorded case-collision inputs are denied at the default level', () => {
+  const fsx = casefsFsx();
+  for (const [group, commands] of Object.entries(CASEFS_GROUPS)) {
+    it(group, () => {
+      for (const cmd of commands) {
+        const r = checkCommand(cmd, '/casefs', 'high', fsx);
+        assert.strictEqual(r.blocked, true, JSON.stringify(cmd));
+        assert.strictEqual(r.hit.actual, 'Content', JSON.stringify(cmd));
+      }
+    });
+  }
+});
+
+describe('Unit: the same shapes with the exact case still pass', () => {
+  const fsx = casefsFsx();
+  const at = (cmd, cwd = '/casefs') => analyzeCommand(cmd, cwd, fsx);
+  it('exact-case forms of the recorded inputs', () => {
+    for (const cmd of [
+      'rm -rf Content/sub', 'rm Content/keep.txt', 'cd Content && rm -rf sub', 'find Content/sub -delete',
+      'sudo -u root rm -rf Content', 'env -u DEBUG rm -rf Content', 'timeout 30 rm -rf Content', 'echo Content | xargs rm -rf',
+      "# don't keep the old output\nrm -rf Content", 'rm -rf \\\n  Content', 'rm -rf {Content,build}', 'rm -rf Content>/dev/null',
+      'rm -rf Content build-$(date +%F)', 'find -L Content -delete', 'find Content -type f | xargs rm',
+    ]) assert.strictEqual(at(cmd), null, JSON.stringify(cmd));
+  });
+  it('a session cwd spelled in another case is trusted, not flagged', () => {
+    assert.strictEqual(at('rm -rf sub', '/casefs/content'), null);
+    assert.strictEqual(at('rm -rf ../build', '/casefs/content'), null);
+  });
+  it('a miscased name in a comment or quoted text is not a target', () => {
+    assert.strictEqual(at('rm -rf build # not content'), null);
+    assert.strictEqual(at('echo "rm -rf content"'), null);
+    assert.strictEqual(at('echo content'), null);
+  });
+  it('env -C and sudo -D run the command in that directory', () => {
+    assert.strictEqual(at('env -C build rm -rf content'), null);
+    assert.ok(at('env -C /casefs rm -rf content', '/elsewhere'));
+    assert.ok(at('sudo -D /casefs rm -rf content', '/elsewhere'));
+  });
+});
+
+describe('Unit: parsing details behind the recorded inputs', () => {
+  const fsx = casefsFsx();
+  const at = (cmd) => analyzeCommand(cmd, '/casefs', fsx);
+  it('# inside a word is not a comment', () => {
+    assert.ok(at('echo x\\ #; rm -rf content'));
+    assert.ok(at('echo a#b; rm -rf content'));
+  });
+  it('xargs -I substitutes the piped words', () => {
+    assert.ok(at('echo content | xargs -I{} rm -rf {}'));
+    assert.ok(at('echo content | xargs -I X rm -rf X'));
+  });
+  it('an operator inside $( ) does not split the segment', () => {
+    assert.ok(at('rm -rf content $(cd /tmp; pwd)'));
+  });
+  it('cd into a command substitution keeps checking the current directory', () => {
+    assert.ok(at('cd "$(git rev-parse --show-toplevel)" && rm -rf content'));
+  });
+  it('tokenize drops redirect operators and their targets', () => {
+    assert.deepStrictEqual(tokenize('rm -rf x>/dev/null 2>&1').map(t => t.text), ['rm', '-rf', 'x']);
+  });
+  it('tokenize expands unquoted brace lists only', () => {
+    assert.deepStrictEqual(tokenize('rm a{,-old} "b{c,d}" {}').map(t => t.text), ['rm', 'a', 'a-old', 'b{c,d}', '{}']);
+  });
+  it('preprocess joins continuations and drops comments', () => {
+    assert.strictEqual(preprocess('rm \\\n -rf x # gone'), 'rm  -rf x ');
+  });
+});
+
+describe('Integration: recorded inputs on a real case-insensitive folder', { skip: !TMP_IS_CASE_INSENSITIVE && 'tmpdir is case-sensitive' }, () => {
+  let dir;
+  const setup = () => {
+    dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cig-casefs-')));
+    fs.mkdirSync(path.join(dir, 'Content', 'sub'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'build'));
+    fs.writeFileSync(path.join(dir, 'Content', 'keep.txt'), '');
+    fs.writeFileSync(path.join(dir, 'Content', 'sub', 'f.txt'), '');
+    fs.writeFileSync(path.join(dir, 'README.md'), '');
+  };
+  const { before, after } = require('node:test');
+  before(setup);
+  after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const [group, commands] of Object.entries(CASEFS_GROUPS)) {
+    it(group, async () => {
+      for (const cmd of commands) {
+        const { output } = await runHook(bash(cmd, dir));
+        assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny', JSON.stringify(cmd));
+      }
+      assert.ok(fs.existsSync(path.join(dir, 'Content', 'sub', 'f.txt')), 'the hook must never touch the folder');
+    });
+  }
 });

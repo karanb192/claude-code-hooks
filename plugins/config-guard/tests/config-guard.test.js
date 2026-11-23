@@ -6,7 +6,7 @@
  * Or:  npm test
  */
 
-const { describe, it } = require('node:test');
+const { describe, it, after } = require('node:test');
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
@@ -16,6 +16,7 @@ const os = require('node:os');
 // The module reads HOOK_SAFETY_LEVEL at load time; clear it before requiring
 // so a runner shell's env cannot shift the default the unit tests assume.
 delete process.env.HOOK_SAFETY_LEVEL;
+delete process.env.CLAUDE_CONFIG_DIR;
 
 const {
   PROTECTED_PATHS,
@@ -68,7 +69,7 @@ function runHook(payload, envOverrides = {}) {
   return new Promise((resolve, reject) => {
     const env = { ...process.env, HOME: TMP_HOME, ...envOverrides };
     for (const key of Object.keys(env)) {
-      if ((key.startsWith('HOOK_') || key.startsWith('CONFIG_GUARD_')) && !(key in envOverrides)) {
+      if ((key.startsWith('HOOK_') || key.startsWith('CONFIG_GUARD_') || key === 'CLAUDE_CONFIG_DIR') && !(key in envOverrides)) {
         delete env[key];
       }
     }
@@ -421,6 +422,314 @@ describe('Integration: hook process', () => {
       const { output } = await runHook({ tool_name: 'Edit' });
       assert.deepStrictEqual(output, {});
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Self-protection: installed plugins, ~/.claude.json, the spawn cap ledger
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PACK_CACHE = '~/.claude/plugins/cache/claude-code-hooks/guard-pack/1.4.0';
+
+describe('Unit: installed guard code and guard state', () => {
+  describe('Edit/Write paths', () => {
+    it('blocks the pack dispatcher in the plugin cache', () => fileBlocked(`/home/u/.claude/plugins/cache/claude-code-hooks/guard-pack/1.4.0/lib/dispatch.js`, 'claude-plugins'));
+    it('blocks the plugin registry files', () => {
+      fileBlocked('/home/u/.claude/plugins/installed_plugins.json', 'claude-plugins');
+      fileBlocked('/home/u/.claude/plugins/known_marketplaces.json', 'claude-plugins');
+    });
+    it('blocks a cloned marketplace checkout', () => fileBlocked('/home/u/.claude/plugins/marketplaces/claude-code-hooks/plugins/config-guard/config-guard.js', 'claude-plugins'));
+    it('plugin cache is critical: still blocked at the critical level', () => fileBlocked('/home/u/.claude/plugins/cache/x/y/1.0.0/hook.js', 'claude-plugins', 'critical'));
+    it('blocks ~/.claude.json at the default level', () => fileBlocked('/home/u/.claude.json', 'claude-json'));
+    it('~/.claude.json is high, like .mcp.json: critical lets it through', () => fileAllowed('/home/u/.claude.json', 'critical'));
+    it('blocks writing the spawn cap ledger', () => fileBlocked('/home/u/.claude/subagent-spawn-cap/sess-1.jsonl', 'spawn-cap-state', 'critical'));
+    it('allows look-alikes: a repo plugins/ dir, claude.json, my.claude.json, .claude/plugin-notes.md', () => {
+      fileAllowed('plugins/guard-pack/lib/dispatch.js');
+      fileAllowed('src/claude.json');
+      fileAllowed('my.claude.json');
+      fileAllowed('.claude/plugin-notes.md');
+      fileAllowed('.claude.json.example');
+    });
+    it('Read of the cached dispatcher always passes', () => {
+      assert.strictEqual(checkTool('Read', { file_path: '/home/u/.claude/plugins/cache/claude-code-hooks/guard-pack/1.4.0/lib/dispatch.js' }).blocked, false);
+    });
+  });
+
+  describe('Bash mutations', () => {
+    it('blocks sed -i on the cached dispatcher', () => bashBlocked(`sed -i '' 's/GUARDS = \\[/GUARDS = [] \\&\\& [/' ${PACK_CACHE}/lib/dispatch.js`, 'claude-plugins'));
+    it('blocks rm -rf of the marketplace cache', () => bashBlocked('rm -rf ~/.claude/plugins/cache/claude-code-hooks', 'claude-plugins'));
+    it('blocks rm -rf of the whole plugins dir and of the Claude dir itself', () => {
+      for (const c of ['rm -rf ~/.claude/plugins', 'rm -rf ~/.claude', 'rm -rf ~/.claude/', 'rm -rf ~/.claude/*', 'rm -rf "$HOME/.claude"', 'rm -rf ${HOME}/.claude/plugins/', 'rm -rf "$CLAUDE_CONFIG_DIR/plugins"', 'rm -rf "${CLAUDE_CONFIG_DIR}"']) bashBlocked(c, 'claude-plugins');
+    });
+    it('blocks a relative delete after cd into the Claude dir', () => bashBlocked('cd ~/.claude && rm -rf plugins', 'claude-plugins'));
+    it('blocks moving the plugins dir away and redirecting into it', () => {
+      bashBlocked('mv ~/.claude/plugins /tmp/off', 'claude-plugins');
+      bashBlocked(`echo 'module.exports={GUARDS:[]}' > ${PACK_CACHE}/lib/dispatch.js`, 'claude-plugins');
+      bashBlocked(`cat > ${PACK_CACHE}/lib/dispatch.js <<'EOF'\nmodule.exports = { GUARDS: [] };\nEOF`, 'claude-plugins');
+    });
+    it('blocks a delete inside a command substitution', () => bashBlocked('echo "$(rm -rf ~/.claude/plugins)"', 'claude-plugins'));
+    it('allows shell and native writes to config templates and backups', () => {
+      for (const file of ['docs/.claude.json.example', 'docs/.claude.json.backup']) {
+        bashAllowed(`cp template.json "${file}"`);
+        fileAllowed(file);
+      }
+      bashBlocked('cp template.json "docs/.claude.json"', 'claude-json');
+      fileBlocked('docs/.claude.json', 'claude-json');
+    });
+    it('blocks writes to ~/.claude.json', () => {
+      bashBlocked('echo \'{"mcpServers":{}}\' > ~/.claude.json', 'claude-json');
+      bashBlocked('cp /tmp/evil.json ~/.claude.json', 'claude-json');
+      bashBlocked("sed -i 's/a/b/' $HOME/.claude.json", 'claude-json');
+    });
+    it('blocks deleting or truncating the spawn cap ledger', () => {
+      bashBlocked('rm ~/.claude/subagent-spawn-cap/cap-demo.jsonl', 'spawn-cap-state');
+      bashBlocked(': > ~/.claude/subagent-spawn-cap/cap-demo.jsonl', 'spawn-cap-state');
+      bashBlocked('rm -rf ~/.claude/subagent-spawn-cap', 'spawn-cap-state');
+      bashBlocked('truncate -s 0 ~/.claude/subagent-spawn-cap/cap-demo.jsonl', 'spawn-cap-state');
+    });
+  });
+
+  describe('Reads and plugin use stay allowed', () => {
+    for (const c of [
+      'cat ~/.claude/plugins/installed_plugins.json',
+      'ls -la ~/.claude/plugins/cache',
+      `grep -rn GUARDS ${PACK_CACHE}/lib`,
+      `diff ${PACK_CACHE}/lib/dispatch.js plugins/guard-pack/lib/dispatch.js`,
+      `node ${PACK_CACHE}/guard-pack.js < event.json`,
+      'cat ~/.claude.json | jq .mcpServers',
+      'wc -l ~/.claude/subagent-spawn-cap/*.jsonl',
+      'claude plugin list',
+      'claude plugin marketplace list',
+      'cp notes.md .claude/',
+      'cd .claude && rm old-notes.md',
+      'rm -rf node_modules/.claude-plugins-cache',
+    ]) it(`allows: ${c}`, () => bashAllowed(c));
+  });
+});
+
+describe('Unit: heredoc text is not a command', () => {
+  // Mentions of a protected path next to a verb word ("install", "rm") in a
+  // report or a commit message are the false refusals users hit.
+  describe('text-only heredocs pass', () => {
+    for (const c of [
+      "cat > report.md <<'EOF'\nTo install, copy into ~/.claude/plugins and rm the old one.\nAlso check ~/.claude/settings.json and ~/.claude.json.\nEOF",
+      'cat > report.md <<EOF\nplain text naming ~/.claude/plugins: rm, mv, install\nEOF',
+      "cat <<'EOF' > notes/plan.md\nrm -rf ~/.claude/plugins is now refused\nEOF",
+      "tee notes.md <<'EOF'\nsed -i on .claude/settings.json is refused\nEOF",
+      "git commit -m \"$(cat <<'EOF'\nProtect ~/.claude/plugins from rm -rf\n\nAlso ~/.claude.json and claude plugin install.\nEOF\n)\"",
+      "git add -A && git commit -m \"$(cat <<'EOF'\nrm ~/.claude/subagent-spawn-cap mention\nEOF\n)\"",
+      "gh pr create --title \"Protect plugins\" --body \"$(cat <<'EOF'\nrm -rf ~/.claude/plugins is refused\nEOF\n)\"",
+    ]) it(`allows: ${JSON.stringify(c.slice(0, 60))}`, () => bashAllowed(c));
+  });
+
+  describe('anything that could run the text is still read', () => {
+    for (const c of [
+      "cat <<'EOF' | sh\nrm -rf ~/.claude/plugins\nEOF",
+      "bash -c \"$(cat <<'EOF'\nrm -rf ~/.claude/plugins\nEOF\n)\"",
+      "$(cat <<'EOF'\nrm -rf ~/.claude/plugins\nEOF\n)",
+      'cat <<EOF\n$(rm -rf ~/.claude/plugins)\nEOF',
+      'cat > f.md <<EOF\n`rm -rf ~/.claude/plugins`\nEOF',
+      "cat <<'EOF'\nx\nEOF\nrm -rf ~/.claude/plugins\nEOF",
+      'echo "\ncat <<X\n"\nrm -rf ~/.claude/plugins/cache',
+      '# cat <<X\nrm -rf ~/.claude/plugins\nX',
+      'cat <<< "EOF"\nrm -rf ~/.claude/plugins',
+      "cat > notes.md <<'EOF'\nhello\nEOF\nrm -rf ~/.claude/plugins",
+      "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\" && rm -rf ~/.claude/plugins",
+      "cat > ~/.claude/plugins/x.js <<'EOF'\nhi\nEOF",
+      "cat <<'EOF' > .claude/settings.json\n{}\nEOF",
+    ]) it(`blocks: ${JSON.stringify(c.slice(0, 60))}`, () => bashBlocked(c));
+  });
+
+  it('long near-miss heredoc openers are judged in linear time', () => {
+    for (const cmd of [
+      'cat ' + 'a '.repeat(20000) + "<<'EOF' !",
+      'cat ' + 'a"b"\'c\''.repeat(5000) + ' !',
+      'git ' + '"x" '.repeat(20000) + '-m "$(cat <<EOF !',
+      'git a && '.repeat(5000) + "git commit -m \"$(cat <<'EOF' !",
+      "cat > r.md <<'EOF'\n" + 'rm ~/.claude/plugins\n'.repeat(20000) + 'EOF',
+    ]) {
+      const start = process.hrtime.bigint();
+      checkBashCommand(cmd);
+      assert.ok(Number(process.hrtime.bigint() - start) / 1e6 < 200, cmd.slice(0, 40));
+    }
+  });
+
+  it('a heredoc mention of a CLI write in a commit body passes; the real CLI call does not', () => {
+    bashAllowed("git commit -m \"$(cat <<'EOF'\nDocs: claude plugin install is refused\nEOF\n)\"");
+    bashBlocked('claude plugin install x@y', 'claude-cli-config');
+  });
+});
+
+describe('Integration: self-protection through the hook process', () => {
+  const cached = path.join(TMP_HOME, '.claude', 'plugins', 'cache', 'claude-code-hooks', 'guard-pack', '1.4.0', 'lib', 'dispatch.js');
+
+  it('denies an Edit of the cached dispatcher', async () => {
+    const { output } = await runHook(toolPayload('Edit', { file_path: cached, old_string: 'GUARDS = [', new_string: 'GUARDS = [] && [' }));
+    assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /^🔒 \[claude-plugins\]/);
+  });
+
+  it('denies a Write to ~/.claude.json', async () => {
+    const { output } = await runHook(toolPayload('Write', { file_path: path.join(TMP_HOME, '.claude.json'), content: '{"mcpServers":{}}' }));
+    assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /\[claude-json\]/);
+  });
+
+  it('denies deleting the Claude dir by its literal path', async () => {
+    const { output } = await runHook(toolPayload('Bash', { command: `rm -rf ${path.join(TMP_HOME, '.claude')}` }));
+    assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+  });
+
+  it('passes a Read of the cached dispatcher', async () => {
+    const { output } = await runHook(toolPayload('Read', { file_path: cached }));
+    assert.deepStrictEqual(output, {});
+  });
+
+  it('CONFIG_GUARD_ALLOW=true lets an intentional cache edit through', async () => {
+    const { output } = await runHook(toolPayload('Edit', { file_path: cached, old_string: 'a', new_string: 'b' }), { CONFIG_GUARD_ALLOW: 'true' });
+    assert.deepStrictEqual(output, {});
+  });
+
+  it('protects a custom CLAUDE_CONFIG_DIR plugins dir, including through a symlink', async () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-guard-cfgdir-'));
+    fs.mkdirSync(path.join(configDir, 'plugins', 'cache'), { recursive: true });
+    const link = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'config-guard-link-')), 'cfg');
+    fs.symlinkSync(configDir, link, 'dir');
+    const env = { CLAUDE_CONFIG_DIR: configDir };
+    for (const file of [path.join(configDir, 'plugins', 'cache', 'hook.js'), path.join(link, 'plugins', 'new.js')]) {
+      const { output } = await runHook(toolPayload('Write', { file_path: file, content: 'x' }), env);
+      assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny', file);
+    }
+    for (const command of [`rm -rf ${configDir}/plugins`, 'rm -rf "$CLAUDE_CONFIG_DIR"/plugins/cache', `rm -rf ${configDir}`]) {
+      const { output } = await runHook(toolPayload('Bash', { command }), env);
+      assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny', command);
+    }
+    const { output } = await runHook(toolPayload('Write', { file_path: path.join(configDir, 'notes.md'), content: 'x' }), env);
+    assert.deepStrictEqual(output, {});
+  });
+});
+
+// Inputs that once switched a guard off: each was allowed before this guard
+// protected the plugin cache, the CLI aliases and registered hook scripts.
+describe('Regression: guard self-protection inputs', () => {
+  it('denies writes and deletes in the installed plugin cache and plugin lists', () => {
+    for (const file of [
+      '/Users/dev/.claude/plugins/cache/claude-code-hooks/config-guard/1.0.0/config-guard.js',
+      '/Users/dev/.claude/plugins/cache/claude-code-hooks/guard-pack/1.4.0/lib/dispatch.js',
+      '/Users/dev/.claude/plugins/installed_plugins.json',
+      '/Users/dev/.claude/plugins/known_marketplaces.json',
+    ]) fileBlocked(file, 'claude-plugins');
+    bashBlocked('echo \'process.stdout.write("{}")\' > ~/.claude/plugins/cache/claude-code-hooks/guard-pack/1.4.0/guard-pack.js', 'claude-plugins');
+    bashBlocked('rm -rf ~/.claude/plugins/cache/claude-code-hooks', 'claude-plugins');
+  });
+
+  it('denies a Write to ~/.claude.json that adds an MCP server', () => {
+    fileBlocked('/Users/alice/.claude.json', 'claude-json');
+  });
+
+  it('denies the uninstall, install and prune aliases of the plugin CLI', () => {
+    for (const cmd of [
+      'claude plugin remove config-guard@claude-code-hooks',
+      'claude plugin rm guard-pack@claude-code-hooks',
+      'claude plugins uninstall config-guard@claude-code-hooks',
+      'claude plugin i some-plugin@some-market',
+      'claude plugins install some-plugin@some-market',
+      'claude plugin prune',
+      'claude plugins autoremove',
+    ]) bashBlocked(cmd, 'claude-cli-config');
+  });
+
+  it('denies config CLI writes behind global options', () => {
+    bashBlocked('claude --debug plugin uninstall config-guard@claude-code-hooks', 'claude-cli-config');
+    bashBlocked('claude -d mcp add x -- npx some-server', 'claude-cli-config');
+    bashBlocked('claude --model opus --settings "/tmp/a b.json" plugin rm x@y', 'claude-cli-config');
+  });
+
+  it('still allows the read-only plugin and mcp commands', () => {
+    for (const cmd of ['claude plugin list', 'claude plugins list', 'claude plugin details x', 'claude plugin marketplace list', 'claude --debug mcp list', 'claude --version']) bashAllowed(cmd);
+  });
+
+  it('answers a long option run without backtracking', () => {
+    const start = Date.now();
+    bashAllowed(`claude ${'-a b '.repeat(2000)}x`);
+    assert.ok(Date.now() - start < 1000);
+  });
+});
+
+describe('Regression: hook scripts registered outside .claude/hooks', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'config-guard-registered-'));
+  const project = path.join(home, 'proj');
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+  fs.mkdirSync(path.join(project, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [
+    { type: 'command', command: 'node /Users/dev/hooks/block-dangerous-commands.js' },
+    { type: 'command', command: 'bash ~/guards/gate.sh --strict' },
+  ] }] } }));
+  fs.writeFileSync(path.join(project, '.claude', 'settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ hooks: [
+    { type: 'command', command: 'python3 "$CLAUDE_PROJECT_DIR/hooks/tier_gate.py"' },
+  ] }] } }));
+  const at = (toolName, toolInput) => ({ ...toolPayload(toolName, toolInput), cwd: project });
+  const denied = async (payload) => {
+    const { output } = await runHook(payload, { HOME: home, CLAUDE_PROJECT_DIR: project });
+    assert.strictEqual(output.hookSpecificOutput?.permissionDecision, 'deny', JSON.stringify(payload.tool_input));
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /\[hook-script\]/);
+  };
+  const passed = async (payload) => {
+    const { output } = await runHook(payload, { HOME: home, CLAUDE_PROJECT_DIR: project });
+    assert.deepStrictEqual(output, {}, JSON.stringify(payload.tool_input));
+  };
+
+  it('denies a Write to a script the user settings register as a hook', () => denied(at('Write', { file_path: '/Users/dev/hooks/block-dangerous-commands.js', content: 'x' })));
+  it('denies an Edit of a project hook named through $CLAUDE_PROJECT_DIR', () => denied(at('Edit', { file_path: 'hooks/tier_gate.py', old_string: 'deny', new_string: 'allow' })));
+  it('denies a shell redirect and a delete of registered scripts', async () => {
+    await denied(at('Bash', { command: 'echo exit 0 > ~/guards/gate.sh' }));
+    await denied(at('Bash', { command: 'rm /Users/dev/hooks/block-dangerous-commands.js' }));
+  });
+  it('passes reads and files the settings do not register', async () => {
+    await passed(at('Read', { file_path: '/Users/dev/hooks/block-dangerous-commands.js' }));
+    await passed(at('Bash', { command: 'cat /Users/dev/hooks/block-dangerous-commands.js' }));
+    await passed(at('Write', { file_path: '/Users/dev/hooks/notes.md', content: 'x' }));
+    await passed(at('Write', { file_path: 'hooks/helper.py', content: 'x' }));
+  });
+});
+
+describe('Regression: registered hook commands are read as commands', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'config-guard-hookcmd-'));
+  after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const project = path.join(home, 'proj');
+  fs.mkdirSync(path.join(project, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(project, '.claude', 'settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ hooks: [
+    { type: 'command', command: 'node ./scripts/check.js > ./reports/status.log 2>&1' },
+    { type: 'command', command: 'node gate.js' },
+    { type: 'command', command: 'node lint.js sample.js' },
+  ] }] } }));
+  const env = { HOME: home, CLAUDE_PROJECT_DIR: project };
+  const decide = async (toolName, toolInput) => (await runHook({ ...toolPayload(toolName, toolInput), cwd: project }, env)).output;
+
+  it('protects the script, a bare script name and project-relative shell spellings', async () => {
+    for (const [toolName, toolInput] of [['Write', { file_path: 'scripts/check.js', content: 'x' }], ['Write', { file_path: 'gate.js', content: 'x' }],
+      ['Bash', { command: 'echo x > scripts/check.js' }], ['Bash', { command: 'echo x > ./scripts/check.js' }], ['Bash', { command: 'rm gate.js' }]]) {
+      const out = await decide(toolName, toolInput);
+      assert.match(out.hookSpecificOutput?.permissionDecisionReason || '', /\[hook-script\]/, JSON.stringify(toolInput));
+    }
+  });
+
+  it('does not protect where a hook writes its output, a data argument, or reads of the script', async () => {
+    for (const [toolName, toolInput] of [['Write', { file_path: 'reports/status.log', content: 'x' }], ['Bash', { command: 'cat scripts/check.js' }],
+      ['Write', { file_path: 'sample.js', content: 'x' }]]) {
+      assert.deepStrictEqual(await decide(toolName, toolInput), {}, JSON.stringify(toolInput));
+    }
+  });
+
+  it('skips a settings file too large to be real settings', async () => {
+    const big = fs.mkdtempSync(path.join(os.tmpdir(), 'config-guard-bigsettings-'));
+    after(() => fs.rmSync(big, { recursive: true, force: true }));
+    fs.mkdirSync(path.join(big, '.claude'));
+    fs.writeFileSync(path.join(big, '.claude', 'settings.json'), JSON.stringify({ pad: 'x'.repeat(2 * 1024 * 1024) }));
+    const start = Date.now();
+    const out = (await runHook({ ...toolPayload('Write', { file_path: path.join(big, 'notes.md'), content: 'x' }), cwd: big }, { HOME: home, CLAUDE_PROJECT_DIR: big })).output;
+    assert.deepStrictEqual(out, {});
+    assert.ok(Date.now() - start < 3000);
   });
 });
 

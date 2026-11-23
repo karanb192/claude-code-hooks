@@ -22,7 +22,7 @@ codex plugin add protect-secrets@claude-code-hooks
 
 Open `/hooks` in Codex and approve this plugin. Re-approve after every update; Codex skips unapproved or changed hooks. Do not install it alongside [guard-pack](../guard-pack#codex-cli), which includes this guard.
 
-This entry point checks `Bash` and native `apply_patch` calls. Patch files are checked individually; unreadable patches are blocked. Shell patches must use a plain command with a quoted heredoc. Literal searches and commit messages mentioning `apply_patch` pass. See [the shared adapter's limits](../guard-pack#codex-cli), including shell sessions and dynamically constructed commands.
+This entry point checks `Bash` and native `apply_patch` calls. Patch files are checked individually; unreadable patches are blocked. Shell patches must use a plain command with a quoted heredoc; `apply_patch` anywhere else in a command, such as behind `timeout` or `eval`, is blocked. Literal searches and commit messages mentioning `apply_patch` pass. See [the shared adapter's limits](../guard-pack#codex-cli), including shell sessions and dynamically constructed commands.
 
 Export configuration variables before launching Codex. An ask-mode match becomes a block because Codex hooks cannot ask. Logs stay in `~/.claude/hooks-logs/` with `host: "codex"`, including on Codex-only machines.
 
@@ -31,6 +31,12 @@ Export configuration variables before launching Codex. An ask-mode match becomes
 | Event | Runs | What happens |
 |-------|------|--------------|
 | PreToolUse (`Read\|Edit\|Write\|Bash\|Grep`) | sync (must decide before the tool runs) | Matches the file path (Read/Edit/Write), the search target (Grep) or the command (Bash) against tiered sensitive patterns; on a hit, denies or asks with the pattern id and reason. Everything else passes through untouched. |
+
+## How it reads a Bash command
+
+It shares its command reader with [block-dangerous-commands](../block-dangerous-commands#how-it-reads-a-command). Quotes and escapes do not change the verdict: `cat ./.e"nv"`, `c''at .env` and `cat .\env` are refused like `cat .env`, as is a read inside a substitution such as `echo "$(c'a't .env)"`. Quoted `echo`, `printf`, commit and heredoc text that only mentions a secret file is not matched, so `echo 'never cat .env'` is allowed. A double-quoted string that expands is not a message: `echo "$API_KEY"` is still refused.
+
+Not caught: a word whose quotes hold a space keeps its quotes, so `cat "my dir/.e"nv` is not read as `.env`. [tests/shell-rewrites.test.js](../../tests/shell-rewrites.test.js) keeps that in its known-miss list.
 
 ## Search and Windows coverage
 
