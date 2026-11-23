@@ -693,6 +693,42 @@ describe('Regression: hook scripts registered outside .claude/hooks', () => {
   });
 });
 
+describe('Regression: registered hook commands are read as commands', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'config-guard-hookcmd-'));
+  const project = path.join(home, 'proj');
+  fs.mkdirSync(path.join(project, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(project, '.claude', 'settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ hooks: [
+    { type: 'command', command: 'node ./scripts/check.js > ./reports/status.log 2>&1' },
+    { type: 'command', command: 'node gate.js' },
+  ] }] } }));
+  const env = { HOME: home, CLAUDE_PROJECT_DIR: project };
+  const decide = async (toolName, toolInput) => (await runHook({ ...toolPayload(toolName, toolInput), cwd: project }, env)).output;
+
+  it('protects the script, a bare script name and project-relative shell spellings', async () => {
+    for (const [toolName, toolInput] of [['Write', { file_path: 'scripts/check.js', content: 'x' }], ['Write', { file_path: 'gate.js', content: 'x' }],
+      ['Bash', { command: 'echo x > scripts/check.js' }], ['Bash', { command: 'echo x > ./scripts/check.js' }], ['Bash', { command: 'rm gate.js' }]]) {
+      const out = await decide(toolName, toolInput);
+      assert.match(out.hookSpecificOutput?.permissionDecisionReason || '', /\[hook-script\]/, JSON.stringify(toolInput));
+    }
+  });
+
+  it('does not protect where a hook writes its output, or reads of the script', async () => {
+    for (const [toolName, toolInput] of [['Write', { file_path: 'reports/status.log', content: 'x' }], ['Bash', { command: 'cat scripts/check.js' }]]) {
+      assert.deepStrictEqual(await decide(toolName, toolInput), {}, JSON.stringify(toolInput));
+    }
+  });
+
+  it('skips a settings file too large to be real settings', async () => {
+    const big = fs.mkdtempSync(path.join(os.tmpdir(), 'config-guard-bigsettings-'));
+    fs.mkdirSync(path.join(big, '.claude'));
+    fs.writeFileSync(path.join(big, '.claude', 'settings.json'), JSON.stringify({ pad: 'x'.repeat(2 * 1024 * 1024) }));
+    const start = Date.now();
+    const out = (await runHook({ ...toolPayload('Write', { file_path: path.join(big, 'notes.md'), content: 'x' }), cwd: big }, { HOME: home, CLAUDE_PROJECT_DIR: big })).output;
+    assert.deepStrictEqual(out, {});
+    assert.ok(Date.now() - start < 3000);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Config validation
 // ─────────────────────────────────────────────────────────────────────────────

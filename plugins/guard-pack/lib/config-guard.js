@@ -226,25 +226,40 @@ function settingsFiles(project) {
 
 // One hook call is one process, so the settings are read once per project.
 const hookScriptCache = new Map();
+const MAX_SETTINGS_BYTES = 1024 * 1024;
+const SCRIPT_EXT = /\.(?:[cm]?js|ts|py|sh|bash|zsh|rb|pl|php)$/i;
+
+function readSettings(file) {
+  try {
+    const st = fs.statSync(file);
+    if (!st.isFile() || st.size > MAX_SETTINGS_BYTES) return null;
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
 
 function registeredHookScripts(cwd = process.cwd()) {
   const project = path.resolve(process.env.CLAUDE_PROJECT_DIR || cwd || process.cwd());
   if (hookScriptCache.has(project)) return hookScriptCache.get(project);
   const scripts = new Set();
   for (const file of settingsFiles(project)) {
-    let settings;
-    try { settings = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { continue; }
+    const settings = readSettings(file);
     const events = settings && typeof settings.hooks === 'object' && settings.hooks ? Object.values(settings.hooks) : [];
     for (const groups of events) {
       for (const group of Array.isArray(groups) ? groups : []) {
         for (const hook of Array.isArray(group && group.hooks) ? group.hooks : []) {
           if (typeof (hook && hook.command) !== 'string') continue;
-          for (const word of hook.command.match(/"[^"]*"|'[^']*'|[^\s"';|&<>()]+/g) || []) {
-            const expanded = word.replace(/^(["'])(.*)\1$/s, '$2')
+          // A redirect target is where the hook writes, not its code; a bare
+          // name with a script extension (node gate.js) is a script.
+          const words = hook.command.match(/\d*[<>]{1,2}&?|"[^"]*"|'[^']*'|[^\s"';|&<>()]+/g) || [];
+          for (let i = 0; i < words.length; i++) {
+            if (/^\d*[<>]/.test(words[i])) { i++; continue; }
+            const expanded = words[i].replace(/^(["'])(.*)\1$/s, '$2')
               .replace(/^~(?=[\\/])/, HOME_DIR)
               .replace(/\$(?:HOME|\{HOME\})(?=[\\/])/g, HOME_DIR)
               .replace(/\$(?:CLAUDE_PROJECT_DIR|\{CLAUDE_PROJECT_DIR\})(?=[\\/])/g, project);
-            if (!/[\\/]/.test(expanded) || /[$`*?]/.test(expanded)) continue;
+            if ((!/[\\/]/.test(expanded) && !SCRIPT_EXT.test(expanded)) || /[$`*?]/.test(expanded)) continue;
             for (const p of resolveCandidates(path.resolve(project, expanded))) scripts.add(p.replace(/\\/g, '/'));
           }
         }
@@ -257,17 +272,23 @@ function registeredHookScripts(cwd = process.cwd()) {
 
 const hookTokenCache = new Map();
 
-// Shell spellings of the registered scripts: the absolute path, plus ~ and
-// $HOME forms for scripts under the home directory.
-function registeredHookTokens(cwd) {
+// Shell spellings of the registered scripts: the absolute path, ~ and $HOME
+// forms under the home directory, and paths relative to the working
+// directory (scripts/check.js, ./scripts/check.js).
+function registeredHookTokens(cwd = process.cwd()) {
   const scripts = registeredHookScripts(cwd);
   if (hookTokenCache.has(scripts)) return hookTokenCache.get(scripts);
   const home = HOME_DIR.replace(/\\/g, '/');
+  const here = path.resolve(cwd || process.cwd()).replace(/\\/g, '/');
   const tokens = scripts.map((script) => {
     const spellings = [escapeRegex(script)];
     if (script.startsWith(`${home}/`)) {
       const rest = escapeRegex(script.slice(home.length));
       spellings.push(`~${rest}`, `\\$HOME${rest}`, `\\$\\{HOME\\}${rest}`);
+    }
+    if (script.startsWith(`${here}/`)) {
+      const rel = escapeRegex(script.slice(here.length + 1));
+      spellings.push(`(?:\\./)?${rel}`);
     }
     return { ...REGISTERED_HOOK, regex: new RegExp(`(?:^|[\\s'"=(\`])(?:${spellings.join('|')})(?=[\\s'";|&)\`]|$)`) };
   });
