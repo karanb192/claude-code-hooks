@@ -189,6 +189,16 @@ describe('a slow input cannot run a guard past its timeout', () => {
     assert.ok(Date.now() - start < 3000, `took ${Date.now() - start} ms`);
   });
 
+  // This exact line once ran block-dangerous-commands past any hook timeout.
+  const resetAfterFlags = `rm ${'-f '.repeat(40)}build/out.o && git reset --hard`;
+  for (const name of ['block-dangerous-commands', 'guard-pack']) {
+    it(`${name} denies git reset --hard after 40 repeated rm flags, well inside 10 s`, () => {
+      const start = Date.now();
+      claudeDeny(run(abs(claudeScript(name)), { tool_name: 'Bash', cwd: home, tool_input: { command: resetAfterFlags } }), 'git-reset-hard');
+      assert.ok(Date.now() - start < 3000, `took ${Date.now() - start} ms`);
+    });
+  }
+
   // In a child with a deadline: on the exponential regex this never returns.
   it('block-dangerous-commands still catches rm after a long flag run, in linear time', () => {
     const cases = [

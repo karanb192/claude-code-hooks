@@ -5,11 +5,11 @@
 [![GitHub stars](https://img.shields.io/github/stars/karanb192/claude-code-hooks?style=social)](https://github.com/karanb192/claude-code-hooks)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml/badge.svg)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
-[![Tests](https://img.shields.io/badge/tests-2506%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-2577%20passing-brightgreen)](https://github.com/karanb192/claude-code-hooks/actions/workflows/test.yml)
 
 **🌐 [Live site & catalog](https://karanb192.github.io/claude-code-hooks/)**
 
-Before an agent runs a shell command or edits a file, these hooks check the action against rules outside the model. The [guard pack](plugins/guard-pack) blocks matched secret reads, dangerous commands, test disabling and destructive Git operations. A blocked call returns a reason to the agent. The [coverage limits](plugins/guard-pack#codex-cli) matter: hooks only see the events their host sends, and pattern checks are not a sandbox. The catalog also includes Claude Code automation, notifications and observability, with an [OWASP mapping](docs/owasp-llm-top-10-2026.md).
+Before an agent runs a shell command or edits a file, these hooks check the action against rules outside the model. The [guard pack](plugins/guard-pack) blocks matched secret reads, dangerous commands, test disabling and destructive Git operations. A blocked call returns a reason to the agent. The [coverage limits](plugins/guard-pack#codex-cli) matter: hooks only see the events their host sends, and pattern checks are not a sandbox. The [rewrite record](tests/shell-rewrites.test.js) lists the command spellings the shell guards must refuse, the mentions they must allow, and the ones they still miss. The catalog also includes Claude Code automation, notifications and observability, with an [OWASP mapping](docs/owasp-llm-top-10-2026.md).
 
 **Start with guard-pack. Choose your agent:**
 
@@ -229,7 +229,7 @@ Then open `/hooks` in Codex and approve the plugin's hooks. Codex skips any hook
 
 | On Codex | Plugins | Why |
 | --- | --- | --- |
-| Native support | [guard-pack](plugins/guard-pack#codex-cli) 1.6.0 and all seven current standalone guards | Shell and native patch checks; asks become blocks. The pack also includes Codex config protection and a deny-only, per-thread spawn budget. Install the pack or individual guards, not both |
+| Native support | [guard-pack](plugins/guard-pack#codex-cli) 1.7.1 and all seven current standalone guards | Shell and native patch checks; asks become blocks. The pack also includes Codex config protection and a deny-only, per-thread spawn budget. Install the pack or individual guards, not both |
 | Native workflow support | [auto-stage](plugins/auto-stage#codex-cli), [format-code](plugins/format-code#codex-cli), [session-logger](plugins/session-logger#codex-cli) 1.1.0 | Stage or format successful native patches; record lifecycle, patch paths and shell commands. Formatting skips project settings and ignore files; unconfigured files use installed Ruff/Prettier 3 defaults without lint autofixes. Shell-edited paths are not tracked, and formatting/staging order is not guaranteed |
 | Older versions | guard-pack 1.3.x | Shell and native patches, without the Codex spawn cap or full config-path coverage. Older standalone guards have no native patch adapter and do not safely support ask mode |
 | Claude Code only for now | Every other plugin | They rely on Claude Code transcripts, its edit events, or events Codex doesn't have (`Notification`, `ConfigChange`, `InstructionsLoaded`, the status line) |
