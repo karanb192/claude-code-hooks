@@ -325,6 +325,22 @@ describe('Unit: checkBashCommand()', () => {
     it('blocks find -exec cat .env', () => bashBlocked('find . -name ".env" -exec cat {} \\;', 'find-exec-cat-env'));
   });
 
+  // The full record runs in tests/shell-rewrites.test.js; these pin this guard.
+  describe('Shell reading: quoting does not change the verdict', () => {
+    it('blocks a split .env name', () => bashBlocked('cat ./.e"nv"', 'cat-env'));
+    it('blocks a quoted cat', () => bashBlocked("c''at .env", 'cat-env'));
+    it('blocks an escaped .env name', () => bashBlocked('cat .\\env', 'cat-env'));
+    it('blocks a .env read in a substitution', () => bashBlocked('echo "$(c\'a\'t .env)"', 'cat-env'));
+    it('still blocks echo of a secret variable', () => bashBlocked('echo "$API_KEY"', 'echo-secret-var'));
+    it('still allows a quoted template name', () => bashAllowed('cat ".env.example"'));
+  });
+
+  describe('Shell reading: text that only mentions a command', () => {
+    it('allows echo of text naming .env', () => bashAllowed("echo 'never cat .env'"));
+    it('allows a heredoc note naming a key file', () => bashAllowed("cat > notes.md <<'EOF'\ncat ~/.ssh/id_rsa is refused\nEOF"));
+    it('blocks the same text piped into a shell', () => bashBlocked("echo 'cat .env' | sh", 'cat-env'));
+  });
+
   describe('STRICT: Potentially sensitive (requires strict level)', () => {
     it('blocks grep -r password at strict', () => bashBlocked('grep -r password .', 'grep-password', 'strict'));
     it('blocks grep --recursive secret at strict', () => bashBlocked('grep --recursive secret /app', 'grep-password', 'strict'));

@@ -192,7 +192,7 @@
     {
       "name": "config-guard",
       "source": "./plugins/config-guard",
-      "description": "Who guards the guards: blocks the agent from tampering with its own guardrail config (settings.json, hook scripts, hooks.json, .mcp.json, plugin manifests, claude CLI config writes); reads always pass.",
+      "description": "Who guards the guards: blocks the agent from tampering with its own guardrail config (settings.json, hook scripts, hooks.json, installed plugins, .mcp.json, ~/.claude.json, plugin manifests, claude CLI config writes); reads always pass.",
       "category": "safety",
       "tags": [
         "security",

@@ -22,7 +22,9 @@ const FIXTURES = path.join(__dirname, 'fixtures', 'codex-0.167.1');
 const host = require(path.join(PACK_DIR, 'lib', 'host.js'));
 
 const TMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-pack-codex-home-'));
-const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-pack-codex-work-'));
+// The real path: macOS's tmpdir is under /var, and a delete under /var is
+// rm-system to block-dangerous-commands, which would answer before protect-tests.
+const WORK = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'guard-pack-codex-work-'));
 before(() => {
   fs.mkdirSync(path.join(WORK, 'tests'), { recursive: true });
   fs.writeFileSync(path.join(WORK, 'sum.js'), 'function sum(a,b){return a+b}\nmodule.exports={sum}\n');

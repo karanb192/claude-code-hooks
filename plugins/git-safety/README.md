@@ -43,6 +43,17 @@ Blocked at the default `high` level:
 
 **Composition with `block-dangerous-commands`:** that hook already blocks force-push (any, and to main/master) and `git reset --hard` on any branch, so at `high` the two don't overlap. Run git-safety at `strict` if you use it on its own.
 
+## How it reads a command
+
+It shares its command reader with [block-dangerous-commands](../block-dangerous-commands#how-it-reads-a-command), so quotes, escapes and variables do not change the verdict. `git 'push' origin main` and `g=git; $g push origin main` are refused, and so is `git "push" origin HEAD` while on main. Quoted commit messages, PR bodies and heredoc text that only mention a command are not matched, so `git commit -m "run gh pr merge after review"` is allowed on a feature branch.
+
+### What it does not catch
+
+- The branch-aware rules read the branch of the session's working directory, not the branch or repository the command reaches. `git checkout main && git commit -m x` and `git -C <repo on main> commit -m x` pass while the session is on another branch.
+- A loop variable: `for g in git; do $g push origin main; done`.
+
+[tests/shell-rewrites.test.js](../../tests/shell-rewrites.test.js) lists these with the rest of the record and fails when one starts being caught.
+
 ## Configuration
 
 Optional, set via environment variable:
