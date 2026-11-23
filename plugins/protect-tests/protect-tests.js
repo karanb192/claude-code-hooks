@@ -100,7 +100,7 @@ function dropsTestSuite(cmd) {
 // newline whatever follows the name. Only a command in command position
 // counts (after a separator, a group opener or a wrapper), so a mention
 // such as `echo mv a b` is text.
-const MOVE = /(?:^|[;&|(\n{])\s*(?:(?:sudo|doas|env|command|nohup|nice|time|exec)\s+(?:-\S+\s+)*)*(?:git\s+mv|mv)\s+([^;&|\n)]*)/g;
+const MOVE = /(?:^|[;&|(\n{])\s*(?:(?:sudo|doas|env|command|nohup|nice|time|exec)\s+(?:-\S+\s+)*)*(git\s+mv|mv)\s+([^;&|\n)]*)/g;
 const TEST_NAME = /(?:^|\/)(?:test_[^/]+\.py|[^/]+_test\.\w+|[^/]+\.(?:test|spec)\.\w+|[^/]+_spec\.rb)$|(?:^|\/)(?:[^/]*Tests?|Test[^/]*)\.(?:java|kt|cs)$/;
 const TEST_DIR_NAME = /(?:^|\/)(?:tests?|__tests__|specs?)$/i;
 const DISABLED_NAME = /(?:\.(?:bak|backup|old|orig|disabled|off|skip|skipped|ignore|ignored|tmp)|~)$/i;
@@ -127,9 +127,12 @@ const isDirectory = (p) => { try { return fs.statSync(p).isDirectory(); } catch 
 function moveVerdict(cmd, cwd) {
   let verdict = null;
   const text = cmd.replace(/\\\r?\n/g, '').replace(/\$\(\s*mktemp\b[^)]*\)|`\s*mktemp\b[^`]*`/g, '$MKTEMP');
-  for (const [, args] of text.matchAll(MOVE)) {
+  for (const [, verb, args] of text.matchAll(MOVE)) {
     const words = moveWords(args.replace(MV_TAIL, ''));
-    if (words.some(w => w === '-n' || w === '--dry-run')) continue;
+    // git mv -n is a dry run; plain mv -n only refuses to overwrite.
+    const end = words.indexOf('--');
+    const options = end < 0 ? words : words.slice(0, end);
+    if (verb !== 'mv' && options.some(w => w === '--dry-run' || /^-[a-zA-Z]*n[a-zA-Z]*$/.test(w))) continue;
     const operands = [];
     let target = null;
     for (let i = 0; i < words.length; i++) {

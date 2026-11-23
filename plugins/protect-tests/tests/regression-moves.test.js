@@ -66,5 +66,6 @@ describe('Regression: move verdicts across a whole command', () => {
   it('treats mv as a command only in command position, and honours git mv dry runs', () => {
     for (const command of ['echo mv example.test.js example.js', 'git mv -n example.test.js example.js', 'git mv --dry-run tests attic']) shouldAllow('Bash', { command });
     shouldBlock('Bash', { command: 'sudo mv tests ../graveyard' }, 'rename-test');
+    shouldBlock('Bash', { command: 'mv -n tests ../graveyard' }, 'rename-test');
   });
 });
