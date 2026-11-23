@@ -139,7 +139,9 @@ const BASH_TOKENS = [
 const DELETE_VERB    = /(\brm\b|\bunlink\b|\bshred\b|\btrash\b|\bgit\s+rm\b)/i;
 const MOVE_COPY_VERB = /\b(mv|cp|rsync|install|ln)\b/i;
 const WRITE_VERB     = /\b(tee|truncate|dd)\b/i;
-const INPLACE_EDIT   = /\b(sed|gsed)\s+[^|;&]*-i\b|\bperl\s+[^|;&]*-\w*i\b|\bgawk\s+[^|;&]*-i\s*inplace\b/i;
+// Short flags cluster (-Ei, -ni), GNU spells it --in-place, ruby takes -pi
+// like perl, and GNU awk is often installed as plain awk.
+const INPLACE_EDIT   = /\b(?:sed|gsed)\b[^|;&]*\s(?:-[a-zA-Z]*i|--in-place)\b|\b(?:perl|ruby)\b[^|;&]*\s-[a-zA-Z0-9]*i|\bg?awk\b[^|;&]*\s-i\s*inplace\b/i;
 
 // CLI commands that rewrite agent config without naming a settings path.
 // `claude plugin install` registers arbitrary hooks and skills, so it is a
