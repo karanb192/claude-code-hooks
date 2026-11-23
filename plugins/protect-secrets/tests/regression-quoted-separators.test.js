@@ -23,6 +23,8 @@ const REFUSED = [
   ["SEC-16-b", "gemini -p \"explain; key is $OPENAI_API_KEY\"", 'high'],
   ["SEC-16-c", "gemini -p \"a & b $OPENAI_API_KEY\"", 'high'],
   ["SEC-16-d", "llm \"x | $GH_PAT\"", 'high'],
+  ["escaped-backslash", "cat <<< \"\\\\$SECRET_KEY\"", 'high'],
+  ["quoted-separator-then-secret", "echo \"$USER;$API_KEY\"", 'high'],
 ];
 
 const ALLOWED = [
@@ -30,6 +32,12 @@ const ALLOWED = [
   ['read -r user pass <<< "$CREDENTIALS"', 'high'],
   ['echo "build; test & deploy" && npm test', 'high'],
   ['gemini -p "Explain this error.\nThe build failed; see the log"', 'high'],
+  // A quoted separator ends the variable name: the shell expands $USER, never $USER_KEY.
+  ['echo "format $USER;KEY here"', 'high'],
+  ['gemini -p "format $USER;KEY here"', 'high'],
+  // An escaped dollar sign is literal text, not an expansion.
+  ['cat <<< "\\$DEMO_TOKEN"', 'high'],
+  ['cat <<< \\$DEMO_TOKEN', 'high'],
 ];
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {
