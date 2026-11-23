@@ -61,6 +61,8 @@ const MAIN_REF = '(?:[\\s:"\']|refs\\/heads\\/)(?:main|master)(?=$|[\\s;&|"\'])'
 // A shell word, not the "sh" in a *.sh file name; optional path (/bin/bash).
 const SHELL = '(?<![\\w.\\/-])(?:[^\\s|;&]*\\/)?(?:ba|z|da|k)?sh(?![\\w.-])';
 const FETCH = '(?:[^\\s|;&(]*\\/)?(?:curl|wget)\\b';
+// Whole disks and partitions, including SD cards and by-id or mapper links.
+const DISK = '\\/dev\\/(?:sd[a-z]|nvme|hd[a-z]|x?vd[a-z]|r?disk\\d|mmcblk\\d|disk\\/|mapper\\/)';
 const FORCE_FLAG = '\\s["\']?(?:--force|-f)["\']?(?=\\s|$|[;&|"\'])';
 
 const PATTERNS = [
@@ -74,9 +76,10 @@ const PATTERNS = [
   { level: 'critical', id: 'rm-system',        regex: /\brm\s+(?:-.+\s)?\/(etc|usr|var|bin|sbin|lib|boot|dev|proc|sys)(\/|\s|$)/, reason: 'rm targeting system directory' },
   { level: 'critical', id: 'rm-cwd',           regex: /\brm\s+(?:-.+\s)?(\.\/?|\*|\.\/\*)(\s|$|[;&|])/,                     reason: 'rm deleting current directory contents' },
   { level: 'critical', id: 'rm-parent',        regex: /\brm\s+(?:-.+\s)?["']?([^\s"';&|]*\/)?\.\.(\/\.{1,2})*\/?(\*)?["']?(\s|$|[;&|])/, reason: 'rm of a path ending in .. deletes a parent directory' },
-  { level: 'critical', id: 'dd-disk',          regex: /\bdd\b.+of=\/dev\/(sd[a-z]|nvme|hd[a-z]|vd[a-z]|xvd[a-z]|r?disk\d)/,         reason: 'dd writing to disk device' },
-  { level: 'critical', id: 'mkfs',             regex: /\bmkfs(\.\w+)?\s+\/dev\/(sd[a-z]|nvme|hd[a-z]|vd[a-z]|r?disk\d)/,    reason: 'mkfs formatting disk' },
-  { level: 'critical', id: 'fork-bomb',        regex: /:\(\)\s*\{.*:\s*\|\s*:.*&/,                                         reason: 'fork bomb detected' },
+  { level: 'critical', id: 'dd-disk',          regex: new RegExp('\\bdd\\b.+of=' + DISK),                                                     reason: 'dd writing to disk device' },
+  { level: 'critical', id: 'mkfs',             regex: new RegExp('\\bmkfs(?:\\.\\w+)?\\b[^;&|\\n]*\\s' + DISK),                               reason: 'mkfs formatting disk' },
+  // A function of any name that pipes itself into itself in the background.
+  { level: 'critical', id: 'fork-bomb',        regex: /(?<![^\s;&|({])([^\s;&|(){}<>]+)\s*\(\)\s*\{[^{}]*(?<![^\s;&|{])\1\s*\|\s*\1\s*&/, reason: 'fork bomb detected' },
 
   // HIGH - Significant risk, data loss, security
   // The regex finds a fetch piped somewhere; pipesToShell walks the stages.
