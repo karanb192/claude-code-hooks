@@ -95,18 +95,25 @@ function dropsTestSuite(cmd) {
     (RENAME_VERB.test(seg) && TEST_NAME_GLOB.test(seg) && DISCARD_DEST.test(seg.replace(MV_TAIL, ''))));
 }
 
-// Markers that turn an existing test off in place.
+// Markers that turn an existing test off in place. Dots may be split by
+// whitespace or a newline, as formatters and chained calls write them.
 const SKIP_MARKERS = [
-  /@pytest\.mark\.(skip|xfail)/,          // pytest
-  /@unittest\.skip/,                       // unittest
-  /\bpytest\.skip\s*\(/,
-  /@Disabled\b/,                           // JUnit 5
-  /@Ignore\b/,                             // JUnit 4 / TestNG
-  /\b(it|test|describe|context)\.skip\s*\(/, // jest / mocha / vitest
-  /\bx(it|describe|test|context)\s*\(/,      // xit / xdescribe ...
-  /\bt\.Skip(Now)?\s*\(/,                   // Go
-  /#\[ignore\]/,                           // Rust
-  /\[Ignore\]/,                            // NUnit / MSTest
+  /\bpytest\s*\.\s*mark\s*\.\s*(?:skip|skipif|xfail)(?!\w)/, // pytest decorator or pytestmark
+  /@mark\s*\.\s*(?:skip|skipif|xfail)(?!\w)/,                 // from pytest import mark
+  /\bpytest\s*\.\s*(?:skip|xfail)\s*\(/,
+  /@unittest\s*\.\s*(?:skip\w*|expectedFailure)\b/,     // unittest
+  /\.\s*skipTest\s*\(|\braise\s+(?:unittest\.)?SkipTest\b/,
+  /@Disabled\w*/,                                          // JUnit 5, including @DisabledIf...
+  /@Ignore\b/,                                             // JUnit 4
+  /@Test\s*\([^)]*\benabled\s*=\s*false\b/,              // TestNG
+  /\b(?:it|test|describe|context|suite|specify)(?:\s*\.\s*(?:concurrent|sequential|each|only|fails|failing))*\s*\.\s*(?:skip|skipIf|todo)\b/, // jest / mocha / vitest
+  /\bthis\s*\.\s*skip\s*\(/,                              // mocha, inside a test
+  /\bx(?:it|describe|test|context|specify)\b\s*[('"`]/,     // xit( / RSpec xit 'name'
+  /^[ \t]*(?:skip|pending)(?:[ \t]+|[ \t]*\([ \t]*)['"]/m,    // RSpec skip 'reason' / pending('reason')
+  /\b[tb]\s*\.\s*Skip(?:f|Now)?\s*\(/,                      // Go
+  /#\[\s*ignore\b/,                                          // Rust, bare or with a reason
+  /[[,]\s*Ignore\s*[\](]/,                                  // NUnit / MSTest, bare or with a reason
+  /\[\s*(?:Fact|Theory)\s*\([^)\]]*\bSkip\s*=/,              // xUnit
 ];
 
 function log(data) {
@@ -123,7 +130,7 @@ function addedMarker(oldStr, newStr) {
   const before = oldStr || '';
   const after = newStr || '';
   for (const m of SKIP_MARKERS) {
-    const g = new RegExp(m.source, 'g');
+    const g = new RegExp(m.source, m.flags + 'g');
     if ((after.match(g) || []).length > (before.match(g) || []).length) return true;
   }
   return false;
@@ -145,18 +152,60 @@ function readExisting(filePath, cwd) {
 
 // sed -i / perl -pi / ruby -pi edit files in place; their s/// replacement is
 // what lands in the file, so only the replacement side is compared.
-const IN_PLACE = /\b(sed\b[^|;&]*\s(-[a-zA-Z]*i|--in-place)|(perl|ruby)\b[^|;&]*\s-[a-zA-Z]*i)/;
+const IN_PLACE = /\b(sed\b[^|;&]*\s(-[a-zA-Z]*i|--in-place)|(perl|ruby)\b[^|;&]*\s-[a-zA-Z0-9]*i|g?awk\b[^|;&]*\s-i\s*inplace\b)/;
+// A stream editor whose output can be redirected or moved over a test file.
+const STREAM_EDITOR = /(?:^|[\s;&|(])(?:sed|gsed|perl|ruby|g?awk)\s/;
 // [^\\] keeps the two alternatives disjoint: when both took a backslash, a run
 // of them with no closing delimiter backtracked exponentially.
 const SUBST = /\bs([/|#,:@!])((?:\\.|(?!\1)[^\\])*)\1((?:\\.|(?!\1)[^\\])*)\1/g;
-// > file, >> file, tee [-a] file; a quoted or escaped name keeps its spaces.
-const REDIRECT = /(>>?|\btee(?:\s+-a)?)\s*(?:"([^"]*)"|'([^']*)'|((?:\\.|[^\s"'|;&<>\\])+))/g;
+// > file, >> file, >| file; a quoted or escaped name keeps its spaces.
+const REDIRECT = /(>>?\|?)\s*(?:"([^"]*)"|'([^']*)'|((?:\\.|[^\s"'|;&<>\\])+))/g;
+// tee writes every file operand; -a / --append keeps what is there.
+const TEE = /\btee((?:\s+-[-\w]*)*)((?:\s+(?:"[^"]*"|'[^']*'|(?:\\.|[^\s"'|;&<>\\])+))+)/g;
+const SHELL_WORD = /"([^"]*)"|'([^']*)'|((?:\\.|[^\s"'|;&<>\\])+)/g;
 // A replacement can finish a marker with the text around it: s/test/test.skip/
 // turns `test(` into `test.skip(`, and s/(/.skip(/ turns `it(` into `it.skip(`.
 const MARKER_CONTEXT = ['', 'it', 'test', 'describe', 'context'];
 
 function substAddsMarker(pat, rep) {
   return MARKER_CONTEXT.some(pre => ['', '('].some(post => addedMarker(pre + pat + post, pre + rep + post)));
+}
+
+// The (pattern, replacement) pairs a sed, perl, ruby or awk script writes:
+// s commands with any delimiter (and perl's s{}{}), sed a / i / c text
+// commands, perl print, and ruby or awk sub / gsub. Inserted text has an
+// empty pattern.
+const S_ANY = /(?:^|[^\w$@%])s([^\w\s\\{(\[<])((?:\\.|(?!\1)[^\\])*)\1((?:\\.|(?!\1)[^\\])*)\1/g;
+const S_BRACES = /(?:^|[^\w$@%])s\{((?:\\.|[^\\{}])*)\}\s*\{((?:\\.|[^\\{}])*)\}/g;
+const SED_TEXT = /(?:^|[\s;{'"])(?:\d+|\$|\/(?:\\.|[^\/\\\n])*\/)\s*[aic]\\?[ \t]*([^'"\n;]+)/g;
+const PRINT_TEXT = /\bprint\s+(?:STDOUT\s+)?(["'])((?:\\.|(?!\1)[^\\])*)\1/g;
+const SUB_CALL = /\bg?sub!?\s*\(\s*\/((?:\\.|[^\/\\])*)\/\s*,\s*(["'])((?:\\.|(?!\2)[^\\])*)\2/g;
+const BACKREF = /\\[0-9]|\$[0-9&]|\$\{[0-9]+\}|(?<!\\)&/g;
+
+function scriptPairs(script) {
+  const unesc = (t) => t.replace(/\\n/g, '\n').replace(/\\(.)/g, '$1');
+  const pairs = [];
+  for (const [, , pat, rep] of script.matchAll(S_ANY)) pairs.push([pat, rep]);
+  for (const [, pat, rep] of script.matchAll(S_BRACES)) pairs.push([pat, rep]);
+  for (const [, pat, , rep] of script.matchAll(SUB_CALL)) pairs.push([pat, rep]);
+  for (const [, text] of script.matchAll(SED_TEXT)) pairs.push(['', text]);
+  for (const [, , text] of script.matchAll(PRINT_TEXT)) pairs.push(['', text]);
+  return pairs.map(([pat, rep]) => [unesc(pat), rep, unesc]);
+}
+
+// A backreference carries matched text into the replacement (s/^it/x&/ makes
+// xit), so each one is tried as the pattern's own literal text and as each
+// test-function name.
+function scriptAddsMarker(script) {
+  return scriptPairs(script).some(([pat, rep, unesc]) => {
+    const literal = pat.replace(/[\^$()|?*+\[\]]/g, '');
+    // Bounded so a long script cannot multiply into megabytes of candidates.
+    const fills = [...new Set([literal, ...literal.split(/[^\w.]+/), ...MARKER_CONTEXT])].filter(f => f.length <= 64);
+    const hasRef = BACKREF.test(rep);
+    BACKREF.lastIndex = 0;
+    const reps = !hasRef ? [rep] : rep.length > 1024 ? [rep.replace(BACKREF, '')] : fills.map(f => rep.replace(BACKREF, () => f));
+    return reps.some(r => substAddsMarker(pat, unesc(r)));
+  });
 }
 
 // Split complete top-level commands, retaining pipelines and grouped output.
@@ -264,7 +313,7 @@ function shellCommands(cmd) {
 
 // Infer only small literal sed/perl substitutions or grep filters. Unsupported
 // syntax uses the command-text heuristic; no submitted command is executed.
-function simpleRedirectOutput(cmd, cwd) {
+function simpleRedirectResult(cmd, cwd) {
   if (cmd.length > 4096 || /[\r\n]/.test(cmd)) return null;
   const word = `(?:"[A-Za-z0-9_./ -]+"|'[A-Za-z0-9_./ -]+'|[A-Za-z0-9_./-]+)`;
   const match = cmd.match(new RegExp(`^\\s*(sed(?:\\s+-e)?|perl\\s+-pe|grep(?:\\s+-[vF]{1,2}){0,2})\\s+'([^'\\n]{1,520})'\\s+(${word})\\s*(?:>>?\\s*|\\|\\s*tee\\s+(?:-a\\s+)?)${word}\\s*$`));
@@ -329,26 +378,117 @@ function simpleRedirectOutput(cmd, cwd) {
     if (size + input.length - end > MAX_READ_BYTES) return null;
     chunks.push(input.slice(end));
   }
-  return chunks.join('');
+  return { input, output: chunks.join('') };
+}
+
+function simpleRedirectOutput(cmd, cwd) {
+  const result = simpleRedirectResult(cmd, cwd);
+  return result && result.output;
+}
+
+// Files a command writes: redirect targets and every tee operand.
+function writeTargets(part) {
+  const unesc = (s) => s.replace(/\\(.)/g, '$1');
+  const targets = [];
+  for (const [, op, dq, sq, bare] of part.matchAll(REDIRECT)) targets.push({ file: dq ?? sq ?? unesc(bare), append: op.startsWith('>>') });
+  for (const [, opts, files] of part.matchAll(TEE)) {
+    const append = /(?:^|\s)(?:-\w*a\w*|--append)\b/.test(opts);
+    for (const [, dq, sq, bare] of files.matchAll(SHELL_WORD)) {
+      const file = dq ?? sq ?? unesc(bare);
+      if (file === '--' || file.startsWith('-')) continue;
+      targets.push({ file, append });
+    }
+  }
+  return targets;
+}
+
+// mv or cp onto a test file: the last operand, unless -t names the target.
+function copiesOntoTest(part) {
+  const m = part.match(/(?:^|[\s;&|(])(?:git\s+)?(?:mv|cp)\s+(.*)$/);
+  if (!m) return false;
+  const words = [...m[1].replace(MV_TAIL, '').matchAll(SHELL_WORD)].map(([, dq, sq, bare]) => dq ?? sq ?? bare);
+  const t = words.findIndex(w => w === '-t' || w.startsWith('--target-directory'));
+  const dest = t >= 0 ? words[t + 1] : words[words.length - 1];
+  return typeof dest === 'string' && TEST_PATH.test(dest);
 }
 
 function shellAddsMarker(cmd, cwd) {
-  const unesc = (s) => s.replace(/\\(.)/g, '$1');
-  for (const part of shellCommands(cmd)) {
+  // sed and perl write \n in a replacement as a newline.
+  const unesc = (s) => s.replace(/\\n/g, '\n').replace(/\\(.)/g, '$1');
+  const parts = shellCommands(cmd);
+  for (const part of parts) {
     if (IN_PLACE.test(part) && (TEST_TOKEN.test(part) || TEST_NAME_GLOB.test(part))) {
       for (const [, , pat, rep] of part.matchAll(SUBST)) {
         if (substAddsMarker(unesc(pat), unesc(rep))) return true;
       }
+      if (scriptAddsMarker(part)) return true;
     }
     const output = simpleRedirectOutput(part, cwd);
-    for (const [, op, dq, sq, bare] of part.matchAll(REDIRECT)) {
-      const target = dq ?? sq ?? unesc(bare);
-      if (!TEST_PATH.test(target)) continue;
-      const existing = op.startsWith('>>') || op.includes('-a') ? '' : readExisting(target, cwd);
+    for (const { file, append } of writeTargets(part)) {
+      if (!TEST_PATH.test(file)) continue;
+      const existing = append ? '' : readExisting(file, cwd);
       if (existing !== null && addedMarker(existing, output ?? unesc(part))) return true;
     }
   }
+  // A script that adds a marker, with its own output put over a test file:
+  // redirected or tee'd straight in, or written to a file that a later
+  // command moves, copies or cats onto a test. A redirect into a test whose
+  // output the exact check above computed is not second-guessed, and output
+  // that computation shows is clean is not tracked. A file a later command
+  // overwrites stops carrying the marker.
+  const outputs = new Set();
+  for (const part of parts) {
+    const targets = writeTargets(part);
+    if (STREAM_EDITOR.test(part) && scriptAddsMarker(part)) {
+      const exact = simpleRedirectResult(part, cwd);
+      if (exact && !addedMarker(exact.input, exact.output)) { for (const t of targets) outputs.delete(t.file); continue; }
+      if (!exact && targets.some(t => TEST_PATH.test(t.file))) return true;
+      for (const t of targets) outputs.add(t.file);
+      continue;
+    }
+    if (outputs.size) {
+      const words = [...part.matchAll(SHELL_WORD)].map(([, dq, sq, bare]) => dq ?? sq ?? unesc(bare));
+      if (words.some(w => outputs.has(w)) && (copiesOntoTest(part) || targets.some(t => TEST_PATH.test(t.file)))) return true;
+    }
+    for (const t of targets) outputs.delete(t.file);
+  }
   return false;
+}
+
+// An edit can complete a marker with text outside the replaced span: turning
+// `('adds'` into `.skip('adds'` right after `it` writes `it.skip(`. So the
+// file is judged as it will be after the edits. When it cannot be read, the
+// strings are tried with every start of a test-function name in front.
+const EDIT_CONTEXT = ['', ...new Set(['it', 'test', 'describe', 'context', 'specify', 'suite']
+  .flatMap(w => [...w].map((_, i) => w.slice(0, i + 1))))];
+
+// Replay stops (returns null) when an edit does not apply, hits an
+// ambiguous spot, or would outgrow the read limit; the string checks then
+// decide.
+function applyEdits(content, edits) {
+  for (const e of edits) {
+    const from = e && e.old_string;
+    if (typeof from !== 'string' || !from || !content.includes(from)) return null;
+    const to = typeof e.new_string === 'string' ? e.new_string : '';
+    const count = content.split(from).length - 1;
+    // Which occurrence a single replacement hits is unknown when there are
+    // several (a Codex patch hunk can repeat elsewhere in the file).
+    if (!e.replace_all && count > 1) return null;
+    if (content.length + count * (to.length - from.length) > MAX_READ_BYTES) return null;
+    content = e.replace_all ? content.split(from).join(to) : content.replace(from, () => to);
+  }
+  return content;
+}
+
+// The final file decides when it can be computed, so a marker added and
+// removed again within one MultiEdit is not a skip.
+function editAddsMarker(edits, filePath, cwd) {
+  const before = readExisting(filePath, cwd);
+  const after = before === null ? null : applyEdits(before, edits);
+  if (after !== null) return addedMarker(before, after);
+  if (edits.some(e => addedMarker(e && e.old_string, e && e.new_string))) return true;
+  return edits.some(e => EDIT_CONTEXT.some(pre =>
+    addedMarker(pre + ((e && e.old_string) || ''), pre + ((e && e.new_string) || ''))));
 }
 
 // Returns { blocked, id, level, reason }: pure apart from reading the target
@@ -376,18 +516,16 @@ function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL, cwd = u
   }
 
   if (toolName === 'Edit') {
-    if (TEST_PATH.test(toolInput.file_path || '') && addedMarker(toolInput.old_string, toolInput.new_string))
+    const file = toolInput.file_path || '';
+    if (TEST_PATH.test(file) && editAddsMarker([toolInput], file, cwd))
       return deny('high', 'skip-test', 'adding a skip/xfail/ignore marker to an existing test');
     return allow();
   }
 
   if (toolName === 'MultiEdit') {
-    if (TEST_PATH.test(toolInput.file_path || '')) {
-      for (const e of toolInput.edits || []) {
-        if (addedMarker(e.old_string, e.new_string))
-          return deny('high', 'skip-test', 'adding a skip/xfail/ignore marker to an existing test');
-      }
-    }
+    const file = toolInput.file_path || '';
+    if (TEST_PATH.test(file) && editAddsMarker(Array.isArray(toolInput.edits) ? toolInput.edits : [], file, cwd))
+      return deny('high', 'skip-test', 'adding a skip/xfail/ignore marker to an existing test');
     return allow();
   }
 

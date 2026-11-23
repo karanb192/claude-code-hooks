@@ -157,11 +157,11 @@ describe('sessionFile and buildReason', () => {
     assert.match(one, /the next 1 spawn then passes|the next 1 spawn then pass without asking/);
   });
 
-  it('deny reason talks to Claude: hard cap, do not retry, reset path, env remedy', () => {
+  it('deny reason talks to Claude: hard cap, do not retry, env remedy for the user, no ledger path', () => {
     const r = mod.buildReason('deny', 60, { ask: 20, step: 10, deny: 60 }, mod.sessionFile('s1'));
     assert.match(r, /^\[spawn-cap\] Subagent spawn #60 in this session hit the hard cap \(SPAWN_CAP_DENY=60\)\. Do not retry/);
-    assert.match(r, /deleting ~\/\.claude\/subagent-spawn-cap\/s1\.jsonl/);
-    assert.match(r, /raise SPAWN_CAP_DENY in the settings\.json env block and restart/);
+    assert.match(r, /Only the user can lift it, by raising SPAWN_CAP_DENY in the settings\.json env block and restart/);
+    assert.doesNotMatch(r, /subagent-spawn-cap\/|\.jsonl|delet/);
     assert.doesNotMatch(r, /this one call/);
   });
 
@@ -237,8 +237,8 @@ describe('Thresholds', () => {
     const { output } = await runHook(home, spawnPayload(), { SPAWN_CAP_ASK: '2', SPAWN_CAP_DENY: '2' });
     assert.strictEqual(decisionOf(output), 'deny');
     assert.match(reasonOf(output), /^🚨 \[spawn-cap\] Subagent spawn #2 in this session hit the hard cap \(SPAWN_CAP_DENY=2\)\. Do not retry/);
-    assert.match(reasonOf(output), /deleting ~\/\.claude\/subagent-spawn-cap\/sess-1\.jsonl/);
-    assert.match(reasonOf(output), /raise SPAWN_CAP_DENY/);
+    assert.doesNotMatch(reasonOf(output), /subagent-spawn-cap\/|sess-1\.jsonl/);
+    assert.match(reasonOf(output), /raising SPAWN_CAP_DENY/);
   });
 
   it('denied calls are not counted: the ledger stops growing at deny', async () => {

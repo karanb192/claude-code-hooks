@@ -21,10 +21,15 @@
  * so edit env, not this file; invalid values fall back to the default)
  *   critical - the enforcement chain: .claude/settings.json,
  *              .claude/settings.local.json, managed-settings.json,
- *              anything under .claude/hooks/, hooks.json manifests
- *   high     - + config supply chain: .mcp.json, .claude-plugin/,
+ *              anything under .claude/hooks/, scripts that settings
+ *              register as hook commands, hooks.json manifests,
+ *              installed plugins under ~/.claude/plugins/ (or
+ *              $CLAUDE_CONFIG_DIR/plugins/), the Claude config dir itself,
+ *              and the spawn cap's ledger under ~/.claude/subagent-spawn-cap/
+ *   high     - + config supply chain: .mcp.json, ~/.claude.json, .claude-plugin/,
  *              `claude config set|add|remove`, `claude mcp add|remove`, and
- *              `claude plugin install|uninstall|enable|disable|marketplace`
+ *              `claude plugin install|uninstall|enable|disable|marketplace`,
+ *              their aliases, and global options before the subcommand
  *   strict   - + instruction files: CLAUDE.md, CLAUDE.local.md,
  *              .claude/rules/, .claude/agents/, .claude/commands/
  *
@@ -37,7 +42,9 @@
  *
  * Known limits (deliberately NOT a full shell parser, same trade as
  * protect-tests): a mutation verb and a protected path in the same Bash
- * command block it even if the verb technically targets another argument;
+ * command block it even if the verb technically targets another argument,
+ * except in the body of a cat/tee heredoc or a git/gh "$(cat <<'EOF' ...)"
+ * message, which is text, not commands (see stripTextHeredocs);
  * interpreter one-liners (python -c "open(...).write(...)"), git
  * checkout/restore of a config path, chmod, and paths built from variables
  * ("$DIR/settings.json") are not caught. Edit/MultiEdit/Write paths are
@@ -94,9 +101,12 @@ const PROTECTED_PATHS = [
   { level: 'critical', id: 'hook-script',      regex: /(^|\/)\.claude\/hooks(\/|$)/i,               reason: 'hook scripts are the guardrails themselves' },
   { level: 'critical', id: 'hooks-manifest',   regex: /(^|\/)hooks\.json$/i,                        reason: 'hooks.json manifests register hooks' },
   { level: 'critical', id: 'codex-config', regex: /(^|\/)\.codex(?:\/config\.toml|\/plugins(?:\/.*)?)?$/i, reason: 'Codex configuration and installed plugins control hook enforcement' },
+  { level: 'critical', id: 'claude-plugins',   regex: /(^|\/)\.claude\/plugins(\/|$)/i,             reason: 'installed plugins are the guardrails\' own code' },
+  { level: 'critical', id: 'spawn-cap-state',  regex: /(^|\/)\.claude\/subagent-spawn-cap(\/|$)/i,  reason: 'the spawn cap ledger is the session\'s subagent budget' },
 
   // HIGH - config supply chain
   { level: 'high',     id: 'mcp-config',       regex: /(^|\/)\.mcp\.json$/i,                        reason: '.mcp.json adds MCP servers (new tools)' },
+  { level: 'high',     id: 'claude-json',      regex: /(^|\/)\.claude\.json$/i,                     reason: '~/.claude.json holds user and local MCP servers (new tools)' },
   { level: 'high',     id: 'plugin-manifest',  regex: /(^|\/)\.claude-plugin(\/|$)/i,               reason: 'plugin manifests install hooks and skills' },
   { level: 'high', id: 'codex-plugin-manifest', regex: /(^|\/)\.codex-plugin(\/|$)/i, reason: 'Codex plugin manifests register hooks' },
 
@@ -114,7 +124,10 @@ const BASH_TOKENS = [
   { level: 'critical', id: 'managed-settings', regex: /managed-settings\.json/i,                      reason: 'managed policy settings' },
   { level: 'critical', id: 'hook-script',      regex: /\.claude\/hooks([/\s'"]|$)/i,                  reason: 'hook scripts are the guardrails themselves' },
   { level: 'critical', id: 'hooks-manifest',   regex: /(^|[\s'"/=])hooks\.json/i,                     reason: 'hooks.json manifests register hooks' },
+  { level: 'critical', id: 'spawn-cap-state',  regex: /\.claude\/subagent-spawn-cap(?=[/\s'";|&)`]|$)/i, reason: 'the spawn cap ledger is the session\'s subagent budget' },
   { level: 'high',     id: 'mcp-config',       regex: /\.mcp\.json/i,                                 reason: '.mcp.json adds MCP servers (new tools)' },
+  // An expansion may leave the filename unchanged. Only a literal suffix rules it out.
+  { level: 'high',     id: 'claude-json',      regex: /(^|[\s'"/=])\.claude\.json(?=$|[\s'";&|<>()`$\\*?{},\[]|[+@!]\()/i,                  reason: '~/.claude.json holds user and local MCP servers (new tools)' },
   { level: 'high',     id: 'plugin-manifest',  regex: /\.claude-plugin([/\s'"]|$)/i,                  reason: 'plugin manifests install hooks and skills' },
   { level: 'strict',   id: 'claude-md',        regex: /(^|[\s'"/=])CLAUDE(\.local)?\.md/i,            reason: 'CLAUDE.md instructions steer the agent' },
   { level: 'strict',   id: 'rules-dir',        regex: /\.claude\/(rules|agents|commands)([/\s'"]|$)/i, reason: 'rules, agents, and commands steer the agent' },
@@ -131,16 +144,26 @@ const INPLACE_EDIT   = /\b(sed|gsed)\s+[^|;&]*-i\b|\bperl\s+[^|;&]*-\w*i\b|\bgaw
 // CLI commands that rewrite agent config without naming a settings path.
 // `claude plugin install` registers arbitrary hooks and skills, so it is a
 // config write in everything but name; list/get/read forms stay allowed.
-const CLAUDE_CLI_WRITE = /\bclaude\s+(config\s+(set|add|remove|rm)|mcp\s+(add|add-json|add-from-claude-desktop|remove|rm)|plugin\s+(install|uninstall|enable|disable|update|marketplace\s+(add|remove|rm|update)))\b/i;
+// The CLI also takes `plugins` for `plugin`, `i` for install, `remove` and
+// `rm` for uninstall, `autoremove` for prune, and global options such as
+// --debug before the subcommand.
 const CLI_VALUE = '(?:"[^"\\n]*"|\'[^\'\\n]*\'|[^\\s"\';|&]+)';
+const CLAUDE_OPTION = `-[\\w-]+(?:=${CLI_VALUE})?(?:\\s+(?!-|(?:plugins?|mcp|config)\\b)${CLI_VALUE})?`;
+const CLAUDE_CLI_WRITE = new RegExp(`\\bclaude(?:\\s+${CLAUDE_OPTION})*\\s+(?:config\\s+(?:set|add|remove|rm)|mcp\\s+(?:add|add-json|add-from-claude-desktop|remove|rm)|plugins?\\s+(?:install|i|uninstall|remove|rm|enable|disable|update|prune|autoremove|marketplace\\s+(?:add|remove|rm|update)))\\b`, 'i');
 const CODEX_OPTION = `(?:--(?:profile|cd|model|config|sandbox|ask-for-approval|enable|disable|add-dir|image|local-provider|remote|remote-auth-token-env)(?:=|\\s+)${CLI_VALUE}|-[pCmcsai]\\s*${CLI_VALUE}|--(?:search|no-alt-screen|oss|strict-config|approve-for-me|dangerously-bypass-approvals-and-sandbox|dangerously-bypass-hook-trust|yolo|worktree|no-daemon|full-auto))`;
 const CODEX_CLI_WRITE = new RegExp(`\\bcodex(?:\\s+${CODEX_OPTION})*\\s+(?:plugin\\s+(?:add|remove|marketplace\\s+(?:add|remove|upgrade))|mcp\\s+(?:add|remove)|features\\s+(?:enable|disable))\\b`, 'i');
 
-const CODEX_HOME = path.resolve(process.env.CODEX_HOME || path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.codex'));
+const HOME_DIR = process.env.HOME || process.env.USERPROFILE || require('os').homedir();
+const CODEX_HOME = path.resolve(process.env.CODEX_HOME || path.join(HOME_DIR, '.codex'));
+const CLAUDE_HOME = path.resolve(process.env.CLAUDE_CONFIG_DIR || path.join(HOME_DIR, '.claude'));
 const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const codexPrefix = `(?:\\.codex|\\$CODEX_HOME|\\$\\{CODEX_HOME\\}|${escapeRegex(CODEX_HOME.replace(/\\/g, '/'))})`;
+// Only home-anchored spellings count for the bare Claude dir: a project's own
+// .claude/ is routinely copied into and listed next to unrelated deletes.
+const claudePrefix = `(?:(?:~|\\$HOME|\\$\\{HOME\\})/\\.claude|\\$CLAUDE_CONFIG_DIR|\\$\\{CLAUDE_CONFIG_DIR\\}|${escapeRegex(CLAUDE_HOME.replace(/\\/g, '/'))})`;
 BASH_TOKENS.push(
   { level: 'critical', id: 'codex-config', regex: new RegExp(`(?:^|[\\s'"/=])${codexPrefix}(?:/config\\.toml|/plugins(?:/[^\\s'";|&]*)?|/\\*?)?(?=[\\s'";|&]|$)`, 'i'), reason: 'Codex configuration and installed plugins control hook enforcement' },
+  { level: 'critical', id: 'claude-plugins', regex: new RegExp(`\\.claude/plugins(?=[/\\s'";|&)\`]|$)|(?:^|[\\s'"=(\`])${claudePrefix}(?:/plugins(?:/[^\\s'";|&)\`]*)?|/\\*?)?(?=[\\s'";|&)\`]|$)`, 'i'), reason: 'installed plugins are the guardrails\' own code' },
   { level: 'high', id: 'codex-plugin-manifest', regex: /\.codex-plugin([/\s'"]|$)/i, reason: 'Codex plugin manifests register hooks' },
   { level: 'strict', id: 'agents-md', regex: /(^|[\s'"/=])AGENTS(?:\.override)?\.md(?=[\s'";|&]|$)/i, reason: 'AGENTS.md instructions steer the agent' },
 );
@@ -186,16 +209,138 @@ function resolveCandidates(filePath) {
   return [...new Set(candidates)];
 }
 
+// A classic install can keep a hook script anywhere, so the scripts that the
+// user, project and managed settings register as hook commands are protected
+// wherever they live. Words with an expansion other than ~, $HOME or
+// $CLAUDE_PROJECT_DIR are skipped: their target cannot be known here.
+const REGISTERED_HOOK = { level: 'critical', id: 'hook-script', reason: 'a script registered as a hook is a guardrail itself' };
+
+function settingsFiles(project) {
+  const files = [path.join(CLAUDE_HOME, 'settings.json'), path.join(CLAUDE_HOME, 'settings.local.json'),
+    path.join(project, '.claude', 'settings.json'), path.join(project, '.claude', 'settings.local.json')];
+  if (process.platform === 'darwin') files.push('/Library/Application Support/ClaudeCode/managed-settings.json');
+  else if (process.platform === 'win32') files.push('C:\\Program Files\\ClaudeCode\\managed-settings.json');
+  else files.push('/etc/claude-code/managed-settings.json');
+  return files;
+}
+
+// One hook call is one process, so the settings are read once per project.
+const hookScriptCache = new Map();
+const MAX_SETTINGS_BYTES = 1024 * 1024;
+const SCRIPT_EXT = /\.(?:[cm]?js|ts|py|sh|bash|zsh|rb|pl|php)$/i;
+
+function readSettings(file) {
+  try {
+    const st = fs.statSync(file);
+    if (!st.isFile() || st.size > MAX_SETTINGS_BYTES) return null;
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+// The code a hook command runs: each simple command's program when it is a
+// path, or an interpreter's script operand (node gate.js, bash ~/g.sh).
+// Other arguments and redirect targets are data the hook reads or writes.
+const INTERPRETERS = /^(?:node|nodejs|deno|bun|tsx|ts-node|python[0-9.]*|bash|sh|zsh|dash|ksh|ruby|perl|php)$/;
+
+function hookScriptWords(command) {
+  const found = [];
+  for (const simple of command.split(/&&|\|\||[;|\n]/)) {
+    const words = simple.match(/\d*[<>]{1,2}&?|"[^"]*"|'[^']*'|[^\s"';|&<>()]+/g) || [];
+    const plain = [];
+    for (let i = 0; i < words.length; i++) {
+      if (/^\d*[<>]/.test(words[i])) { i++; continue; }
+      plain.push(words[i]);
+    }
+    let i = 0;
+    while (i < plain.length && /^[A-Za-z_]\w*=/.test(plain[i])) i++;
+    const program = (plain[i] || '').replace(/^(["'])(.*)\1$/s, '$2');
+    if (!program) continue;
+    if (/[\\/]/.test(program) || SCRIPT_EXT.test(program)) { found.push(plain[i]); continue; }
+    if (!INTERPRETERS.test(path.basename(program))) continue;
+    for (i++; i < plain.length; i++) {
+      if (/^-[ce]$/.test(plain[i])) break;
+      if (plain[i].startsWith('-')) continue;
+      found.push(plain[i]);
+      break;
+    }
+  }
+  return found;
+}
+
+function registeredHookScripts(cwd = process.cwd()) {
+  const project = path.resolve(process.env.CLAUDE_PROJECT_DIR || cwd || process.cwd());
+  if (hookScriptCache.has(project)) return hookScriptCache.get(project);
+  const scripts = new Set();
+  for (const file of settingsFiles(project)) {
+    const settings = readSettings(file);
+    const events = settings && typeof settings.hooks === 'object' && settings.hooks ? Object.values(settings.hooks) : [];
+    for (const groups of events) {
+      for (const group of Array.isArray(groups) ? groups : []) {
+        for (const hook of Array.isArray(group && group.hooks) ? group.hooks : []) {
+          if (typeof (hook && hook.command) !== 'string') continue;
+          for (const word of hookScriptWords(hook.command)) {
+            const expanded = word.replace(/^(["'])(.*)\1$/s, '$2')
+              .replace(/^~(?=[\\/])/, HOME_DIR)
+              .replace(/\$(?:HOME|\{HOME\})(?=[\\/])/g, HOME_DIR)
+              .replace(/\$(?:CLAUDE_PROJECT_DIR|\{CLAUDE_PROJECT_DIR\})(?=[\\/])/g, project);
+            if (/[$`*?]/.test(expanded)) continue;
+            for (const p of resolveCandidates(path.resolve(project, expanded))) scripts.add(p.replace(/\\/g, '/'));
+          }
+        }
+      }
+    }
+  }
+  hookScriptCache.set(project, [...scripts]);
+  return hookScriptCache.get(project);
+}
+
+const hookTokenCache = new Map();
+
+// Shell spellings of the registered scripts: the absolute path, ~ and $HOME
+// forms under the home directory, and paths relative to the working
+// directory (scripts/check.js, ./scripts/check.js).
+function registeredHookTokens(cwd = process.cwd()) {
+  const scripts = registeredHookScripts(cwd);
+  if (hookTokenCache.has(scripts)) return hookTokenCache.get(scripts);
+  const home = HOME_DIR.replace(/\\/g, '/');
+  const here = path.resolve(cwd || process.cwd()).replace(/\\/g, '/');
+  const tokens = scripts.map((script) => {
+    const spellings = [escapeRegex(script)];
+    if (script.startsWith(`${home}/`)) {
+      const rest = escapeRegex(script.slice(home.length));
+      spellings.push(`~${rest}`, `\\$HOME${rest}`, `\\$\\{HOME\\}${rest}`);
+    }
+    if (script.startsWith(`${here}/`)) {
+      const rel = escapeRegex(script.slice(here.length + 1));
+      spellings.push(`(?:\\./)?${rel}`);
+    }
+    return { ...REGISTERED_HOOK, regex: new RegExp(`(?:^|[\\s'"=(\`])(?:${spellings.join('|')})(?=[\\s'";|&)\`]|$)`) };
+  });
+  hookTokenCache.set(scripts, tokens);
+  return tokens;
+}
+
 // Check for Edit/MultiEdit/Write file paths - unit-testable (touches the
 // filesystem only to resolve symlinks; unresolvable paths check as typed).
 function checkFilePath(filePath, safetyLevel = SAFETY_LEVEL, cwd = process.cwd()) {
   if (!filePath) return { blocked: false };
   const threshold = LEVELS[safetyLevel] || 2;
   const homes = resolveCandidates(CODEX_HOME).map((p) => p.replace(/\\/g, '/'));
+  const claudeHomes = resolveCandidates(CLAUDE_HOME).map((p) => p.replace(/\\/g, '/'));
+  const hookScripts = registeredHookScripts(cwd);
   for (const raw of resolveCandidates(path.resolve(cwd, filePath))) {
     const candidate = raw.replace(/\\/g, '/');
     if (homes.some((home) => candidate === home || candidate === `${home}/config.toml` || candidate === `${home}/plugins` || candidate.startsWith(`${home}/plugins/`))) {
       return { blocked: true, id: 'codex-config', level: 'critical', reason: 'Codex configuration and installed plugins control hook enforcement' };
+    }
+    if (claudeHomes.some((home) => candidate === `${home}/plugins` || candidate.startsWith(`${home}/plugins/`))) {
+      return { blocked: true, id: 'claude-plugins', level: 'critical', reason: 'installed plugins are the guardrails\' own code' };
+    }
+    if (hookScripts.includes(candidate)) {
+      const { level, id, reason } = REGISTERED_HOOK;
+      return { blocked: true, id, level, reason };
     }
     for (const p of PROTECTED_PATHS) {
       if (LEVELS[p.level] <= threshold && p.regex.test(candidate)) {
@@ -206,9 +351,42 @@ function checkFilePath(filePath, safetyLevel = SAFETY_LEVEL, cwd = process.cwd()
   return { blocked: false };
 }
 
+// A heredoc fed to cat or tee is text going into a file or an argument (a
+// report, a commit or PR body), the same as a Write tool call, whose content
+// this guard never inspects either. Dropping that body keeps a path that is
+// only mentioned there from pairing with a verb word like "install" or "rm".
+// Only two whole-command shapes qualify, built from plain words (no
+// expansions, comments or operators), so a quote or comment cannot fake the
+// heredoc start and nothing can run after it:
+//   cat > report.md <<'EOF' ... EOF
+//   git commit -m "$(cat <<'EOF' ... EOF
+//   )"
+// An unquoted delimiter qualifies only when the body has no $ or backtick,
+// since the shell would expand those.
+const WORD = /(?:[\w./=:@+,%~^-]|"[^"$`\\\n]*"|'[^'\n]*')+/.source;
+const DELIM = /<<-?[ \t]*(['"]?)(?<delim>[A-Za-z_][\w.-]*)\1/.source;
+const CAT_HEREDOC = new RegExp(`^\\s*(?:cat|tee)(?:\\s+(?:>{1,2}\\s*)?${WORD})*\\s+${DELIM}(?:\\s+(?:>{1,2}\\s*)?${WORD})*\\s*$`);
+const GIT_HEREDOC = new RegExp(`^\\s*(?:(?:git|gh)(?:\\s+${WORD})*\\s*&&\\s*)*(?:git|gh)(?:\\s+${WORD})*\\s+(?:${WORD})?"\\$\\(cat\\s+${DELIM}\\s*$`);
+const GIT_HEREDOC_CLOSE = new RegExp(`^\\s*\\)"(?:\\s+${WORD})*\\s*$`);
+
+function stripTextHeredocs(cmd) {
+  const lines = cmd.split('\n');
+  const cat = CAT_HEREDOC.exec(lines[0]);
+  const m = cat || GIT_HEREDOC.exec(lines[0]);
+  if (!m) return cmd;
+  const end = lines.findIndex((l, i) => i > 0 && l.trim() === m.groups.delim);
+  if (end < 0) return cmd;
+  if (!m[1] && /[$`]/.test(lines.slice(1, end).join('\n'))) return cmd;
+  const rest = lines.slice(end + 1).filter((l) => l.trim());
+  const closes = cat ? rest.length === 0 : rest.length === 1 && GIT_HEREDOC_CLOSE.test(rest[0]);
+  return closes ? [lines[0], ...rest].join('\n') : cmd;
+}
+
 // Pure check for Bash commands - unit-testable.
-function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
-  if (!cmd) return { blocked: false };
+function checkBashCommand(rawCmd = '', safetyLevel = SAFETY_LEVEL, cwd = process.cwd()) {
+  if (typeof rawCmd !== 'string') throw new TypeError('Bash command must be a string');
+  if (!rawCmd) return { blocked: false };
+  const cmd = stripTextHeredocs(rawCmd);
   const threshold = LEVELS[safetyLevel] || 2;
 
   if (LEVELS.high <= threshold && CLAUDE_CLI_WRITE.test(cmd)) {
@@ -218,7 +396,7 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
     return { blocked: true, id: 'codex-cli-config', level: 'high', reason: 'Codex CLI write changes plugin or agent configuration' };
   }
 
-  for (const t of BASH_TOKENS) {
+  for (const t of [...BASH_TOKENS, ...registeredHookTokens(cwd)]) {
     if (LEVELS[t.level] > threshold || !t.regex.test(cmd)) continue;
     if (redirectsInto(cmd, t.regex))
       return { blocked: true, id: t.id, level: t.level, reason: `shell redirect into protected config: ${t.reason}` };
@@ -241,7 +419,7 @@ function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL, cwd = p
     return checkFilePath(toolInput.file_path || '', safetyLevel, cwd);
   }
   if (toolName === 'Bash') {
-    return checkBashCommand(toolInput.command || '', safetyLevel);
+    return checkBashCommand(toolInput.command, safetyLevel, cwd);
   }
   return { blocked: false };
 }
@@ -300,6 +478,6 @@ if (require.main === module) {
 } else {
   module.exports = {
     PROTECTED_PATHS, BASH_TOKENS, LEVELS, SAFETY_LEVEL, ASK,
-    checkTool, checkFilePath, checkBashCommand,
+    checkTool, checkFilePath, checkBashCommand, stripTextHeredocs, registeredHookScripts,
   };
 }
