@@ -56,3 +56,16 @@ describe('Regression: skip markers across frameworks', () => {
     shouldAllow('Edit', { file_path: 'calc_test.go', old_string: 'x', new_string: 'if testing.Short() { return }' });
   });
 });
+
+describe('Regression: markers match whole names in their own language', () => {
+  it('does not treat a helper called skip or a custom pytest mark as a marker', () => {
+    shouldAllow('Edit', { file_path: 'calc.test.js', old_string: 'tick(1)', new_string: 'skip(1)' });
+    shouldAllow('Edit', { file_path: 'tests/test_x.py', old_string: 'x', new_string: '@pytest.mark.skiplint' });
+    shouldAllow('Edit', { file_path: 'tests/test_x.py', old_string: 'x', new_string: '@mark.skipped_slow' });
+  });
+
+  it('still denies the RSpec and pytest forms', () => {
+    shouldBlock('Edit', { file_path: 'spec/a_spec.rb', old_string: '    expect', new_string: '    pending "wip"\n    expect' }, 'skip-test');
+    shouldBlock('Edit', { file_path: 'tests/test_x.py', old_string: 'x', new_string: '@pytest.mark.skip(reason="x")' }, 'skip-test');
+  });
+});

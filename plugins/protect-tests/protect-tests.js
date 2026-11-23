@@ -98,8 +98,8 @@ function dropsTestSuite(cmd) {
 // Markers that turn an existing test off in place. Dots may be split by
 // whitespace or a newline, as formatters and chained calls write them.
 const SKIP_MARKERS = [
-  /\bpytest\s*\.\s*mark\s*\.\s*(?:skip|skipif|xfail)/, // pytest decorator or pytestmark
-  /@mark\s*\.\s*(?:skip|skipif|xfail)/,                 // from pytest import mark
+  /\bpytest\s*\.\s*mark\s*\.\s*(?:skip|skipif|xfail)(?!\w)/, // pytest decorator or pytestmark
+  /@mark\s*\.\s*(?:skip|skipif|xfail)(?!\w)/,                 // from pytest import mark
   /\bpytest\s*\.\s*(?:skip|xfail)\s*\(/,
   /@unittest\s*\.\s*(?:skip\w*|expectedFailure)\b/,     // unittest
   /\.\s*skipTest\s*\(|\braise\s+(?:unittest\.)?SkipTest\b/,
@@ -109,7 +109,7 @@ const SKIP_MARKERS = [
   /\b(?:it|test|describe|context|suite|specify)(?:\s*\.\s*(?:concurrent|sequential|each|only|fails|failing))*\s*\.\s*(?:skip|skipIf|todo)\b/, // jest / mocha / vitest
   /\bthis\s*\.\s*skip\s*\(/,                              // mocha, inside a test
   /\bx(?:it|describe|test|context|specify)\b\s*[('"`]/,     // xit( / RSpec xit 'name'
-  /^[ \t]*(?:skip|pending)\b[ \t]*[('"]/m,                   // RSpec skip / pending in an example
+  /^[ \t]*(?:skip|pending)[ \t]+['"]/m,                       // RSpec skip 'reason' / pending 'reason'
   /\b[tb]\s*\.\s*Skip(?:f|Now)?\s*\(/,                      // Go
   /#\[\s*ignore\b/,                                          // Rust, bare or with a reason
   /[[,]\s*Ignore\s*[\](]/,                                  // NUnit / MSTest, bare or with a reason
@@ -340,7 +340,8 @@ function simpleRedirectOutput(cmd, cwd) {
 }
 
 function shellAddsMarker(cmd, cwd) {
-  const unesc = (s) => s.replace(/\\(.)/g, '$1');
+  // sed and perl write \n in a replacement as a newline.
+  const unesc = (s) => s.replace(/\\n/g, '\n').replace(/\\(.)/g, '$1');
   for (const part of shellCommands(cmd)) {
     if (IN_PLACE.test(part) && (TEST_TOKEN.test(part) || TEST_NAME_GLOB.test(part))) {
       for (const [, , pat, rep] of part.matchAll(SUBST)) {
