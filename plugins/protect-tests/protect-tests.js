@@ -343,6 +343,70 @@ function shellCommands(cmd) {
   return parts;
 }
 
+// A cd or pushd earlier in the command moves where later operands land:
+// after `cd tests`, `rm -r unit` deletes tests. Each top-level command is
+// paired with the directory it runs in; a ( ) group keeps its cd inside.
+const CD = /^\s*(cd|pushd)\s+(?:--\s+)?("[^"]*"|'[^']*'|[^\s;&|()]+)\s*$/;
+const POPD = /^\s*popd\s*$/;
+
+function commandsWithDir(cmd, cwd) {
+  const out = [];
+  const base = path.resolve(cwd || process.cwd());
+  const walk = (text, dir, stack) => {
+    for (const part of shellCommands(text)) {
+      const group = part.match(/^\s*\(([\s\S]*)\)\s*$/);
+      if (group) { walk(group[1], dir, [...stack]); continue; }
+      if (POPD.test(part)) { dir = stack.length ? stack.pop() : dir; continue; }
+      const cd = part.match(CD);
+      if (cd) {
+        const arg = cd[2].replace(/^(["'])(.*)\1$/, '$2');
+        if (cd[1] === 'pushd') stack.push(dir);
+        dir = /[$`~*?]/.test(arg) ? base : path.resolve(dir, arg);
+        continue;
+      }
+      out.push({ part, dir, moved: dir !== base });
+    }
+  };
+  walk(cmd, base, []);
+  return out;
+}
+
+// Operands of a command, resolved against the directory it runs in: the
+// words after its name (and after git's subcommand, past wrappers such as
+// sudo), without options. For an in-place editor the script is not an
+// operand: the word after -e / -f, or else its first operand.
+const WRAPPER = /^(?:sudo|doas|env|command|nohup|nice|time|exec)$/;
+
+function operandPaths(part, dir, editor = false) {
+  const words = [...part.matchAll(/(?:^|\s)(?:"([^"]*)"|'([^']*)'|([^\s"';&|<>()]+))/g)].map(([, dq, sq, bare]) => dq ?? sq ?? bare);
+  let i = 0;
+  while (i < words.length && WRAPPER.test(words[i])) { i++; while (i < words.length && words[i].startsWith('-')) i++; }
+  if (words[i] === 'git') i++;
+  i++;
+  const operands = [];
+  let scriptNext = false;
+  let scriptGiven = false;
+  for (const w of words.slice(i)) {
+    if (editor && /^(?:-e|-f|--expression|--file)$/.test(w)) { scriptNext = true; scriptGiven = true; continue; }
+    if (editor && /^--(?:expression|file)=/.test(w)) { scriptGiven = true; continue; }
+    if (scriptNext) { scriptNext = false; continue; }
+    if (!w || w.startsWith('-')) continue;
+    operands.push(w);
+  }
+  if (editor && !scriptGiven) operands.shift();
+  return operands.map(w => ({ word: w, abs: path.resolve(dir, w).replace(/\\/g, '/') }));
+}
+
+// Build and cache output that lives next to tests and is safe to clear.
+const GENERATED = /(?:^|\/)(?:__pycache__|\.pytest_cache|node_modules|coverage|\.cache|tmp|temp|dist|build|out)(?:\/|$)|\.(?:pyc|pyo|log|tmp)$/;
+
+function deletesInTestDir(cmd, cwd) {
+  return commandsWithDir(cmd, cwd).some(({ part, dir, moved }) => {
+    if (!moved || !DELETE_VERB.test(part)) return false;
+    return operandPaths(part, dir).some(({ word, abs }) => TEST_PATH.test(abs) && !GENERATED.test(word));
+  });
+}
+
 // Infer only small literal sed/perl substitutions or grep filters. Unsupported
 // syntax uses the command-text heuristic; no submitted command is executed.
 function simpleRedirectResult(cmd, cwd) {
@@ -448,17 +512,20 @@ function shellAddsMarker(cmd, cwd) {
   // sed and perl write \n in a replacement as a newline.
   const unesc = (s) => s.replace(/\\n/g, '\n').replace(/\\(.)/g, '$1');
   const parts = shellCommands(cmd);
-  for (const part of parts) {
-    if (IN_PLACE.test(part) && (testToken(part) || testNameGlob(part))) {
+  for (const { part: raw, dir, moved } of commandsWithDir(cmd, cwd)) {
+    // $PWD is the directory the command runs in, after any cd.
+    const part = raw.replace(/\$\{?PWD\}?(?=\/)/g, () => dir.replace(/\\/g, '/'));
+    if (IN_PLACE.test(part) && (testToken(part) || testNameGlob(part) ||
+        (moved && operandPaths(part, dir, true).some(({ abs }) => TEST_PATH.test(abs))))) {
       for (const [, , pat, rep] of part.matchAll(SUBST)) {
         if (substAddsMarker(unesc(pat), unesc(rep))) return true;
       }
       if (scriptAddsMarker(part)) return true;
     }
-    const output = simpleRedirectOutput(part, cwd);
+    const output = simpleRedirectOutput(part, dir);
     for (const { file, append } of writeTargets(part)) {
-      if (!isTestFile(file, cwd, output ?? unesc(part))) continue;
-      const existing = append ? '' : readExisting(file, cwd);
+      if (!isTestFile(file, dir, output ?? unesc(part)) && !TEST_PATH.test(path.resolve(dir, file).replace(/\\/g, '/'))) continue;
+      const existing = append ? '' : readExisting(file, dir);
       if (existing !== null && addedMarker(existing, output ?? unesc(part))) return true;
     }
   }
@@ -546,7 +613,7 @@ function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL, cwd = u
 
   if (toolName === 'Bash') {
     const cmd = toolInput.command || '';
-    if (dropsTestSuite(cmd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
+    if (dropsTestSuite(cmd) || deletesInTestDir(cmd, cwd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
     if (pairedWith(cmd, c => DELETE_VERB.test(c))) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
     if (pairedWith(cmd, c => RENAME_VERB.test(c) && DISABLED_DEST.test(c)))
       return deny('high', 'rename-test', 'renaming a test file to a disabled name');
