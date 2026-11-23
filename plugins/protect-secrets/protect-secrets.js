@@ -149,7 +149,8 @@ const SECRET_FILE = '(?:^|[\\s"\'=<@(])\\s*' + SECRET_NAME;
 const SECRET_WORD = '(?:SECRETS?|KEY|TOKEN|PASSWORD|PASSWD|PASSW|PASSPHRASE|PASS|CREDENTIALS?|API_KEY|APIKEY|PAT)';
 // Whole name segments, so $AUTHOR and $TOKENS_USED stay clean; AUTH and PRIVATE only as the last segment.
 const SECRET_TAIL = '(?:_(?:ID|FILE|PATH|VALUE|VAL|STR|STRING|B64|BASE64|JSON|PEM|DATA|CONTENT|TEXT|RAW|HEX|PROD|PRODUCTION|DEV|STAGING|TEST|OLD|NEW|[0-9]+))*';
-const SECRET_VAR = '\\$\\{?!?(?:(?:[A-Z0-9]+_)*' + SECRET_WORD + SECRET_TAIL + '|(?:[A-Z0-9]+_)*(?:AUTH|PRIVATE))\\}?(?![A-Za-z0-9_])';
+// PWD only after a prefix (MYSQL_PWD): a bare $PWD is the working directory.
+const SECRET_VAR = '\\$\\{?!?(?:(?:[A-Z0-9]+_)*' + SECRET_WORD + SECRET_TAIL + '|(?:[A-Z0-9]+_)*(?:AUTH|PRIVATE)|(?:[A-Z0-9]+_)+PWD)\\}?(?![A-Za-z0-9_])';
 // Not a heredoc, herestring, process substitution or /dev/*.
 const REDIRECT_IN = '(?<!<)<(?![<(])\\s*(?!\\/dev\\/)';
 // -T as a whole flag: the patterns run case-insensitive, so a bare -T also matches --max-time.
@@ -192,8 +193,9 @@ const BASH_PATTERNS = [
 
   // HIGH - Environment exposure
   { level: 'high', id: 'env-dump',               regex: /\bprintenv\b|(?:^|[;&|(]\s*)(?:env|set|export|declare\s+-x)\s*(?:$|[;&|)])/, reason: 'Environment dump may expose secrets' },
-  { level: 'high', id: 'echo-secret-var',        regex: /\becho\b[^;|&]*\$\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\}?/i, reason: 'Echoing secret variable' },
-  { level: 'high', id: 'printf-secret-var',      regex: /\bprintf\b[^;|&]*\$\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\}?/i, reason: 'Printing secret variable' },
+  // The keyword anywhere in a letters-only name, or a whole-segment SECRET_VAR (S3_SECRET_KEY, DB_PASS, GH_PAT).
+  { level: 'high', id: 'echo-secret-var',        regex: new RegExp('\\becho\\b[^;|&]*(?:\\$\\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\\}?|' + SECRET_VAR + ')', 'i'), reason: 'Echoing secret variable' },
+  { level: 'high', id: 'printf-secret-var',      regex: new RegExp('\\bprintf\\b[^;|&]*(?:\\$\\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\\}?|' + SECRET_VAR + ')', 'i'), reason: 'Printing secret variable' },
   { level: 'high', id: 'cat-secrets-file',       regex: /\b(cat|less|head|tail|more)\s+[^|;]*(credentials?|secrets?)\.(json|ya?ml|toml)/i, reason: 'Reading secrets file' },
   { level: 'high', id: 'cat-netrc',              regex: /\b(cat|less|head|tail|more)\s+[^|;]*\.netrc/i,                    reason: 'Reading .netrc credentials' },
   { level: 'high', id: 'source-env',             regex: /\bsource\s+[^|;]*\.env\b|(?:^|[;&|]\s*)\.\s+[^|;]*\.env\b|^\.\s+[^|;]*\.env\b/i, reason: 'Sourcing .env loads secrets' },
@@ -222,7 +224,7 @@ const BASH_PATTERNS = [
   { level: 'high', id: 'truncate-secrets',       regex: /\btruncate\b.*\.(env|pem|key)\b|(?:^|[;&|]\s*)>\s*\.env\b/i,      reason: 'Truncating secrets file' },
 
   // HIGH - Process environ
-  { level: 'high', id: 'proc-environ',           regex: /\/proc\/[^/]*\/environ/,                                          reason: 'Reading process environment' },
+  { level: 'high', id: 'proc-environ',           regex: /\/proc\/+(?:[^/\s]+\/+)*environ\b|\b(?:cd|pushd)\s+["']?\/proc\b[\s\S]*?\benviron\b/, reason: 'Reading process environment' },
   { level: 'high', id: 'xargs-cat-env',          regex: /xargs.*cat|\.env.*xargs/i,                                         reason: 'Reading .env via xargs' },
   { level: 'high', id: 'find-exec-cat-env',      regex: /find\b.*\.env.*-exec|find\b.*-exec.*(cat|less)/i,                 reason: 'Finding and reading .env files' },
 
@@ -759,13 +761,55 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   if (!cmd) return { blocked: false, pattern: null };
   cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
   const threshold = LEVELS[safetyLevel] || 2;
-  const views = shellViews(cmd).map(v => maskTemplates(v.text));
+  const texts = shellViews(cmd).map(v => v.text);
+  const views = texts.map(maskTemplates);
   for (const p of BASH_PATTERNS) {
     if (LEVELS[p.level] <= threshold && views.some(v => p.regex.test(v))) {
       return { blocked: true, pattern: p };
     }
   }
+  const dump = BASH_PATTERNS.find(p => p.id === 'env-dump');
+  if (LEVELS[dump.level] <= threshold && texts.some(dumpsEnvironment)) return { blocked: true, pattern: dump };
   return { blocked: false, pattern: null };
+}
+
+// A command that prints the whole environment, wherever it sits in the line:
+// after a newline, a keyword or a brace, behind a wrapper or a path, with its
+// output redirected or inside a substitution.
+const DECLARATIONS = new Set(['export', 'declare', 'typeset', 'readonly', 'local']);
+const DUMP_WRAPPERS = /^(?:command|builtin|exec|sudo|doas|nohup|nice|time)$/;
+// env options that take a value; -S runs the command in its value, so it is no dump.
+const ENV_VALUE_OPT = /^(?:-[uC]|--(?:unset|chdir))$/;
+
+function commandDumpsEnvironment(cmd) {
+  const words = argv(cmd);
+  let k = 0;
+  while (k < words.length && !words[k].spans.length
+    && ((KEYWORDS.has(words[k].value) && !DECLARATIONS.has(words[k].value)) || /^[A-Za-z_]\w*\+?=/.test(words[k].lead || ''))) k++;
+  while (k < words.length && !words[k].dynamic && DUMP_WRAPPERS.test(base(words[k].value))) {
+    for (k++; k < words.length && /^-./.test(words[k].value); k++);
+  }
+  const w = words[k];
+  if (!w || w.dynamic) return false;
+  const name = base(w.value);
+  const ops = words.slice(k + 1).map(o => o.value);
+  if (name === 'env') {
+    let j = 0;
+    for (; j < ops.length && /^-/.test(ops[j]); j++) {
+      if (/^(?:-S|--split-string)/.test(ops[j])) return false;
+      if (ENV_VALUE_OPT.test(ops[j])) j++;
+    }
+    while (j < ops.length && /^[A-Za-z_]\w*=/.test(ops[j])) j++;
+    return j >= ops.length;
+  }
+  if (name === 'export') return ops.every(o => o === '-p');
+  if (name === 'declare' || name === 'typeset') return ops.every(o => /^[-+][a-eg-zA-EG-Z]+$/.test(o));
+  if (name === 'set') return ops.length === 0;
+  return false;
+}
+
+function dumpsEnvironment(text) {
+  return readShell(text).frames.some(f => f.cmds.some(commandDumpsEnvironment));
 }
 
 // Mask each allowlisted file name on its own; matching the allowlist against
