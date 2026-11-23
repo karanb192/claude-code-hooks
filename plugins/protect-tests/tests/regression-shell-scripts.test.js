@@ -78,6 +78,13 @@ describe('Regression: shell edit scripts that add a marker', () => {
     assert.ok(Date.now() - start < 1000, `took ${Date.now() - start} ms`);
   });
 
+  it('pairs a script only with the command that puts its own output over a test', () => {
+    fs.writeFileSync(path.join(dir, 'clean.js'), 'const x = 1;\n');
+    allowed("sed 's/it(/it.skip(/' tests/a.test.js > preview.txt; cp clean.js tests/a.test.js");
+    allowed("sed 's/it(/it.skip(/' clean.js > tests/a.test.js");
+    blocked("sed 's/it(/it.skip(/' tests/a.test.js | tee tests/a.test.js");
+  });
+
   it('still allows ordinary edits, removals of skips and previews', () => {
     allowed("sed -i 's/skipLogin/skipAuth/' tests/a.test.js");
     allowed("sed -i 's/it.skip(/it(/' tests/a.test.js");

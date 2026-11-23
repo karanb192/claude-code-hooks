@@ -417,10 +417,24 @@ function shellAddsMarker(cmd, cwd) {
       if (existing !== null && addedMarker(existing, output ?? unesc(part))) return true;
     }
   }
-  // A script that adds a marker, then its output put over a test file in the
-  // same command: sed ... > tmp && mv tmp test, or a redirect straight in.
-  const edits = parts.some(p => STREAM_EDITOR.test(p) && scriptAddsMarker(p));
-  return edits && parts.some(p => copiesOntoTest(p) || writeTargets(p).some(t => TEST_PATH.test(t.file)));
+  // A script that adds a marker, with its own output put over a test file:
+  // redirected or tee'd straight in, or written to a file that a later
+  // command moves, copies or cats onto a test. A redirect into a test whose
+  // output the exact check above computed is not second-guessed.
+  const outputs = new Set();
+  for (const part of parts) {
+    const targets = writeTargets(part);
+    if (STREAM_EDITOR.test(part) && scriptAddsMarker(part)) {
+      const intoTest = targets.some(t => TEST_PATH.test(t.file));
+      if (intoTest && simpleRedirectOutput(part, cwd) === null) return true;
+      for (const t of targets) outputs.add(t.file);
+      continue;
+    }
+    if (!outputs.size) continue;
+    const words = [...part.matchAll(SHELL_WORD)].map(([, dq, sq, bare]) => dq ?? sq ?? unesc(bare));
+    if (words.some(w => outputs.has(w)) && (copiesOntoTest(part) || targets.some(t => TEST_PATH.test(t.file)))) return true;
+  }
+  return false;
 }
 
 // Returns { blocked, id, level, reason }: pure apart from reading the target
