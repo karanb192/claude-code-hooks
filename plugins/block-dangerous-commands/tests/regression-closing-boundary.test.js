@@ -51,3 +51,17 @@ describe('force push closed by a subshell paren', () => {
   it('blocks any force push at strict', () => shouldBlock('(git push -f)', 'git-force-any', 'strict'));
   it('allows --force-with-lease at strict', () => shouldAllow('(git push --force-with-lease)', 'strict'));
 });
+
+describe('a paren or redirect inside quotes is part of the name', () => {
+  it('allows rm of one file whose quoted name holds > or )', () => {
+    shouldAllow("rm -f '$HOME>bak'");
+    shouldAllow('rm -f "$HOME>bak"');
+    shouldAllow("rm -f '~)x'");
+  });
+  it('allows a force push of a branch whose quoted name holds )', () => shouldAllow("git push --force origin 'main)fix'"));
+  it('still blocks a quoted target before a real paren or redirect', () => {
+    shouldBlock('(rm -rf "$HOME")', 'rm-home-var');
+    shouldBlock('rm -rf "~">/dev/null', 'rm-home');
+    shouldBlock("(git push --force origin 'main')", 'git-force-main');
+  });
+});

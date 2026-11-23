@@ -98,6 +98,15 @@ const PATTERNS = [
   { level: 'strict', id: 'crontab-r',        regex: /\bcrontab\s+-r/,                                                      reason: 'removes all cron jobs' },
 ];
 
+// A ) < or > after a target is an operator only outside quotes: rm -f '$HOME>bak'
+// names one file. A view that still holds quotes or escapes reads the target as
+// ending only at a space, ; & | or the end; the rendered view of the same line
+// sets every real operator apart with spaces, so a quoted target before a real
+// ) or > is still caught there.
+for (const p of PATTERNS) {
+  if (p.regex.source.includes(')<>')) p.quoted = new RegExp(p.regex.source.split(')<>').join(''), p.regex.flags);
+}
+
 const LEVELS = { critical: 1, high: 2, strict: 3 };
 const EMOJIS = { critical: '🚨', high: '⛔', strict: '⚠️' };
 const LOG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.claude', 'hooks-logs');
@@ -697,7 +706,8 @@ function checkCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   for (const p of PATTERNS) {
     if (LEVELS[p.level] > threshold) continue;
     for (const v of views) {
-      if (p.regex.test(p.segment ? v.masked : v.text) && (!p.confirm || p.confirm(v.text))) return { blocked: true, pattern: p };
+      const regex = p.quoted && /["'\\]/.test(v.text) ? p.quoted : p.regex;
+      if (regex.test(p.segment ? v.masked : v.text) && (!p.confirm || p.confirm(v.text))) return { blocked: true, pattern: p };
     }
   }
   return { blocked: false, pattern: null };
