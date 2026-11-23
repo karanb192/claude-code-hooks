@@ -32,10 +32,12 @@ Export configuration variables before launching Codex. An ask-mode match becomes
 |------|--------------|-------|---------|
 | `Bash` | `rm` / `unlink` / `shred` / `trash` / `git rm` targets a test file or test directory (`tests/` or a bare `tests`), `find` deletes test files (`-delete`, `-exec rm`), or `mv` moves tests into `/tmp`, `$TMPDIR`, `~/.Trash` or `/dev/null` | `critical` | `delete-test` |
 | `Bash` | `mv` renames a test file to a disabled name (`.bak`, `.old`, `.orig`, `.disabled`, `.skip`, `.ignore`, `.tmp`, `~`) | `high` | `rename-test` |
-| `Edit` / `MultiEdit` | the edit adds a skip/xfail/ignore marker to an existing test file | `high` | `skip-test` |
+| `Edit` / `MultiEdit` | the edit adds a skip/xfail/ignore marker to an existing test file, judged on the file as it will be after the edit (so `.skip` inserted right after `it` counts) | `high` | `skip-test` |
 | `Write` | it rewrites an existing test file and the new content has more skip/xfail/ignore markers than the file on disk | `high` | `skip-test` |
 | `Bash` | `sed -i`, `perl -pi`, `ruby -pi` or `awk -i inplace` writes a marker into a test file named in the same command (a glob such as `find -name '*.test.js' \| xargs sed -i` counts), or `>`, `>>`, `>\|` or `tee` (any flags, any file operand) writes one into a test file, or a script's output is moved, copied or redirected back over a test file | `high` | `skip-test` |
 | `Write` | a brand-new test file's content is already skipped/ignored | `strict` | `write-skipped-test` |
+
+The markers recognised include pytest `@pytest.mark.skip`/`skipif`/`xfail` (also as `pytestmark = ...` and `@mark.skip`) and `pytest.skip(`/`pytest.xfail(`; unittest `@unittest.skip*`, `@unittest.expectedFailure` and `self.skipTest(`; jest/mocha/vitest `.skip`, `.skipIf`, `.todo` (also after `.each` or `.concurrent`), `xit(` and `this.skip()`; Go `t.Skip(`, `t.Skipf(`, `t.SkipNow(`; JUnit `@Disabled*` and `@Ignore`, TestNG `@Test(enabled = false)`; NUnit/MSTest `[Ignore]` with or without a reason, xUnit `Skip =`; RSpec `xit 'name'`, `skip '...'` and `pending '...'`; Rust `#[ignore]` and `#[ignore = "..."]`. A line break or spaces around a dot do not hide one.
 
 Markers are counted, not just detected, so adding a second `it.skip(` to a file that already has one still counts. Direct edits that remove skips are allowed. For `Write` and shell redirects the hook reads the target file (relative paths resolve against the session's working directory; files over 2 MB are not read). Each complete command joined by `;`, `&&`, `||` or `&` is judged on its own. Groups and continued pipelines, including a comment after `|`, keep their output with the destination. Literal braces in command arguments do not join unrelated commands.
 
