@@ -91,6 +91,14 @@ describe('literal shell patch mentions', () => {
       allowed(run('guard-pack', shell(command)));
     }
   });
+  it('refuses a shell patch behind any program that runs its arguments', () => {
+    const del = "<<'EOF'\n*** Begin Patch\n*** Delete File: tests/a.test.js\n*** End Patch\nEOF";
+    for (const name of ['guard-pack', ...names.filter((n) => n !== 'subagent-spawn-cap')]) {
+      for (const prefix of ['timeout 5', 'eval', 'stdbuf -o0', 'doas', 'builtin command']) {
+        blocked(run(name, shell(`${prefix} apply_patch ${del}`)), 'unreadable-patch');
+      }
+    }
+  });
   it('still refuses substitutions, mixed commands and shell-running rg options', () => {
     for (const command of ['grep -c "$(apply_patch < p.txt)" .', 'echo `apply_patch < p.txt`', 'git commit -m "$(apply_patch < p.txt)"', 'rg -c apply_patch .; apply_patch < p.txt', 'printf x | apply_patch', 'rg --pre "bash -c apply_patch" foo']) {
       blocked(run('guard-pack', shell(command)), 'unreadable-patch');

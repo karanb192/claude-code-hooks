@@ -168,12 +168,18 @@ function callsForOps(ops) {
 
 // Detection is conservative, not a shell interpreter. Only the literal
 // heredoc grammar below can supply patch text without shell evaluation.
-const RUNS_APPLY_PATCH = /(?:^|[;&|(\n`{!]|\b(?:then|do|else|elif)\s+|-[a-zA-Z]*c\s+)\s*(?:(?:[A-Za-z_]\w*=[^\s;]*|(?:sudo|env|exec|command|nohup|xargs|time|nice)(?:\s+-\S+)*)\s+)*(?:[\w./~-]*\/)?(?:apply_patch|applypatch)(?=$|[\s;&|)<>'"`])/m;
+// Any program that runs its arguments (timeout, eval, stdbuf, doas, env -S,
+// find -exec, ...) can start apply_patch, and no list of such programs is
+// complete, so the name counts wherever it stands as a word, including glued
+// to a short option.
+const RUNS_APPLY_PATCH = /(?:^|[^\w.-]|(?:^|[\s=])-[A-Za-z]+)(?:apply_patch|applypatch)(?![\w./-])/;
 
 // These commands consume literal arguments rather than shell programs. Only
-// exempt a whole simple command, never substitutions, redirects or pipelines.
+// exempt simple commands joined by ; && || or newlines, never substitutions,
+// redirects or pipelines, and only when every one naming apply_patch is one.
 function literalMention(command) {
-  const words = [];
+  const segments = [[]];
+  let words = segments[0];
   let word = '', quote = null, started = false;
   const push = () => { if (started) words.push(word); word = ''; started = false; };
   for (let i = 0; i < command.length; i++) {
@@ -192,14 +198,25 @@ function literalMention(command) {
       continue;
     }
     if (c === "'" || c === '"') { quote = c; started = true; continue; }
-    if (/[;&|<>(){}\n\r]/.test(c)) return false;
+    const pair = (c === '&' || c === '|') && command[i + 1] === c;
+    if (c === ';' || c === '\n' || pair) {
+      push();
+      if (pair) i++;
+      words = [];
+      segments.push(words);
+      continue;
+    }
+    if (/[&|<>(){}\r]/.test(c)) return false;
     if (/[ \t]/.test(c)) { push(); continue; }
     word += c; started = true;
   }
   if (quote) return false;
   push();
-  if (words[0] === 'rg' && words.some((w) => /^--(?:pre|hostname-bin)(?:=|$)/.test(w))) return false;
-  return ['grep', 'rg', 'echo', 'printf'].includes(words[0]) || (words[0] === 'git' && words[1] === 'commit');
+  const literal = (w) => {
+    if (w[0] === 'rg' && w.some((x) => /^--(?:pre|hostname-bin)(?:=|$)/.test(x))) return false;
+    return ['grep', 'rg', 'echo', 'printf'].includes(w[0]) || (w[0] === 'git' && w[1] === 'commit');
+  };
+  return segments.every((w) => literal(w) || !w.some((x) => RUNS_APPLY_PATCH.test(x)));
 }
 
 // Consume the entire command as literal, quoted heredocs. Patch marker text
