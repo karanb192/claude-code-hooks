@@ -52,20 +52,36 @@ const LOG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || require
 const TEST_PATH = new RegExp(
   [
     '(^|/)(tests?|__tests__|spec|specs)/',        // inside a test directory
+    '(^|/)[^/]+\\.tests?/',                         // .NET test project (MyApp.Tests/)
     '(^|/)test_[^/]+\\.py$',                        // pytest / unittest
-    '_test\\.(py|go|rb|js|jsx|ts|tsx|mjs|cjs)$',    // *_test.*
-    '\\.(test|spec)\\.(js|jsx|ts|tsx|mjs|cjs)$',    // *.test.* / *.spec.*
+    '_test\\.(py|go|rb|rs|js|jsx|ts|tsx|mjs|cjs|mts|cts)$', // *_test.*
+    '\\.(test|spec)\\.(js|jsx|ts|tsx|mjs|cjs|mts|cts)$',  // *.test.* / *.spec.*
     '(^|/)[^/]+_spec\\.rb$',                        // rspec
-    '(^|/)[^/]*Test\\.(java|kt|cs)$',               // JUnit / xUnit
+    '(^|/)[^/]*Tests?\\.(java|kt|cs)$',             // JUnit / xUnit / NUnit
     '(^|/)Test[^/]*\\.(java|kt|cs)$',
   ].join('|'),
   'i'
 );
 
-// The same, but as it would appear as a token inside a shell command.
+// The same, but as it would appear as a token inside a shell command. A glob
+// stands where the name would be (rm *.test.js, rm test_*.py).
 // Case-insensitive: on a default macOS or Windows volume, Tests/ is tests/.
 const TEST_TOKEN =
-  /(test_[\w.-]+\.\w+|[\w.-]+_test\.\w+|[\w.-]+\.(test|spec)\.\w+|[\w.-]+_spec\.rb|(^|[\s'"/])(tests?|__tests__|specs?)\/)/i;
+  /(test_[\w.*?[\]-]+\.\w+|[\w.*?[\]-]+_test\.\w+|[\w.*?[\]-]+\.(test|spec)\.\w+|[\w.*?[\]-]+_spec\.rb|(^|[\s'"/])(tests?|__tests__|specs?)\/)/i;
+// JUnit / NUnit class names and .NET test projects. Case-sensitive, so
+// Latest.java or contests.cs is not a test.
+const CLASS_TEST_TOKEN = /(?:^|[\s'"/=*])(?:[\w*?-]*Tests?|Test[\w*?-]*)\.(?:java|kt|cs)(?![\w.])|[\w-]+\.Tests?(?=[\s'"/;&|)]|$)/;
+const testToken = (cmd) => TEST_TOKEN.test(cmd) || CLASS_TEST_TOKEN.test(cmd);
+
+// Rust keeps unit tests inline in src/, and a test class can sit outside any
+// test folder: a file whose own text defines tests is a test file too.
+const TEST_DEFINITION = {
+  rs: /#\[(?:\w+::)*test\b|#\[cfg\(test\)\]/,
+  java: /@(?:Test|ParameterizedTest|RepeatedTest|TestFactory)\b/,
+  kt: /@(?:Test|ParameterizedTest|RepeatedTest|TestFactory)\b/,
+  cs: /\[(?:Test|TestCase|TestMethod|TestFixture|TestClass|Fact|Theory)\b/,
+  py: /^\s*(?:async\s+)?def\s+test\w*\s*\(|^\s*class\s+Test\w*/m,
+};
 
 const DELETE_VERB = /(\brm\b|\bunlink\b|\bshred\b|\btrash\b|\bgit\s+rm\b)/;
 const RENAME_VERB = /\bmv\b/;
@@ -79,6 +95,7 @@ const TEST_DIR_ARG = '(?:^|[\\s\'"/{,*?])(?:tests?|__tests__|specs?)(?=[\\s\'"/)
 const DEL_CMD = '(?:(?:env|sudo|command|nice|nohup)\\s+(?:-\\S+\\s+)*)?(?:["\']?(?:[^\\s"\'|;&]*\\/)?(?:rm|unlink|shred|trash)["\']?(?![\\w.-])|\\bgit\\s+rm\\b)';
 const BARE_DIR_DELETE = new RegExp('(?:\\b(?:rm|unlink|shred|trash)\\b|\\bgit\\s+rm\\b)[^|]*' + TEST_DIR_ARG, 'i');
 const TEST_NAME_GLOB = new RegExp(TEST_DIR_ARG + '|test_|_test\\.|\\.(?:test|spec)\\.|_spec\\.rb', 'i');
+const testNameGlob = (seg) => TEST_NAME_GLOB.test(seg) || CLASS_TEST_TOKEN.test(seg);
 const FIND_DELETE = new RegExp('\\bfind\\b.*(?:\\s-delete\\b|\\s-exec(?:dir)?\\s+' + DEL_CMD + ')');
 // xargs flags that take a value (-n 1, -I {}, -P 4) consume the next word.
 const XARGS_DELETE = new RegExp('\\|\\s*xargs\\b(?:\\s+(?:-[0prtxo]+|-[adEIJLnPRSsil]\\s*[^\\s|;&]+|--[\\w-]+(?:=\\S+)?))*\\s+' + DEL_CMD);
@@ -91,8 +108,8 @@ const MV_TAIL = /\s+(?:#|\d*[<>]|\|)[\s\S]*$/;
 function dropsTestSuite(cmd) {
   return cmd.replace(/\\\r?\n/g, '').split(/[;&\n]+|\|\|/).some(seg =>
     BARE_DIR_DELETE.test(seg) ||
-    ((FIND_DELETE.test(seg) || XARGS_DELETE.test(seg)) && TEST_NAME_GLOB.test(seg)) ||
-    (RENAME_VERB.test(seg) && TEST_NAME_GLOB.test(seg) && DISCARD_DEST.test(seg.replace(MV_TAIL, ''))));
+    ((FIND_DELETE.test(seg) || XARGS_DELETE.test(seg)) && testNameGlob(seg)) ||
+    (RENAME_VERB.test(seg) && testNameGlob(seg) && DISCARD_DEST.test(seg.replace(MV_TAIL, ''))));
 }
 
 // Markers that turn an existing test off in place.
@@ -335,7 +352,7 @@ function simpleRedirectOutput(cmd, cwd) {
 function shellAddsMarker(cmd, cwd) {
   const unesc = (s) => s.replace(/\\(.)/g, '$1');
   for (const part of shellCommands(cmd)) {
-    if (IN_PLACE.test(part) && (TEST_TOKEN.test(part) || TEST_NAME_GLOB.test(part))) {
+    if (IN_PLACE.test(part) && (testToken(part) || testNameGlob(part))) {
       for (const [, , pat, rep] of part.matchAll(SUBST)) {
         if (substAddsMarker(unesc(pat), unesc(rep))) return true;
       }
@@ -343,12 +360,23 @@ function shellAddsMarker(cmd, cwd) {
     const output = simpleRedirectOutput(part, cwd);
     for (const [, op, dq, sq, bare] of part.matchAll(REDIRECT)) {
       const target = dq ?? sq ?? unesc(bare);
-      if (!TEST_PATH.test(target)) continue;
+      if (!isTestFile(target, cwd, output ?? unesc(part))) continue;
       const existing = op.startsWith('>>') || op.includes('-a') ? '' : readExisting(target, cwd);
       if (existing !== null && addedMarker(existing, output ?? unesc(part))) return true;
     }
   }
   return false;
+}
+
+// The file is read only when its path does not already say test and the
+// change itself has no test definition in it.
+function isTestFile(filePath, cwd, ...texts) {
+  if (TEST_PATH.test(filePath)) return true;
+  const definition = TEST_DEFINITION[path.extname(filePath).slice(1).toLowerCase()];
+  if (!definition) return false;
+  if (texts.some(t => typeof t === 'string' && definition.test(t))) return true;
+  const existing = readExisting(filePath, cwd);
+  return existing !== null && definition.test(existing);
 }
 
 // Returns { blocked, id, level, reason }: pure apart from reading the target
@@ -363,7 +391,7 @@ function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL, cwd = u
   if (toolName === 'Bash') {
     const cmd = toolInput.command || '';
     if (dropsTestSuite(cmd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
-    if (TEST_TOKEN.test(cmd)) {
+    if (testToken(cmd)) {
       if (DELETE_VERB.test(cmd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
       if (RENAME_VERB.test(cmd) && DISABLED_DEST.test(cmd))
         return deny('high', 'rename-test', 'renaming a test file to a disabled name');
@@ -376,24 +404,23 @@ function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL, cwd = u
   }
 
   if (toolName === 'Edit') {
-    if (TEST_PATH.test(toolInput.file_path || '') && addedMarker(toolInput.old_string, toolInput.new_string))
+    if (addedMarker(toolInput.old_string, toolInput.new_string) &&
+        isTestFile(toolInput.file_path || '', cwd, toolInput.old_string, toolInput.new_string))
       return deny('high', 'skip-test', 'adding a skip/xfail/ignore marker to an existing test');
     return allow();
   }
 
   if (toolName === 'MultiEdit') {
-    if (TEST_PATH.test(toolInput.file_path || '')) {
-      for (const e of toolInput.edits || []) {
-        if (addedMarker(e.old_string, e.new_string))
-          return deny('high', 'skip-test', 'adding a skip/xfail/ignore marker to an existing test');
-      }
-    }
+    const edits = toolInput.edits || [];
+    if (edits.some(e => addedMarker(e.old_string, e.new_string)) &&
+        isTestFile(toolInput.file_path || '', cwd, ...edits.flatMap(e => [e.old_string, e.new_string])))
+      return deny('high', 'skip-test', 'adding a skip/xfail/ignore marker to an existing test');
     return allow();
   }
 
   if (toolName === 'Write') {
     const file = toolInput.file_path || '';
-    if (!TEST_PATH.test(file)) return allow();
+    if (!addedMarker('', toolInput.content) || !isTestFile(file, cwd, toolInput.content)) return allow();
     const existing = readExisting(file, cwd);
     if (existing !== null && addedMarker(existing, toolInput.content))
       return deny('high', 'skip-test', 'rewriting an existing test file with a new skip/xfail/ignore marker');
