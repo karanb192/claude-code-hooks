@@ -2,7 +2,7 @@
 
 > Branch-aware git guardrails plus destructive gh CLI protection: denies the operations that rewrite shared history or close things you didn't mean to close.
 
-A `PreToolUse` hook fires before every `Bash` call and checks the command against a tiered pattern list. On a match it returns `permissionDecision: "deny"` with the pattern id and reason, so Claude sees exactly why the command was refused. Branch-aware rules (`git commit`, `merge`, `rebase`, `reset`, `push` while on a protected branch) resolve the current branch via `git branch --show-current` at check time; everything else matches on the command text alone. Protected branches are `main` and `master`.
+A `PreToolUse` hook fires before every `Bash` call and checks the command against a tiered pattern list. On a match it returns `permissionDecision: "deny"` with the pattern id and reason, so Claude sees exactly why the command was refused. Branch-aware rules (`git commit`, `merge`, `rebase`, `reset`, `push` while on a protected branch) resolve the branch at check time in the repository the command reaches (`git branch --show-current` for the session's repository, the `HEAD` file for any other); everything else matches on the command text alone. Protected branches are `main` and `master`.
 
 ## Install
 
@@ -36,7 +36,7 @@ Blocked at the default `high` level:
 
 - `git push` naming `main` or `master` as a ref (`origin main`, `HEAD:main`, `+main`, `refs/heads/main`; any flags). A branch that only contains the word, such as `my-main-feature`, is not blocked
 - `git branch -d` / `-D` / `--delete` on `main` or `master`
-- `git commit`, `git merge`, `git rebase`, `git reset`, `git push` while the current branch **is** `main` or `master`
+- `git commit`, `git merge`, `git rebase`, `git reset`, `git push` while the current branch **is** `main` or `master`. That is the branch the call reaches: after `git checkout main` or `git switch main` earlier in the same command, and in another repository named by `cd`, `pushd`, `git -C`, `--git-dir` or `--work-tree`
 - `gh pr merge`, `gh pr close`, `gh issue close`, `gh release delete`, `gh repo delete`
 
 `strict` adds any force-push (`--force` or `-f`; `--force-with-lease` stays allowed). `critical` applies no git-safety rules at all, deferring entirely to `block-dangerous-commands`.
@@ -49,7 +49,6 @@ It shares its command reader with [block-dangerous-commands](../block-dangerous-
 
 ### What it does not catch
 
-- The branch-aware rules read the branch of the session's working directory, not the branch or repository the command reaches. `git checkout main && git commit -m x` and `git -C <repo on main> commit -m x` pass while the session is on another branch.
 - A loop variable: `for g in git; do $g push origin main; done`.
 
 [tests/shell-rewrites.test.js](../../tests/shell-rewrites.test.js) lists these with the rest of the record and fails when one starts being caught.
@@ -77,7 +76,7 @@ From 1.2.0, a guard that cannot finish its check refuses the call instead of all
 
 ## Data & privacy
 
-Blocked commands are logged (with timestamp, pattern id, session id, cwd, and permission mode) to `~/.claude/hooks-logs/<date>.jsonl`. The only command it runs is `git branch --show-current`, locally; it makes no network calls.
+Blocked commands are logged (with timestamp, pattern id, session id, cwd, and permission mode) to `~/.claude/hooks-logs/<date>.jsonl`. The only command it runs is `git branch --show-current`, locally, in the session's repository. For another repository the command names it runs nothing: it reads that repository's `HEAD` file. It makes no network calls.
 
 ## Uninstall
 

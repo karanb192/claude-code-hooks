@@ -102,6 +102,9 @@ const REFUSED = [
   { cmd: "echo 'rm -rf ~' > >(sh)", id: 'rm-home' },
   { cmd: "echo 'cat .env' | xargs -I{} sh -c {}", id: 'cat-env' },
   { cmd: 'echo "$API_KEY"', id: 'echo-secret-var' },
+  // The branch-aware rules read the branch the command reaches.
+  { cmd: 'git checkout main && git commit -m x', id: 'commit-on-protected' },
+  { cmd: `git -C ${OTHER} commit -m x`, id: 'commit-on-protected' },
 ];
 
 const ALLOWED = [
@@ -125,9 +128,6 @@ const KNOWN_MISSED = [
   { cmd: "python3 -c \"import shutil, os; shutil.rmtree(os.path.expanduser('~'))\"" },
   { cmd: "node -e \"require('fs').rmSync(require('os').homedir(), { recursive: true })\"" },
   { cmd: "perl -e 'use File::Path; rmtree($ENV{HOME})'" },
-  // The branch-aware rules read the session's branch, not the one the command reaches.
-  { cmd: 'git checkout main && git commit -m x' },
-  { cmd: `git -C ${OTHER} commit -m x` },
   // A file written now and run by a later call. Nothing in this line can run
   // it, so its quoted body is read as data (main matched it as a command). A
   // script, rc file, git hook or config, /etc, cron or launchd target keeps it,

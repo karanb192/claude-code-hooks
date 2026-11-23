@@ -589,6 +589,124 @@ function shellViews(cmd) {
 }
 // <<< shell-reading
 
+const BRANCH_RULES = { commit: 'commit-on-protected', merge: 'merge-on-protected', rebase: 'rebase-on-protected', reset: 'reset-on-protected', push: 'push-on-protected' };
+
+// Another repository the command names is not trusted yet (its config can name
+// programs git runs), so its branch is read from files and nothing is run there.
+// Only small regular files are read: a FIFO or device would hang the hook.
+function readSmall(file) {
+  try {
+    const st = fs.statSync(file);
+    return st.isFile() && st.size <= 4096 ? fs.readFileSync(file, 'utf8') : null;
+  } catch {
+    return null;
+  }
+}
+
+// The git dir that serves a work directory: a .git directory, or the gitdir:
+// line of a .git file (a linked worktree), in it or the nearest parent.
+function findGitDir(start) {
+  try { if (!fs.statSync(start).isDirectory()) return null; } catch { return null; }
+  for (let d = start; ; d = path.dirname(d)) {
+    const dotgit = path.join(d, '.git');
+    let st = null;
+    try { st = fs.statSync(dotgit); } catch {}
+    if (st && st.isDirectory()) return dotgit;
+    if (st && st.isFile()) {
+      const m = /^gitdir: *(.+?)\s*$/m.exec(readSmall(dotgit) || '');
+      return m ? path.resolve(d, m[1]) : null;
+    }
+    if (path.dirname(d) === d) return null;
+  }
+}
+
+// The branch HEAD names, or '' when it is detached or cannot be read.
+function headBranch(gitDir) {
+  const m = gitDir ? /^ref: refs\/heads\/(.+?)\s*$/.exec(readSmall(path.join(gitDir, 'HEAD')) || '') : null;
+  return m ? m[1] : '';
+}
+
+// The branch the target of a checkout or switch leaves checked out: the new
+// branch of -b/-c, '' for --detach, null when the call does not switch or the
+// branch cannot be told (git checkout -, git checkout main -- file).
+function switchTarget(sub, args) {
+  const pos = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--') { if (sub === 'checkout' && i < args.length - 1) return null; break; }
+    const m = /^(?:-[bBcC]|--(?:create|force-create|orphan))(?:=(.*))?$/.exec(a);
+    if (m) return m[1] !== undefined ? m[1] : (args[i + 1] ?? null);
+    if (a === '--detach' || (sub === 'switch' && a === '-d')) return '';
+    if (!a.startsWith('-')) pos.push(a);
+  }
+  return pos.length === 1 && pos[0] !== '-' ? pos[0] : null;
+}
+
+// Commit, merge, rebase, reset and push reach the branch of the repository the
+// command runs in, not always the session's. An unknown branch adds nothing:
+// the session-branch patterns still apply. Walk each command list in order:
+// cd and pushd move the directory, git -C, --git-dir and --work-tree name
+// another repository, and an earlier checkout or switch changes the branch.
+// A cd inside ( ) or { } ends with the group; a checkout changes the
+// repository and outlives it. Returns the first call that lands on a
+// protected branch.
+function reachedProtected(cmd, sessionBranch) {
+  if (!/\bgit\b/.test(cmd)) return null;
+  const read = readShell(cmd);
+  const session = process.cwd();
+  for (const f of read.frames) {
+    const dirs = [session];
+    const switched = new Map();
+    for (const c of f.cmds) {
+      const g = c.group || 0;
+      while (dirs.length <= g) dirs.push(dirs[dirs.length - 1]);
+      dirs.length = g + 1;
+      const dir = dirs[g];
+      const words = argv(c);
+      const k = commandIndex(words);
+      const w = words[k];
+      if (!w || w.dynamic || w.spans.length) continue;
+      if (w.value === 'cd' || w.value === 'pushd' || w.value === 'popd') {
+        const t = words.slice(k + 1).find(x => !x.value.startsWith('-'));
+        dirs[g] = w.value !== 'popd' && dir && t && !t.dynamic && t.value !== '-' && !t.value.startsWith('~') ? path.resolve(dir, t.value) : null;
+        continue;
+      }
+      if (w.value !== 'git' || !dir) continue;
+      let where = dir;
+      let gitDirArg = null;
+      let j = k + 1;
+      for (; j < words.length && words[j].value.startsWith('-'); j++) {
+        const v = words[j].value;
+        const m = /^--(git-dir|work-tree)(?:=([\s\S]*))?$/.exec(v);
+        if (v === '-C' || m) {
+          const val = m && m[2] !== undefined ? words[j] : words[++j];
+          if (!val || val.dynamic) { where = null; break; }
+          const value = m && m[2] !== undefined ? m[2] : val.value;
+          if (v === '-C') where = path.resolve(where, value);
+          else if (m[1] === 'git-dir') gitDirArg = value;
+        } else if (/^(?:-c|--(?:namespace|super-prefix|config-env|attr-source))$/.test(v)) j++;
+      }
+      const sub = words[j];
+      if (!where || !sub || sub.dynamic) continue;
+      // git resolves --git-dir against the directory every -C leads to.
+      const own = where === session && gitDirArg === null;
+      const gitDir = gitDirArg !== null ? path.resolve(where, gitDirArg) : findGitDir(where);
+      const repo = gitDir || where;
+      if (sub.value === 'checkout' || sub.value === 'switch') {
+        const t = switchTarget(sub.value, words.slice(j + 1).map(x => x.value));
+        if (t === null) switched.delete(repo); else switched.set(repo, t);
+        continue;
+      }
+      const id = BRANCH_RULES[sub.value];
+      if (!id) continue;
+      const branch = switched.has(repo) ? switched.get(repo)
+        : own ? sessionBranch() : headBranch(gitDir);
+      if (PROTECTED_BRANCHES.includes(branch)) return { id, branch };
+    }
+  }
+  return null;
+}
+
 function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL) {
   const threshold = LEVELS[safetyLevel] || LEVELS.high;
   // bash removes a backslash-newline outright, joining the two lines.
@@ -605,6 +723,14 @@ function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL) {
 
     const reason = p.reason.replace('{branch}', branch || '');
     return { blocked: true, pattern: p, reason };
+  }
+
+  if (LEVELS.high <= threshold) {
+    const hit = reachedProtected(cmd, () => (branch === null ? (branch = getCurrentBranch()) : branch));
+    if (hit) {
+      const p = PATTERNS.find(x => x.id === hit.id);
+      return { blocked: true, pattern: p, reason: p.reason.replace('{branch}', hit.branch) };
+    }
   }
 
   return { blocked: false };
