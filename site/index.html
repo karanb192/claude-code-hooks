@@ -649,7 +649,7 @@ codex plugin add guard-pack@claude-code-hooks</pre>
       <div>
         <div class="entry-meta"><span class="tag evt">PreToolUse</span><span class="tag">Bash·Edit·Write</span><span class="tag rt">Node · ~35ms</span></div>
         <h3><span class="no">10</span>config-guard</h3>
-        <p>Who guards the guards? Blocks the agent from rewriting its own guardrail config: <em>settings.json</em>, <em>.claude/hooks/</em>, <em>.mcp.json</em>, plugin manifests. Creating a protected file that doesn't exist yet counts as mutation (that exact gap was CVE-2026-25725). Reads always pass.</p>
+        <p>Who guards the guards? Blocks the agent from rewriting its own guardrail config: <em>settings.json</em>, <em>.claude/hooks/</em>, the installed plugins in <em>~/.claude/plugins/</em>, <em>.mcp.json</em>, plugin manifests. Creating a protected file that doesn't exist yet counts as mutation (that exact gap was CVE-2026-25725). Reads always pass.</p>
       </div>
       <div class="term">
         <div class="term-bar"><div class="term-dots"><i></i><i></i><i></i></div><div class="term-title">config-guard</div></div>

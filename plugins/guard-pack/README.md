@@ -6,6 +6,8 @@ One PreToolUse registration on `Bash|Read|Edit|MultiEdit|Write|Agent|Task|Grep` 
 
 The guard scripts in `lib/` are byte-identical copies of the individual plugin scripts, pinned by a test, so the pack can never drift from the standalone guards.
 
+The pack also guards its own install. Through config-guard, the agent cannot edit, overwrite, move or delete the installed plugin files under `~/.claude/plugins/` (or a custom `CLAUDE_CONFIG_DIR`), write `~/.claude.json`, or reset the spawn cap by deleting its ledger. Reads pass, and installing, updating or removing plugins yourself through `/plugin` is untouched. Details and limits: [config-guard](../config-guard#known-limits).
+
 `Grep` reaches protect-secrets through the same checks as the standalone plugin, including Windows paths and directory/filter combinations. Its [search limitations](../protect-secrets#search-and-windows-coverage) also apply here; broad searches can still expose secrets.
 
 ## Install
@@ -40,7 +42,7 @@ What changes under Codex:
 - **Seven guards, with a per-thread spawn budget.** `spawn_agent` is counted without an ask tier: `SPAWN_CAP_DENY=60` permits the first 59 calls and denies the 60th. Resuming a thread keeps its count; nested threads have separate budgets. Parallel calls can overshoot the threshold. See [the cap's Codex policy](../subagent-spawn-cap#codex-cli).
 - **Reads are shell commands.** Codex has no Read or Grep tool, so protect-secrets sees a read only when the command names the file.
 - **Typing into an open shell is not checked.** Codex does not send hooks the input it types into a shell session it already started, so a command entered that way runs unchecked.
-- **Codex configuration is protected.** config-guard checks `.codex/config.toml`, installed plugins under `.codex/plugins/`, and a custom `CODEX_HOME`. It also checks `.codex-plugin/` manifests at `high` and `AGENTS.md` / `AGENTS.override.md` at `strict`. Native patches resolve paths against the event's working directory and follow symlinks. Shell checks remain text-based, with [known limits](../config-guard#known-limits).
+- **Codex configuration is protected.** config-guard checks `.codex/config.toml`, installed plugins under `.codex/plugins/`, and a custom `CODEX_HOME`. The installed Claude Code plugins under `~/.claude/plugins/` are protected from a Codex agent too. It also checks `.codex-plugin/` manifests at `high` and `AGENTS.md` / `AGENTS.override.md` at `strict`. Native patches resolve paths against the event's working directory and follow symlinks. Shell checks remain text-based, with [known limits](../config-guard#known-limits).
 
 The answer to Codex is exit code 2 with the reason on stderr, which Codex treats as a block. A guard that throws blocks the call there too (see [When the pack fails](#when-the-pack-fails)). Log lines from Codex carry `"host":"codex"` in `~/.claude/hooks-logs/`, creating that directory even on a Codex-only setup. Checked live on Codex CLI 0.169.0 through a marketplace install, and the patch reader against Codex's own patch engine: [bench/codex-live/RESULTS.md](../../bench/codex-live/RESULTS.md).
 

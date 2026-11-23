@@ -1,7 +1,7 @@
 {
   "name": "subagent-spawn-cap",
   "description": "Count Codex spawn_agent calls per thread and block at SPAWN_CAP_DENY (default 60). No ask tier; nested threads have separate budgets.",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "author": {
     "name": "Karan Bansal",
     "url": "https://github.com/karanb192"
