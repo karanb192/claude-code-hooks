@@ -116,7 +116,7 @@ const SINK_PREFIX = '(?:^|[|;&(`"\'!\\n]|\\b(?:do|then|else)\\b)\\s*'
   + '(?:[^\\s"\';|&]*\\/)?';
 const SINK_END = '(?=[\\s<]|$)';
 // An input redirect written before the command: <file gemini.
-const LEAD_REDIRECT = '(?:^|[;&|({\\n])\\s*(?<!<)<(?![<(])\\s*[^\\s;|&<>()]+\\s+(?:[^\\s"\';|&]*\\/)?';
+const LEAD_REDIRECT = '(?:^|[;&|({\\n])\\s*(?<!<)<(?![<(])\\s*(?!\\/dev\\/)[^\\s;|&<>()]+\\s+(?:[^\\s"\';|&]*\\/)?';
 const SINK_CMD = SINK_PREFIX + SINK_CLI + SINK_END;
 const sinkCmd = (cli) => SINK_PREFIX + cli + SINK_END;
 // A segment with balanced quotes as opaque units: a name inside a quoted prompt is prose, not an operand.
@@ -182,9 +182,30 @@ const SINK_FILE_FLAG = Object.entries(CLI_FILE_FLAGS)
 // A reader with a file operand, so `ps aux | head | llm` is a filter, not a read.
 // sed, awk, jq and grep take a script or pattern first, so they need a second operand.
 const OPERAND = '(?:\'[^\']*\'|"[^"]*"|[^\\s|;&<>\'"-])';
-const READER_CMD = '(?:\\b(?:cat|head|tail|bat|tac|more|less|nl|sort|uniq|cut|paste|fold|column|rev|strings|xxd|od|hexdump|base64)\\b(?:\\s+-\\S+)*\\s+' + OPERAND
+// Short options whose value is the next word (sort -k 3, cut -d , -f 1), so the value is not read as a
+// file. The patterns match case-insensitively, so a letter is left out when its other case is a flag
+// without a value (sort -s, xxd -C, od -a).
+const READER_VALUE_OPTS = {
+  'cat|bat|more|less|rev': '', tac: 's', head: 'cn', tail: 'cn', sort: 'kot', cut: 'bcdf', fold: 'w',
+  uniq: 'fsw', nl: 'bdfhilnsvw', paste: 'd', column: 'cos', strings: 'ent', xxd: 'glos', od: 'jnt',
+  hexdump: 'ens', base64: 'bw',
+};
+const LONG_VALUE_OPT = '--(?:key|lines|bytes|delimiter|fields|characters|field-separator|width|output|separator)';
+// A value is never another reader's name, so one reader's options cannot run on through the next.
+const OPT_VALUE = '(?!(?:' + Object.keys(READER_VALUE_OPTS).join('|') + ')(?:\\s|$))(?:\'[^\']*\'|"[^"]*"|[^\\s|;&<>\'"][^\\s|;&<>]*)';
+const readerOptions = (letters) => '(?:\\s+(?:'
+  + (letters ? '-[A-Za-z]*[' + letters + ']\\s+' + OPT_VALUE + '|' : '')
+  + LONG_VALUE_OPT + '\\s+' + OPT_VALUE
+  + '|-(?!-(?:key|lines|bytes|delimiter|fields|characters|field-separator|width|output|separator)(?:\\s|$))'
+  + (letters ? '(?![A-Za-z]*[' + letters + '](?:\\s|$))' : '') + '\\S+))*';
+const READER_CMD = '(?:' + Object.entries(READER_VALUE_OPTS)
+  .map(([cmds, letters]) => '\\b(?:' + cmds + ')\\b' + readerOptions(letters) + '\\s+' + OPERAND).join('|')
   + '|\\b(?:sed|awk|gawk|jq|yq|grep|rg)\\b(?:\\s+-\\S+)*\\s+' + OPERAND + '\\S*(?:\\s+-\\S+)*\\s+' + OPERAND
-  + '|\\bdd\\b[^;|&\\n]*\\bif=|\\bgit\\s+(?:diff|show|blame|cat-file|log\\b[^;|&\\n]*\\s(?:-p|--patch)\\b))';
+  + '|\\bdd\\b[^;|&\\n]*\\bif=|\\bgit\\s+(?:diff|show|blame|cat-file(?!\\s+-[est](?:\\s|$))|log\\b[^;|&\\n]*\\s(?:-p|--patch)\\b))';
+// curl and wget read a pipe only through a - or /dev/stdin argument (-d @-, -T -, -K -, -i -) or a
+// substitution that can read it. HTTPie, xh and curlie send a piped stdin as the body by default.
+const STDIN_ARG = '(?:[\\s=@<]["\']?-["\']?(?=[\\s;|&)]|$)|(?<![\\w-])-[A-Za-z]+["\']?-["\']?(?=[\\s;|&)]|$)|(?<![\\w-])-[A-Za-z]*T\\s*["\']?\\.["\']?(?=\\s|$)|--upload-file[=\\s]+["\']?\\.["\']?(?=\\s|$)|\\/dev\\/(?:stdin|fd\\/0)(?![\\w\\/])|\\/proc\\/self\\/fd\\/0(?![\\w\\/])|\\$\\(|`|<\\()';
+const PIPE_HTTP = '(?:(?<=\\|\\s*)(?:curl|wget)(?=\\s)(?=[^;|&\\n]*' + STDIN_ARG + ')|(?<!\\|\\s*)' + HTTP_CMD + '|(?<=\\|\\s*)' + HTTPIE_CMD + '|(?<=\\|\\s*)curlie(?=\\s))';
 
 // Bash patterns that expose or exfiltrate secrets
 const BASH_PATTERNS = [
@@ -238,7 +259,7 @@ const BASH_PATTERNS = [
 
   // STRICT - Delegation sinks (any file contents into an external model)
   { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&\\n]*' + SINK_CMD + '|' + SINK_CMD + SEG_QA + REDIRECT_IN + FILE_TOKEN + '|' + SINK_CMD + '[^;|&\\n]*' + SUBST_FILE + '|' + SINK_CMD + '[^;|&\\n]*(?:\\$\\(|`)\\s*' + READER_CMD + '|' + LEAD_REDIRECT + SINK_CLI + SINK_END + '|' + SINK_FILE_FLAG, 'i'), reason: 'Piping file contents to an external model CLI' },
-  { level: 'strict', id: 'model-api-file-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + API_BODY + FILE_TOKEN + '|' + HTTPIE_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + HTTPIE_FILE_ITEM + '[\\w.~\\/]|' + READER_CMD + '[^;&\\n]*' + HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')', 'i'), reason: 'Sending file contents to a model API endpoint' },
+  { level: 'strict', id: 'model-api-file-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + API_BODY + FILE_TOKEN + '|' + HTTPIE_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + HTTPIE_FILE_ITEM + '[\\w.~\\/]|' + READER_CMD + '[^;&\\n]*' + PIPE_HTTP + '(?=[^;|&\\n]*' + SINK_HOST + ')', 'i'), reason: 'Sending file contents to a model API endpoint' },
 ];
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
