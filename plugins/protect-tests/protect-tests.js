@@ -145,18 +145,60 @@ function readExisting(filePath, cwd) {
 
 // sed -i / perl -pi / ruby -pi edit files in place; their s/// replacement is
 // what lands in the file, so only the replacement side is compared.
-const IN_PLACE = /\b(sed\b[^|;&]*\s(-[a-zA-Z]*i|--in-place)|(perl|ruby)\b[^|;&]*\s-[a-zA-Z]*i)/;
+const IN_PLACE = /\b(sed\b[^|;&]*\s(-[a-zA-Z]*i|--in-place)|(perl|ruby)\b[^|;&]*\s-[a-zA-Z0-9]*i|g?awk\b[^|;&]*\s-i\s*inplace\b)/;
+// A stream editor whose output can be redirected or moved over a test file.
+const STREAM_EDITOR = /(?:^|[\s;&|(])(?:sed|gsed|perl|ruby|g?awk)\s/;
 // [^\\] keeps the two alternatives disjoint: when both took a backslash, a run
 // of them with no closing delimiter backtracked exponentially.
 const SUBST = /\bs([/|#,:@!])((?:\\.|(?!\1)[^\\])*)\1((?:\\.|(?!\1)[^\\])*)\1/g;
-// > file, >> file, tee [-a] file; a quoted or escaped name keeps its spaces.
-const REDIRECT = /(>>?|\btee(?:\s+-a)?)\s*(?:"([^"]*)"|'([^']*)'|((?:\\.|[^\s"'|;&<>\\])+))/g;
+// > file, >> file, >| file; a quoted or escaped name keeps its spaces.
+const REDIRECT = /(>>?\|?)\s*(?:"([^"]*)"|'([^']*)'|((?:\\.|[^\s"'|;&<>\\])+))/g;
+// tee writes every file operand; -a / --append keeps what is there.
+const TEE = /\btee((?:\s+-[-\w]*)*)((?:\s+(?:"[^"]*"|'[^']*'|(?:\\.|[^\s"'|;&<>\\])+))+)/g;
+const SHELL_WORD = /"([^"]*)"|'([^']*)'|((?:\\.|[^\s"'|;&<>\\])+)/g;
 // A replacement can finish a marker with the text around it: s/test/test.skip/
 // turns `test(` into `test.skip(`, and s/(/.skip(/ turns `it(` into `it.skip(`.
 const MARKER_CONTEXT = ['', 'it', 'test', 'describe', 'context'];
 
 function substAddsMarker(pat, rep) {
   return MARKER_CONTEXT.some(pre => ['', '('].some(post => addedMarker(pre + pat + post, pre + rep + post)));
+}
+
+// The (pattern, replacement) pairs a sed, perl, ruby or awk script writes:
+// s commands with any delimiter (and perl's s{}{}), sed a / i / c text
+// commands, perl print, and ruby or awk sub / gsub. Inserted text has an
+// empty pattern.
+const S_ANY = /(?:^|[^\w$@%])s([^\w\s\\{(\[<])((?:\\.|(?!\1)[^\\])*)\1((?:\\.|(?!\1)[^\\])*)\1/g;
+const S_BRACES = /(?:^|[^\w$@%])s\{((?:\\.|[^\\{}])*)\}\s*\{((?:\\.|[^\\{}])*)\}/g;
+const SED_TEXT = /(?:^|[\s;{'"])(?:\d+|\$|\/(?:\\.|[^\/\\\n])*\/)\s*[aic]\\?[ \t]*([^'"\n;]+)/g;
+const PRINT_TEXT = /\bprint\s+(?:STDOUT\s+)?(["'])((?:\\.|(?!\1)[^\\])*)\1/g;
+const SUB_CALL = /\bg?sub!?\s*\(\s*\/((?:\\.|[^\/\\])*)\/\s*,\s*(["'])((?:\\.|(?!\2)[^\\])*)\2/g;
+const BACKREF = /\\[0-9]|\$[0-9&]|\$\{[0-9]+\}|(?<!\\)&/g;
+
+function scriptPairs(script) {
+  const unesc = (t) => t.replace(/\\n/g, '\n').replace(/\\(.)/g, '$1');
+  const pairs = [];
+  for (const [, , pat, rep] of script.matchAll(S_ANY)) pairs.push([pat, rep]);
+  for (const [, pat, rep] of script.matchAll(S_BRACES)) pairs.push([pat, rep]);
+  for (const [, pat, , rep] of script.matchAll(SUB_CALL)) pairs.push([pat, rep]);
+  for (const [, text] of script.matchAll(SED_TEXT)) pairs.push(['', text]);
+  for (const [, , text] of script.matchAll(PRINT_TEXT)) pairs.push(['', text]);
+  return pairs.map(([pat, rep]) => [unesc(pat), rep, unesc]);
+}
+
+// A backreference carries matched text into the replacement (s/^it/x&/ makes
+// xit), so each one is tried as the pattern's own literal text and as each
+// test-function name.
+function scriptAddsMarker(script) {
+  return scriptPairs(script).some(([pat, rep, unesc]) => {
+    const literal = pat.replace(/[\^$()|?*+\[\]]/g, '');
+    // Bounded so a long script cannot multiply into megabytes of candidates.
+    const fills = [...new Set([literal, ...literal.split(/[^\w.]+/), ...MARKER_CONTEXT])].filter(f => f.length <= 64);
+    const hasRef = BACKREF.test(rep);
+    BACKREF.lastIndex = 0;
+    const reps = !hasRef ? [rep] : rep.length > 1024 ? [rep.replace(BACKREF, '')] : fills.map(f => rep.replace(BACKREF, () => f));
+    return reps.some(r => substAddsMarker(pat, unesc(r)));
+  });
 }
 
 // Split complete top-level commands, retaining pipelines and grouped output.
@@ -332,23 +374,53 @@ function simpleRedirectOutput(cmd, cwd) {
   return chunks.join('');
 }
 
+// Files a command writes: redirect targets and every tee operand.
+function writeTargets(part) {
+  const unesc = (s) => s.replace(/\\(.)/g, '$1');
+  const targets = [];
+  for (const [, op, dq, sq, bare] of part.matchAll(REDIRECT)) targets.push({ file: dq ?? sq ?? unesc(bare), append: op.startsWith('>>') });
+  for (const [, opts, files] of part.matchAll(TEE)) {
+    const append = /(?:^|\s)(?:-\w*a\w*|--append)\b/.test(opts);
+    for (const [, dq, sq, bare] of files.matchAll(SHELL_WORD)) {
+      const file = dq ?? sq ?? unesc(bare);
+      if (file === '--' || file.startsWith('-')) continue;
+      targets.push({ file, append });
+    }
+  }
+  return targets;
+}
+
+// mv or cp onto a test file: the last operand, unless -t names the target.
+function copiesOntoTest(part) {
+  const m = part.match(/(?:^|[\s;&|(])(?:git\s+)?(?:mv|cp)\s+(.*)$/);
+  if (!m) return false;
+  const words = [...m[1].replace(MV_TAIL, '').matchAll(SHELL_WORD)].map(([, dq, sq, bare]) => dq ?? sq ?? bare);
+  const t = words.findIndex(w => w === '-t' || w.startsWith('--target-directory'));
+  const dest = t >= 0 ? words[t + 1] : words[words.length - 1];
+  return typeof dest === 'string' && TEST_PATH.test(dest);
+}
+
 function shellAddsMarker(cmd, cwd) {
   const unesc = (s) => s.replace(/\\(.)/g, '$1');
-  for (const part of shellCommands(cmd)) {
+  const parts = shellCommands(cmd);
+  for (const part of parts) {
     if (IN_PLACE.test(part) && (TEST_TOKEN.test(part) || TEST_NAME_GLOB.test(part))) {
       for (const [, , pat, rep] of part.matchAll(SUBST)) {
         if (substAddsMarker(unesc(pat), unesc(rep))) return true;
       }
+      if (scriptAddsMarker(part)) return true;
     }
     const output = simpleRedirectOutput(part, cwd);
-    for (const [, op, dq, sq, bare] of part.matchAll(REDIRECT)) {
-      const target = dq ?? sq ?? unesc(bare);
-      if (!TEST_PATH.test(target)) continue;
-      const existing = op.startsWith('>>') || op.includes('-a') ? '' : readExisting(target, cwd);
+    for (const { file, append } of writeTargets(part)) {
+      if (!TEST_PATH.test(file)) continue;
+      const existing = append ? '' : readExisting(file, cwd);
       if (existing !== null && addedMarker(existing, output ?? unesc(part))) return true;
     }
   }
-  return false;
+  // A script that adds a marker, then its output put over a test file in the
+  // same command: sed ... > tmp && mv tmp test, or a redirect straight in.
+  const edits = parts.some(p => STREAM_EDITOR.test(p) && scriptAddsMarker(p));
+  return edits && parts.some(p => copiesOntoTest(p) || writeTargets(p).some(t => TEST_PATH.test(t.file)));
 }
 
 // Returns { blocked, id, level, reason }: pure apart from reading the target
