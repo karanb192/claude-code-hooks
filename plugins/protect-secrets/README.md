@@ -32,6 +32,12 @@ Export configuration variables before launching Codex. An ask-mode match becomes
 |-------|------|--------------|
 | PreToolUse (`Read\|Edit\|Write\|Bash\|Grep`) | sync (must decide before the tool runs) | Matches the file path (Read/Edit/Write), the search target (Grep) or the command (Bash) against tiered sensitive patterns; on a hit, denies or asks with the pattern id and reason. Everything else passes through untouched. |
 
+## How it reads a Bash command
+
+It shares its command reader with [block-dangerous-commands](../block-dangerous-commands#how-it-reads-a-command). Quotes and escapes do not change the verdict: `cat ./.e"nv"`, `c''at .env` and `cat .\env` are refused like `cat .env`, as is a read inside a substitution such as `echo "$(c'a't .env)"`. Quoted `echo`, `printf`, commit and heredoc text that only mentions a secret file is not matched, so `echo 'never cat .env'` is allowed. A double-quoted string that expands is not a message: `echo "$API_KEY"` is still refused.
+
+Not caught: a word whose quotes hold a space keeps its quotes, so `cat "my dir/.e"nv` is not read as `.env`. [tests/shell-rewrites.test.js](../../tests/shell-rewrites.test.js) keeps that in its known-miss list.
+
 ## Search and Windows coverage
 
 `Grep` checks `path`, `glob`, and the legacy `include` field, plus each filter joined to the search directory. For example, `path: C:\Users\me\.aws` with `glob: credentials` is blocked. Every candidate is checked at the configured safety level; an allowed template or an inactive rule cannot hide another sensitive target. When several targets match, the most severe rule wins.

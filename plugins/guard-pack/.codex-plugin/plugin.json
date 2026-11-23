@@ -1,6 +1,6 @@
 {
   "name": "guard-pack",
-  "version": "1.5.2",
+  "version": "1.7.0",
   "description": "Seven guards in one Node process for Codex CLI. Checks shell commands and native patches, protects Codex configuration and installed plugins, and caps subagent spawns per thread. Ask verdicts become blocks. See the README for coverage and limits.",
   "author": {
     "name": "Karan Bansal",

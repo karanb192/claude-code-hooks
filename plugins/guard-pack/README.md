@@ -23,6 +23,8 @@ Restart Claude Code, done.
 
 From 1.3.0 the pack also runs in Codex CLI. Version 1.4.0 adds the spawn cap and Codex configuration protection; each of the seven guards also has its own Codex entry point.
 
+In 1.7.0, block-dangerous-commands, git-safety and protect-secrets share a shell reader. It recognizes common quoting, escaping and variable assignments. It skips literal text in supported message and heredoc forms. See [how it reads a command and its limits](../block-dangerous-commands#how-it-reads-a-command).
+
 ```
 codex plugin marketplace add karanb192/claude-code-hooks
 codex plugin add guard-pack@claude-code-hooks
