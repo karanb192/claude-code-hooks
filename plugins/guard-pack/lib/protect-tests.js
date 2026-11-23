@@ -77,11 +77,15 @@ const testToken = (cmd) => TEST_TOKEN.test(cmd) || CLASS_TEST_TOKEN.test(cmd);
 // counts only in the same command as the verb, so `ls *.test.js && rm x.log`
 // is not a delete of tests, unless a loop, xargs or a substitution can feed
 // the glob's matches to the verb.
-const FEEDS_ITEMS = /\b(?:for|while|until|xargs)\b|\$\(|`/;
+const FEEDS_ITEMS = /\bfor\s+\w+\s+in\b|\b(?:while|until)\s|\bxargs\b|\$\(|`/;
 const LITERAL_TEST_TOKEN =
   /(test_[\w.-]+\.\w+|[\w.-]+_test\.\w+|[\w.-]+\.(test|spec)\.\w+|[\w.-]+_spec\.rb|(^|[\s'"/])(tests?|__tests__|specs?)\/)/i;
+// Judged per shell word: a word with a glob character is not a literal name,
+// even when part of it reads like one (*.unit.test.js).
+const literalTestWord = (cmd) => (cmd.match(/"[^"]*"|'[^']*'|[^\s;&|()<>]+/g) || [])
+  .some(w => !/[*?[\]{}]/.test(w) && LITERAL_TEST_TOKEN.test(w.replace(/^(["'])(.*)\1$/, '$2')));
 const pairedWith = (cmd, verb) =>
-  ((LITERAL_TEST_TOKEN.test(cmd) || (FEEDS_ITEMS.test(cmd) && testToken(cmd))) && verb(cmd)) ||
+  ((literalTestWord(cmd) || (FEEDS_ITEMS.test(cmd) && testToken(cmd))) && verb(cmd)) ||
   shellCommands(cmd).some(part => testToken(part) && verb(part));
 
 // Rust keeps unit tests inline in src/, and a test class can sit outside any

@@ -78,7 +78,8 @@ describe('Regression: recognising test files', () => {
 
 describe('Regression: glob names pair with the command that deletes them', () => {
   it('does not treat a listing next to an unrelated delete as a delete of tests', () => {
-    for (const command of ['ls *.test.js && rm report.log', 'ls *_test.go; rm build.log', 'ls src/FooTest.java; rm build.log']) shouldAllow('Bash', { command });
+    for (const command of ['ls *.test.js && rm report.log', 'ls *_test.go; rm build.log', 'ls src/FooTest.java; rm build.log',
+      'ls *.unit.test.js && rm report.log', 'echo ready for review; ls *.test.js; rm build.log']) shouldAllow('Bash', { command });
   });
 
   it('still denies a glob fed to a delete through a loop, xargs or a substitution', () => {
