@@ -146,10 +146,17 @@ const floatingNames = secretFiles.filter(p => !p.regex.source.startsWith(PATH_AN
 const SECRET_GLOB = '(?:\\.[A-Za-z]{0,3}[*?]|\\.(?:ssh|aws|kube|gnupg|azure|docker|config\\/gcloud)\\/[^\\s"\']*[*?])';
 const SECRET_NAME = '(?:' + FILE_DIR + '(?:' + anchoredNames.join('|') + '|' + SECRET_GLOB + ')|' + FILE_ANY + '(?:' + floatingNames.join('|') + '))(?![A-Za-z0-9])';
 const SECRET_FILE = '(?:^|[\\s"\'=<@(])\\s*' + SECRET_NAME;
+// The whole operand: a backup copy (.npmrc.bak) still counts, a different file (.npmrc.md) does not.
+const SECRET_OPERAND = SECRET_FILE + '(?:\\.(?:bak|backup|old|orig|save|tmp)|~)?(?![^\\s"\'`;|&<>()])';
 const SECRET_WORD = '(?:SECRETS?|KEY|TOKEN|PASSWORD|PASSWD|PASSW|PASSPHRASE|PASS|CREDENTIALS?|API_KEY|APIKEY|PAT)';
 // Whole name segments, so $AUTHOR and $TOKENS_USED stay clean; AUTH and PRIVATE only as the last segment.
 const SECRET_TAIL = '(?:_(?:ID|FILE|PATH|VALUE|VAL|STR|STRING|B64|BASE64|JSON|PEM|DATA|CONTENT|TEXT|RAW|HEX|PROD|PRODUCTION|DEV|STAGING|TEST|OLD|NEW|[0-9]+))*';
 const SECRET_VAR = '\\$\\{?!?(?:(?:[A-Z0-9]+_)*' + SECRET_WORD + SECRET_TAIL + '|(?:[A-Z0-9]+_)*(?:AUTH|PRIVATE))\\}?(?![A-Za-z0-9_])';
+// One grep's words: & only inside a redirection such as 2>&1 or &>, so && and a newline end it.
+const GREP_ANY = '(?:[^|;&\\n]|(?<=[<>])&|&(?=>))';
+// The same, stopping at a -- after which every word is an operand.
+const GREP_ARGS = '(?:(?!\\s--(?:\\s|$))' + GREP_ANY + ')';
+const GREP_TERM = '(?:password|secret|api.?key|token|credential)';
 // Not a heredoc, herestring, process substitution or /dev/*.
 const REDIRECT_IN = '(?<!<)<(?![<(])\\s*(?!\\/dev\\/)';
 // -T as a whole flag: the patterns run case-insensitive, so a bare -T also matches --max-time.
@@ -228,8 +235,11 @@ const BASH_PATTERNS = [
 
   // STRICT
   // The recursive flag may come after the pattern or the path, or sit in a cluster (-rn, -iR).
-  { level: 'strict', id: 'grep-password',        regex: /\bgrep\b[^|;]*(?:-r|--recursive|\s-[A-Za-z]*r)[^|;]*(password|secret|api.?key|token|credential)|\bgrep\b[^|;]*(password|secret|api.?key|token|credential)[^|;]*?\s(?:-[A-Za-z]*r[A-Za-z]*|--(?:dereference-)?recursive)(?![\w-])/i, reason: 'Grep for secrets may expose them' },
-  { level: 'strict', id: 'base64-secrets',       regex: new RegExp('\\bbase64\\b[^|;]*(?:\\.env|credentials|secrets|id_rsa|\\.pem|' + SECRET_FILE + ')', 'i'), reason: 'Base64 encoding secrets' },
+  // It must belong to the same grep (no && or newline in between) and come before a -- that ends the options.
+  // quoted: also read the copy where a quoted & or newline is blanked, so grep -r "a&token" still counts.
+  // (?=(...))\1 takes the first flag or term and never retries a later one, which keeps the match linear.
+  { level: 'strict', id: 'grep-password',        regex: new RegExp('\\bgrep\\b(?=(' + GREP_ARGS + '*?(?:-r|--recursive|\\s-[A-Za-z]*r)))\\1' + GREP_ANY + '*?' + GREP_TERM + '|\\bgrep\\b(?=(' + GREP_ARGS + '*?' + GREP_TERM + '))\\2' + GREP_ARGS + '*?\\s(?:-[A-Za-z]*r[A-Za-z]*|--(?:dereference-)?recursive)(?![\\w-])', 'i'), quoted: true, reason: 'Grep for secrets may expose them' },
+  { level: 'strict', id: 'base64-secrets',       regex: new RegExp('\\bbase64\\b[^|;]*(?:\\.env|credentials|secrets|id_rsa|\\.pem|' + SECRET_OPERAND + ')', 'i'), reason: 'Base64 encoding secrets' },
 
   // STRICT - Delegation sinks (any file contents into an external model)
   { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&\\n]*' + SINK_CMD + '|' + SINK_CMD + SEG_QA + REDIRECT_IN + FILE_TOKEN + '|' + SINK_CMD + '[^;|&\\n]*' + SUBST_FILE + '|' + SINK_FILE_FLAG, 'i'), reason: 'Piping file contents to an external model CLI' },
@@ -760,9 +770,11 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   if (!cmd) return { blocked: false, pattern: null };
   cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
   const threshold = LEVELS[safetyLevel] || 2;
-  const views = shellViews(cmd).map(v => maskTemplates(v.text));
+  const read = shellViews(cmd);
+  const views = read.map(v => maskTemplates(v.text));
+  const quoted = views.concat(read.map(v => maskTemplates(v.masked)));
   for (const p of BASH_PATTERNS) {
-    if (LEVELS[p.level] <= threshold && views.some(v => p.regex.test(v))) {
+    if (LEVELS[p.level] <= threshold && (p.quoted ? quoted : views).some(v => p.regex.test(v))) {
       return { blocked: true, pattern: p };
     }
   }

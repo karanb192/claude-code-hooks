@@ -19,6 +19,13 @@ const REFUSED = [
   ["grep -i password . -r", 'strict'],
   ["base64 ~/.ssh/id_ed25519", 'strict'],
   ["base64 ~/.kube/config", 'strict'],
+  // The flag still counts behind a redirection, inside a quoted pattern, or before a --.
+  ["grep token . 2>&1 -r", 'strict'],
+  ['grep -r "foo&token" .', 'strict'],
+  ["grep -r -- password .", 'strict'],
+  // A backup copy of a secret file is still the secret.
+  ["base64 .npmrc.bak", 'strict'],
+  ["base64 .npmrc.backup", 'strict'],
 ];
 
 const ALLOWED = [
@@ -28,6 +35,13 @@ const ALLOWED = [
   ['grep -r foo .', 'strict'],
   ['base64 image.png', 'strict'],
   ['grep password -r .', 'high'],
+  // A -r that belongs to another command, or a file named -r after --, is not grep's flag.
+  ['grep token README.md && ls -r', 'strict'],
+  ['grep token README.md\nls -r', 'strict'],
+  ['grep token -- -r', 'strict'],
+  // The whole operand is classified: .npmrc.md is a different file from .npmrc.
+  ['base64 .npmrc.md', 'strict'],
+  ['base64 docs/.npmrc.md', 'strict'],
 ];
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {
@@ -38,6 +52,13 @@ for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', 
         assert.strictEqual(r.blocked, true, `allowed: ${command}`);
       });
     }
+  });
+
+  it(`${name}: a long grep with many terms and no recursive flag stays fast`, () => {
+    const started = Date.now();
+    mod.check('Bash', { command: 'grep ' + 'token '.repeat(10000) }, 'strict');
+    mod.check('Bash', { command: 'grep ' + '-r '.repeat(20000) }, 'strict');
+    assert.ok(Date.now() - started < 500, `took ${Date.now() - started}ms`);
   });
 
   describe(`${name}: neighbouring commands stay allowed`, () => {
