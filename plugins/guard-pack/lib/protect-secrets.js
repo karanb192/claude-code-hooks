@@ -227,8 +227,9 @@ const BASH_PATTERNS = [
   { level: 'high', id: 'find-exec-cat-env',      regex: /find\b.*\.env.*-exec|find\b.*-exec.*(cat|less)/i,                 reason: 'Finding and reading .env files' },
 
   // STRICT
-  { level: 'strict', id: 'grep-password',        regex: /\bgrep\b[^|;]*(-r|--recursive)[^|;]*(password|secret|api.?key|token|credential)/i, reason: 'Grep for secrets may expose them' },
-  { level: 'strict', id: 'base64-secrets',       regex: /\bbase64\b[^|;]*(\.env|credentials|secrets|id_rsa|\.pem)/i,       reason: 'Base64 encoding secrets' },
+  // The recursive flag may come after the pattern or the path, or sit in a cluster (-rn, -iR).
+  { level: 'strict', id: 'grep-password',        regex: /\bgrep\b[^|;]*(?:-r|--recursive|\s-[A-Za-z]*r)[^|;]*(password|secret|api.?key|token|credential)|\bgrep\b[^|;]*(password|secret|api.?key|token|credential)[^|;]*?\s(?:-[A-Za-z]*r[A-Za-z]*|--(?:dereference-)?recursive)(?![\w-])/i, reason: 'Grep for secrets may expose them' },
+  { level: 'strict', id: 'base64-secrets',       regex: new RegExp('\\bbase64\\b[^|;]*(?:\\.env|credentials|secrets|id_rsa|\\.pem|' + SECRET_FILE + ')', 'i'), reason: 'Base64 encoding secrets' },
 
   // STRICT - Delegation sinks (any file contents into an external model)
   { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&\\n]*' + SINK_CMD + '|' + SINK_CMD + SEG_QA + REDIRECT_IN + FILE_TOKEN + '|' + SINK_CMD + '[^;|&\\n]*' + SUBST_FILE + '|' + SINK_FILE_FLAG, 'i'), reason: 'Piping file contents to an external model CLI' },
