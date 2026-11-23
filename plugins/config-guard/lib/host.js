@@ -174,6 +174,11 @@ function callsForOps(ops) {
 // to a short option.
 const RUNS_APPLY_PATCH = /(?:^|[^\w.-]|(?:^|[\s=])-[A-Za-z]+)(?:apply_patch|applypatch)(?![\w./-])/;
 
+// Searches, listings and lookups read their arguments as text or file names
+// and never run them.
+const LITERAL_COMMANDS = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'echo', 'printf', 'cat', 'head', 'tail', 'ls', 'which']);
+const LITERAL_GIT = new Set(['commit', 'grep', 'log', 'show', 'diff', 'blame']);
+
 // These commands consume literal arguments rather than shell programs. Only
 // exempt simple commands joined by ; && || or newlines, never substitutions,
 // redirects or pipelines, and only when every one naming apply_patch is one.
@@ -214,7 +219,7 @@ function literalMention(command) {
   push();
   const literal = (w) => {
     if (w[0] === 'rg' && w.some((x) => /^--(?:pre|hostname-bin)(?:=|$)/.test(x))) return false;
-    return ['grep', 'rg', 'echo', 'printf'].includes(w[0]) || (w[0] === 'git' && w[1] === 'commit');
+    return LITERAL_COMMANDS.has(w[0]) || (w[0] === 'git' && LITERAL_GIT.has(w[1]));
   };
   return segments.every((w) => literal(w) || !w.some((x) => RUNS_APPLY_PATCH.test(x)));
 }

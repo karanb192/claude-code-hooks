@@ -312,7 +312,8 @@ describe('host.codexCalls()', () => {
   });
 
   it('still allows literal mentions chained with other commands', () => {
-    for (const command of ['git add -A && git commit -m "use apply_patch"', 'rg -c apply_patch . && echo done', 'cat apply_patch.md', 'ls codex-rs/apply-patch']) {
+    for (const command of ['git add -A && git commit -m "use apply_patch"', 'rg -c apply_patch . && echo done', 'cat apply_patch.md', 'ls codex-rs/apply-patch',
+      'git grep apply_patch', 'git log -S apply_patch --oneline', 'cat apply_patch', 'which apply_patch', 'ag apply_patch src/']) {
       assert.deepStrictEqual(host.codexCalls({ tool_name: 'Bash', tool_input: { command } }), [{ tool: 'Bash', input: { command } }], command);
     }
   });
