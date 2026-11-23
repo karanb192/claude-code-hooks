@@ -239,6 +239,36 @@ function readSettings(file) {
   }
 }
 
+// The code a hook command runs: each simple command's program when it is a
+// path, or an interpreter's script operand (node gate.js, bash ~/g.sh).
+// Other arguments and redirect targets are data the hook reads or writes.
+const INTERPRETERS = /^(?:node|nodejs|deno|bun|tsx|ts-node|python[0-9.]*|bash|sh|zsh|dash|ksh|ruby|perl|php)$/;
+
+function hookScriptWords(command) {
+  const found = [];
+  for (const simple of command.split(/&&|\|\||[;|\n]/)) {
+    const words = simple.match(/\d*[<>]{1,2}&?|"[^"]*"|'[^']*'|[^\s"';|&<>()]+/g) || [];
+    const plain = [];
+    for (let i = 0; i < words.length; i++) {
+      if (/^\d*[<>]/.test(words[i])) { i++; continue; }
+      plain.push(words[i]);
+    }
+    let i = 0;
+    while (i < plain.length && /^[A-Za-z_]\w*=/.test(plain[i])) i++;
+    const program = (plain[i] || '').replace(/^(["'])(.*)\1$/s, '$2');
+    if (!program) continue;
+    if (/[\\/]/.test(program) || SCRIPT_EXT.test(program)) { found.push(plain[i]); continue; }
+    if (!INTERPRETERS.test(path.basename(program))) continue;
+    for (i++; i < plain.length; i++) {
+      if (/^-[ce]$/.test(plain[i])) break;
+      if (plain[i].startsWith('-')) continue;
+      found.push(plain[i]);
+      break;
+    }
+  }
+  return found;
+}
+
 function registeredHookScripts(cwd = process.cwd()) {
   const project = path.resolve(process.env.CLAUDE_PROJECT_DIR || cwd || process.cwd());
   if (hookScriptCache.has(project)) return hookScriptCache.get(project);
@@ -250,16 +280,12 @@ function registeredHookScripts(cwd = process.cwd()) {
       for (const group of Array.isArray(groups) ? groups : []) {
         for (const hook of Array.isArray(group && group.hooks) ? group.hooks : []) {
           if (typeof (hook && hook.command) !== 'string') continue;
-          // A redirect target is where the hook writes, not its code; a bare
-          // name with a script extension (node gate.js) is a script.
-          const words = hook.command.match(/\d*[<>]{1,2}&?|"[^"]*"|'[^']*'|[^\s"';|&<>()]+/g) || [];
-          for (let i = 0; i < words.length; i++) {
-            if (/^\d*[<>]/.test(words[i])) { i++; continue; }
-            const expanded = words[i].replace(/^(["'])(.*)\1$/s, '$2')
+          for (const word of hookScriptWords(hook.command)) {
+            const expanded = word.replace(/^(["'])(.*)\1$/s, '$2')
               .replace(/^~(?=[\\/])/, HOME_DIR)
               .replace(/\$(?:HOME|\{HOME\})(?=[\\/])/g, HOME_DIR)
               .replace(/\$(?:CLAUDE_PROJECT_DIR|\{CLAUDE_PROJECT_DIR\})(?=[\\/])/g, project);
-            if ((!/[\\/]/.test(expanded) && !SCRIPT_EXT.test(expanded)) || /[$`*?]/.test(expanded)) continue;
+            if (/[$`*?]/.test(expanded)) continue;
             for (const p of resolveCandidates(path.resolve(project, expanded))) scripts.add(p.replace(/\\/g, '/'));
           }
         }
