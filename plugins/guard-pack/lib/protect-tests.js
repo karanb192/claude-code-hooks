@@ -109,7 +109,7 @@ const SKIP_MARKERS = [
   /\b(?:it|test|describe|context|suite|specify)(?:\s*\.\s*(?:concurrent|sequential|each|only|fails|failing))*\s*\.\s*(?:skip|skipIf|todo)\b/, // jest / mocha / vitest
   /\bthis\s*\.\s*skip\s*\(/,                              // mocha, inside a test
   /\bx(?:it|describe|test|context|specify)\b\s*[('"`]/,     // xit( / RSpec xit 'name'
-  /^[ \t]*(?:skip|pending)[ \t]+['"]/m,                       // RSpec skip 'reason' / pending 'reason'
+  /^[ \t]*(?:skip|pending)(?:[ \t]+|[ \t]*\([ \t]*)['"]/m,    // RSpec skip 'reason' / pending('reason')
   /\b[tb]\s*\.\s*Skip(?:f|Now)?\s*\(/,                      // Go
   /#\[\s*ignore\b/,                                          // Rust, bare or with a reason
   /[[,]\s*Ignore\s*[\](]/,                                  // NUnit / MSTest, bare or with a reason
