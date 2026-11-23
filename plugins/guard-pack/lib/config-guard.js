@@ -139,8 +139,9 @@ const BASH_TOKENS = [
 const DELETE_VERB    = /(\brm\b|\bunlink\b|\bshred\b|\btrash\b|\bgit\s+rm\b|\bfind\b[^|;&]*\s-delete\b)/i;
 const MOVE_COPY_VERB = /\b(mv|cp|rsync|install|ln|ditto)\b/i;
 // Tools that take the file to write as an argument: downloaders with an
-// output flag, sponge, patch, touch (creating counts) and archive extraction.
-const WRITE_VERB     = /\b(tee|truncate|dd|sponge|patch|touch)\b|\bcurl\b[^|;&]*\s(?:-[a-zA-Z]*o|--output(?:-dir)?)\b|\bwget\b[^|;&]*\s(?:-[a-zA-Z]*[OP]|--output-document|--directory-prefix)|\b(?:unzip|tar|bsdtar)\b[^|;&]*\s-[a-zA-Z]*[dxC]\b/i;
+// output flag, sponge, touch (creating counts) and archive extraction. patch
+// and tar -C depend on their mode, so patchWrites and tarWrites judge them.
+const WRITE_VERB     = /\b(tee|truncate|dd|sponge|touch)\b|\bcurl\b[^|;&]*\s(?:-[a-zA-Z]*o|--output(?:-dir)?)\b|\bwget\b[^|;&]*\s(?:-[a-zA-Z]*[OP]|--output-document|--directory-prefix)|\bunzip\b[^|;&]*\s-[a-zA-Z]*[dxC]\b/i;
 const INPLACE_EDIT   = /\b(sed|gsed)\s+[^|;&]*-i\b|\bperl\s+[^|;&]*-\w*i\b|\bgawk\s+[^|;&]*-i\s*inplace\b/i;
 
 // CLI commands that rewrite agent config without naming a settings path.
@@ -188,6 +189,60 @@ function redirectsInto(cmd, tokenRegex) {
   const re = new RegExp(`(^|[^<>])>{1,2}[|&]?\\s*['"]?[^'"\\s;|&]*(${tokenRegex.source})`, 'i');
   // A target glued to the operator (>hooks.json) reads like one after a space.
   return re.test(cmd.replace(/(>[|&]?)(?=[^\s>|&])/g, '$1 '));
+}
+
+// patch the program writes its target unless a --dry-run or --check follows
+// it before any `--`. git's --patch and --no-patch options only change what
+// diff, show and log print; on checkout, restore or stash they still write.
+const PATCH_OPTION = /(^|['"=])--?(?:no-)?patch\b/gi;
+const GIT_READ     = /\bgit\b(?:\s+-(?:[Cc]\s+[^\s-]\S*|[Cc]\S+|[^\sCc]\S*))*\s+(?:diff|show|log|whatchanged)\b/i;
+function patchWrites(cmd) {
+  for (const seg of cmd.split(/[|;&\n#()`]/)) {
+    if (!/\bpatch\b/i.test(seg)) continue;
+    const readOnlyGit = GIT_READ.test(seg);
+    const words = seg.trim().split(/\s+/);
+    let dryRun = false;
+    for (let i = words.length - 1; i >= 0; i--) {
+      const w = words[i];
+      if (w === '--') dryRun = false;
+      else if (w === '--dry-run' || w === '--check') dryRun = true;
+      if (!/\bpatch\b/i.test(w)) continue;
+      if (/\bpatch\b/i.test(w.replace(PATCH_OPTION, '$1')) ? !dryRun : !readOnlyGit) return true;
+    }
+  }
+  return false;
+}
+
+// tar -C only names the directory tar works in. It writes there when tar
+// extracts, and not when it creates or lists an archive. Creating or
+// appending writes the -f archive, and any mode writes the -g snapshot,
+// index and volume files, so those operands are checked instead.
+// --remove-files deletes what it archived.
+const TAR_RUN       = /(?<![\w.])(?:tar|bsdtar)\b([^|;&\n]*)/gi;
+const TAR_CD        = /\s-[a-zA-Z]*C|\s--(?:cd|directory)\b/;
+// Short options that take no argument, so a mode letter after them in one
+// cluster is still a mode letter. Long options count by prefix, as GNU tar
+// accepts --extr for --extract.
+const TAR_NOARG     = 'ahijklmnopqvwyzABDEGJMOPQRSUWYZ';
+const TAR_EXTRACT   = new RegExp(`\\s-[a-zA-Z0-9]*x|\\s--(?:ext|ge)|^\\s+[a-zA-Z]*x`);
+const TAR_MODE      = new RegExp(`\\s-[${TAR_NOARG}]*[ctruA]|\\s--(?:create|list|append|update|catenate|concatenate|delete)\\b|^\\s+[a-zA-Z]*[ctruA]`);
+const TAR_ARCHIVING = new RegExp(`\\s-[${TAR_NOARG}]*[cruA]|\\s--(?:create|append|update|catenate|concatenate|delete)\\b|^\\s+[a-zA-Z]*[cruA]`);
+const TAR_ARCHIVE   = /\s-[a-zA-Z]*f\s*([^\s;|&]+)|\s--file(?:=|\s+)([^\s;|&]+)|^\s+[a-zA-Z]*f[a-zA-Z]*\s+([^\s;|&]+)/g;
+const TAR_SIDE_FILE = /\s-[a-zA-Z]*g\s*([^\s;|&]+)|\s--(?:listed-incremental|index-file|volno-file)(?:=|\s+)([^\s;|&]+)/g;
+function tarWrites(cmd, tokenRegex) {
+  for (const seg of cmd.split(/[|;&]/)) {
+    const m = /\b(?:tar|bsdtar)\b/i.exec(seg);
+    if (m && /\s-[a-zA-Z]*[dx]\b/i.test(seg.slice(m.index + m[0].length))) return true;
+  }
+  const named = (re, args) => [...args.matchAll(re)].some(f => tokenRegex.test(' ' + (f[1] || f[2] || f[3])));
+  for (const m of cmd.replace(/\\\r?\n/g, ' ').matchAll(TAR_RUN)) {
+    const args = m[1];
+    const extracts = TAR_EXTRACT.test(args);
+    if (extracts ? TAR_CD.test(args) || /\s-[a-zA-Z]*c\b/i.test(args) : TAR_CD.test(args) && !TAR_MODE.test(args)) return true;
+    if (/\s--rem/.test(args) || named(TAR_SIDE_FILE, args)) return true;
+    if (!extracts && TAR_ARCHIVING.test(args) && named(TAR_ARCHIVE, args)) return true;
+  }
+  return false;
 }
 
 // The typed path plus its symlink-resolved form: a write through
@@ -410,7 +465,7 @@ function checkBashCommand(rawCmd = '', safetyLevel = SAFETY_LEVEL, cwd = process
       return { blocked: true, id: t.id, level: t.level, reason: `deleting protected config: ${t.reason}` };
     if (MOVE_COPY_VERB.test(cmd))
       return { blocked: true, id: t.id, level: t.level, reason: `moving/copying/linking a protected config path: ${t.reason}` };
-    if (WRITE_VERB.test(cmd))
+    if (WRITE_VERB.test(cmd) || patchWrites(cmd) || tarWrites(cmd, t.regex))
       return { blocked: true, id: t.id, level: t.level, reason: `writing to protected config: ${t.reason}` };
   }
   return { blocked: false };

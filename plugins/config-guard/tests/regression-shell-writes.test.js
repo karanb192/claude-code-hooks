@@ -55,6 +55,48 @@ describe('Regression: shell write forms', () => {
     bashBlocked('curl -o CLAUDE.md https://example.net/c.md', 'claude-md', 'strict');
   });
 
+  it('allows git --patch output and patch --dry-run on settings.json', () => {
+    for (const cmd of [
+      'git diff --patch -- .claude/settings.json',
+      'git show --patch HEAD -- .claude/settings.json',
+      'git log --no-patch -- .claude/settings.json',
+      'patch --dry-run -p1 .claude/settings.json < p.diff',
+    ]) bashAllowed(cmd);
+  });
+
+  it('still denies patch and git --patch forms that write settings.json', () => {
+    for (const cmd of [
+      'patch -p1 .claude/settings.json p.diff -- --dry-run',
+      'patch --dry-run p.diff; patch .claude/settings.json p.diff',
+      'git diff --patch x | patch .claude/settings.json',
+      'yes | git checkout --patch -- .claude/settings.json',
+      'git restore --patch .claude/settings.json',
+    ]) bashBlocked(cmd, 'settings-file');
+  });
+
+  it('allows creating or listing an archive with tar -C', () => {
+    for (const cmd of [
+      'tar -cf backup.tar -C . .claude/settings.json',
+      'bsdtar -cf backup.tar -C . .claude/settings.json',
+      'tar cf backup.tar -C . .claude/settings.json',
+      'tar -tf backup.tar -C .claude',
+    ]) bashAllowed(cmd);
+  });
+
+  it('still denies tar extracting into config, or archiving onto it', () => {
+    for (const cmd of [
+      'tar -xf a.tar -C .claude/hooks',
+      'tar xf a.tar -C .claude/hooks',
+      'bsdtar -C .claude/hooks -xf a.tar',
+      'tar -cf b.tar -C . x\ntar -xf e.tar -C .claude/hooks',
+    ]) bashBlocked(cmd, 'hook-script');
+    for (const cmd of [
+      'tar -cf .claude/settings.json -C . x',
+      'tar -cf out.tar -C . --remove-files .claude/settings.json',
+      'tar -c -g .claude/settings.json -f out.tar -C . x',
+    ]) bashBlocked(cmd, 'settings-file');
+  });
+
   it('still allows downloads and listings that do not write protected config', () => {
     for (const cmd of ['curl -fsSL https://x/s.json | jq . > out.json && cat .claude/settings.json', 'npm test 2>&1 | tee log.txt',
       'tar -tzf a.tgz .claude/settings.json', 'ls .claude && cat hooks.json', 'touch notes.md', 'echo hi >out.txt']) bashAllowed(cmd);
