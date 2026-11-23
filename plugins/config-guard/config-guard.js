@@ -382,10 +382,73 @@ function stripTextHeredocs(cmd) {
   return closes ? [lines[0], ...rest].join('\n') : cmd;
 }
 
+// Commands of one Bash call, split at ; && || | & newlines and parentheses
+// outside quotes. Enough to pair a verb with its own operands and to follow
+// cd; not a shell parser.
+function shellSegments(cmd) {
+  const out = [];
+  let cur = '', quote = '';
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (quote) { if (c === quote) quote = ''; cur += c; continue; }
+    if (c === '"' || c === "'") { quote = c; cur += c; continue; }
+    if (c === '\\') { cur += c + (cmd[i + 1] || ''); i++; continue; }
+    if (/[;&|\n()]/.test(c) && !(c === '&' && (cmd[i - 1] === '>' || cmd[i + 1] === '>'))) { out.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  out.push(cur);
+  return out.map((x) => x.trim()).filter(Boolean);
+}
+
+// Deleting or moving a project's .claude folder itself, or everything in it,
+// removes its settings and hooks. Only the verb's own command counts, so
+// copying .claude elsewhere next to an unrelated rm still passes.
+const CLAUDE_DIR_OPERAND = /(?:^|\s)["']?(?:[^\s"';|&()]*\/)?\.claude\/?\*?["']?(?=\s|$)/;
+const DIR_MUTATION = /^(?:(?:sudo|command|env|nice|nohup)\s+(?:-\S+\s+)*)*(?:rm|unlink|trash|shred|mv|git\s+rm|git\s+mv)\b/i;
+
+function removesClaudeDir(cmd) {
+  return shellSegments(cmd).some((seg) => DIR_MUTATION.test(seg) && CLAUDE_DIR_OPERAND.test(seg.replace(DIR_MUTATION, '')));
+}
+
+// After `cd .claude` or `cd ~/.codex`, a bare `settings.json` or `hooks` is
+// the protected path. Later relative words are rewritten with the cd target
+// in front, and the rewritten command is checked as well. The command name
+// of each segment is left alone.
+const CD_SEGMENT = /^(?:cd|pushd)\s+(?:--\s+)?(["']?)([^\s"';|&()]+)\1$/;
+
+function withCdTargets(cmd) {
+  let dir = null;
+  let changed = false;
+  const segs = shellSegments(cmd).map((seg) => {
+    const cd = seg.match(CD_SEGMENT);
+    if (cd) {
+      const target = cd[2];
+      dir = /^(?:~|\$HOME|\$\{HOME\})(?:\/|$)|^[^$`]+$/.test(target) ? target.replace(/\/+$/, '') : null;
+      return seg;
+    }
+    if (!dir) return seg;
+    changed = true;
+    let first = true;
+    return seg.replace(/(^|[\s>])([A-Za-z0-9_][\w.\/-]*|\.[\w-][\w.\/-]*)/g, (m, pre, word) => {
+      if (first && pre === '') { first = false; return m; }
+      first = false;
+      return `${pre}${dir}/${word}`;
+    });
+  });
+  return changed ? segs.join(' ; ') : null;
+}
+
 // Pure check for Bash commands - unit-testable.
 function checkBashCommand(rawCmd = '', safetyLevel = SAFETY_LEVEL, cwd = process.cwd()) {
   if (typeof rawCmd !== 'string') throw new TypeError('Bash command must be a string');
   if (!rawCmd) return { blocked: false };
+  const direct = checkCommandText(rawCmd, safetyLevel, cwd);
+  if (direct.blocked) return direct;
+  const viaCd = withCdTargets(stripTextHeredocs(rawCmd));
+  return viaCd ? checkCommandText(viaCd, safetyLevel, cwd) : direct;
+}
+
+function checkCommandText(rawCmd, safetyLevel, cwd) {
   const cmd = stripTextHeredocs(rawCmd);
   const threshold = LEVELS[safetyLevel] || 2;
 
@@ -409,6 +472,10 @@ function checkBashCommand(rawCmd = '', safetyLevel = SAFETY_LEVEL, cwd = process
     if (WRITE_VERB.test(cmd))
       return { blocked: true, id: t.id, level: t.level, reason: `writing to protected config: ${t.reason}` };
   }
+  if (removesClaudeDir(cmd)) {
+    return { blocked: true, id: 'claude-dir', level: 'critical', reason: 'deleting or moving a .claude folder removes its settings and hooks' };
+  }
+
   return { blocked: false };
 }
 
