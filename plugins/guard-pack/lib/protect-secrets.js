@@ -759,13 +759,164 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   if (!cmd) return { blocked: false, pattern: null };
   cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
   const threshold = LEVELS[safetyLevel] || 2;
-  const views = shellViews(cmd).map(v => maskTemplates(v.text));
+  const texts = shellViews(cmd).map(v => v.text);
+  const views = texts.map(maskTemplates);
   for (const p of BASH_PATTERNS) {
     if (LEVELS[p.level] <= threshold && views.some(v => p.regex.test(v))) {
       return { blocked: true, pattern: p };
     }
   }
+  for (const text of texts) {
+    const pattern = secretFileAccess(text, safetyLevel);
+    if (pattern) return { blocked: true, pattern };
+  }
   return { blocked: false, pattern: null };
+}
+
+// The shell route to a file the file tools guard: each command's file
+// operands, redirect targets and upload arguments are checked against
+// SENSITIVE_FILES, so a shell command reaches no file that Read or Write refuses.
+const FILE_ACCESS = {
+  read:   { id: 'read-secret-file',   reason: 'Reading a secret file' },
+  write:  { id: 'write-secret-file',  reason: 'Writing to a secret file' },
+  source: { id: 'source-secret-file', reason: 'Loading a secret file into the shell' },
+  copy:   { id: 'copy-secret-file',   reason: 'Copying, moving or deleting a secret file' },
+  send:   { id: 'send-secret-file',   reason: 'Sending a secret file off the machine' },
+};
+// Commands that print or decode the files they are given.
+const FILE_READERS = new Set(['cat', 'tac', 'nl', 'head', 'tail', 'less', 'more', 'most', 'bat', 'batcat', 'view',
+  'sed', 'awk', 'gawk', 'mawk', 'nawk', 'grep', 'egrep', 'fgrep', 'zgrep', 'rg', 'ag', 'ack', 'jq', 'yq', 'gojq',
+  'sort', 'uniq', 'cut', 'paste', 'fold', 'fmt', 'column', 'rev', 'pr', 'expand', 'unexpand', 'iconv',
+  'strings', 'od', 'xxd', 'hexdump', 'hd', 'base64', 'base32', 'basenc', 'uuencode', 'dd', 'diff', 'sdiff', 'comm', 'join']);
+// The first operand is a pattern, script or filter unless a flag supplies one.
+const PATTERN_FIRST = /^(?:grep|egrep|fgrep|zgrep|rg|ag|ack|sed|awk|gawk|mawk|nawk|jq|yq|gojq)$/;
+const PATTERN_FLAG = /^(?:-[ef]|--(?:regexp|file|expression|from-file)\b)/;
+const FILE_COPIERS = new Set(['cp', 'mv', 'rm', 'ln', 'unlink', 'install', 'truncate', 'shred']);
+const FILE_SENDERS = new Set(['scp', 'rsync', 'sftp']);
+// Options whose next word is a value (an identity file is used, not sent).
+const OPTION_VALUE = { scp: /^-[iFoPclSJD]$/, sftp: /^-[iFoPclSJDBRs]$/, rsync: /^-[eT]$/, truncate: /^-[sr]$/ };
+// Wrappers that run the command after them, with their options that take a value.
+const WRAPPERS = {
+  sudo: /^-[ugpCDhrRtTU]$/, doas: /^-[uC]$/, env: /^-[uCS]$/, nice: /^-n$/, ionice: /^-[cnpP]$/,
+  stdbuf: /^-[ioe]$/, timeout: /^-[sk]$/, exec: /^-a$/, time: /^-[fo]$/, command: null, builtin: null, nohup: null,
+};
+const CURL_SHORT_VALUE = 'AbcCdDeEFHKmoPQrtTuUwxXyYz';
+const CURL_UPLOAD_LONG = /^--(?:data(?:-binary|-raw|-ascii|-urlencode)?|json|form|upload-file|url-query)$/;
+const WGET_UPLOAD_LONG = /^--(?:post|body)-file$/;
+const GLOB_SECRET = new RegExp('(?:^|\\/)' + SECRET_GLOB);
+const SECRET_DIRS = [
+  { level: 'critical', regex: /(?:^|\/)\.(?:ssh|aws|kube)\/?$/, reason: 'Directory of keys and credentials' },
+  { level: 'high', regex: /(?:^|\/)\.(?:azure|docker|config\/gcloud)\/?$/, reason: 'Directory of credentials' },
+];
+
+function unwrapCommand(words, k) {
+  while (k < words.length && !words[k].dynamic && Object.hasOwn(WRAPPERS, base(words[k].value))) {
+    const name = base(words[k].value);
+    const takesValue = WRAPPERS[name];
+    for (k++; k < words.length && /^-./.test(words[k].value); k++) {
+      if (words[k].value === '--') { k++; break; }
+      if (takesValue && takesValue.test(words[k].value)) k++;
+    }
+    if (name === 'env') while (k < words.length && /^[A-Za-z_]\w*=/.test(words[k].value)) k++;
+    if (name === 'timeout') k++;
+  }
+  return k;
+}
+
+function secretPath(value, word, safetyLevel, dirs) {
+  if (!value) return null;
+  const file = checkFilePath(value, safetyLevel);
+  if (file.blocked) return file.pattern;
+  const threshold = LEVELS[safetyLevel] || 2;
+  if (word && !word.spans.length && /[*?]/.test(value) && GLOB_SECRET.test(value)) {
+    return { level: 'critical', reason: 'A glob that can match a secret file' };
+  }
+  if (dirs) return SECRET_DIRS.find(d => LEVELS[d.level] <= threshold && d.regex.test(value)) || null;
+  return null;
+}
+
+// The file named by a curl or wget upload argument: -T file, -d @file,
+// --data-urlencode name@file, -F name=@file or name=<file.
+function uploadedFile(value, kind) {
+  if (kind === 'T') return value;
+  const at = /^(?:[^@<=]*=)?[@<]([^;]+)/.exec(value) || (kind === 'urlencode' && /^[^@=]*@([^;]+)/.exec(value));
+  return at && at[1] !== '-' ? at[1] : null;
+}
+
+function uploadArgs(name, ops) {
+  const out = [];
+  for (let j = 0; j < ops.length; j++) {
+    const v = ops[j].value;
+    const long = /^(--[\w-]+)(?:=([\s\S]*))?$/.exec(v);
+    if (long) {
+      const upload = name === 'wget' ? WGET_UPLOAD_LONG.test(long[1]) : CURL_UPLOAD_LONG.test(long[1]);
+      if (!upload) continue;
+      const value = long[2] !== undefined ? long[2] : ops[++j]?.value;
+      const kind = name === 'wget' || long[1] === '--upload-file' ? 'T' : long[1] === '--data-urlencode' ? 'urlencode' : 'body';
+      out.push({ value, kind, word: ops[j] });
+      continue;
+    }
+    if (name !== 'curl' || !/^-[A-Za-z]/.test(v)) continue;
+    for (let c = 1; c < v.length; c++) {
+      if (!CURL_SHORT_VALUE.includes(v[c])) continue;
+      const value = c + 1 < v.length ? v.slice(c + 1) : ops[++j]?.value;
+      if ('dFT'.includes(v[c])) out.push({ value, kind: v[c] === 'T' ? 'T' : 'body', word: ops[j] });
+      break;
+    }
+  }
+  return out.map(u => ({ value: u.value && uploadedFile(u.value, u.kind), word: u.kind === 'T' ? u.word : null }));
+}
+
+function commandFileAccess(cmd, safetyLevel) {
+  const found = (kind, file) => file && { id: FILE_ACCESS[kind].id, level: file.level, reason: `${FILE_ACCESS[kind].reason} (${file.reason})` };
+  for (const w of cmd.words) {
+    if (!w.target || w.target === '<&') continue;
+    const kind = w.target === '<' ? 'read' : WRITE_REDIRECT.has(w.target) ? 'write' : null;
+    const hit = kind && found(kind, secretPath(w.value, w, safetyLevel));
+    if (hit) return hit;
+  }
+  const words = argv(cmd);
+  const k = unwrapCommand(words, commandIndex(words));
+  if (!words[k] || words[k].dynamic) return null;
+  const name = base(words[k].value);
+  const ops = words.slice(k + 1);
+  if (name === 'curl' || name === 'wget') {
+    for (const u of uploadArgs(name, ops)) {
+      const hit = found('send', secretPath(u.value, u.word, safetyLevel));
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (name === 'source' || name === '.') return found('source', ops[0] && secretPath(ops[0].value, ops[0], safetyLevel));
+  const kind = FILE_READERS.has(name) ? 'read' : name === 'tee' ? 'write' : FILE_COPIERS.has(name) ? 'copy' : FILE_SENDERS.has(name) ? 'send' : null;
+  if (!kind) return null;
+  let skipPattern = PATTERN_FIRST.test(name) && !ops.some(o => PATTERN_FLAG.test(o.value));
+  for (let j = 0; j < ops.length; j++) {
+    const v = ops[j].value;
+    if (/^-./.test(v)) {
+      if (OPTION_VALUE[name] && OPTION_VALUE[name].test(v)) j++;
+      else if (kind === 'read' && v.includes('=')) {
+        const hit = found(kind, secretPath(v.slice(v.indexOf('=') + 1), null, safetyLevel));
+        if (hit) return hit;
+      }
+      continue;
+    }
+    if (skipPattern) { skipPattern = false; continue; }
+    const value = name === 'dd' ? v.replace(/^(?:if|of)=/, '') : v;
+    const hit = found(kind, secretPath(value, ops[j], safetyLevel, kind === 'copy' || kind === 'send'));
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function secretFileAccess(text, safetyLevel) {
+  for (const frame of readShell(text).frames) {
+    for (const cmd of frame.cmds) {
+      const hit = commandFileAccess(cmd, safetyLevel);
+      if (hit) return hit;
+    }
+  }
+  return null;
 }
 
 // Mask each allowlisted file name on its own; matching the allowlist against

@@ -346,7 +346,7 @@ describe('Unit: checkBashCommand()', () => {
     it('blocks grep --recursive secret at strict', () => bashBlocked('grep --recursive secret /app', 'grep-password', 'strict'));
     it('allows grep -r password at high', () => bashAllowed('grep -r password .', 'high'));
     it('blocks base64 .env at strict', () => bashBlocked('base64 .env', 'base64-secrets', 'strict'));
-    it('allows base64 .env at high', () => bashAllowed('base64 .env', 'high'));
+    it('base64 .env is still a read of .env at high', () => bashBlocked('base64 .env', 'read-secret-file', 'high'));
   });
 
   describe('HIGH: Delegation sinks (secret material into an external model)', () => {
