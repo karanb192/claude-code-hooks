@@ -95,6 +95,63 @@ function dropsTestSuite(cmd) {
     (RENAME_VERB.test(seg) && TEST_NAME_GLOB.test(seg) && DISCARD_DEST.test(seg.replace(MV_TAIL, ''))));
 }
 
+// mv and git mv read as words: -t names the target first, a brace list
+// such as a.test.js{,.bak} expands, and the call ends at ; | & ) or a
+// newline whatever follows the name.
+const MOVE = /(?:^|[\s;&|(])(?:git\s+mv|mv)\s+([^;&|\n)]*)/g;
+const TEST_NAME = /(?:^|\/)(?:test_[^/]+\.py|[^/]+_test\.\w+|[^/]+\.(?:test|spec)\.\w+|[^/]+_spec\.rb)$|(?:^|\/)(?:[^/]*Tests?|Test[^/]*)\.(?:java|kt|cs)$/;
+const TEST_DIR_NAME = /(?:^|\/)(?:tests?|__tests__|specs?)$/i;
+const DISABLED_NAME = /(?:\.(?:bak|backup|old|orig|disabled|off|skip|skipped|ignore|ignored|tmp)|~)$/i;
+const TEMP_DEST = /^(?:\/tmp|\/var\/tmp|\/private\/(?:var\/)?tmp|\/(?:private\/)?var\/folders|\/dev\/null|\$\{?TMPDIR(?::-[^}]*)?\}?|(?:~|\$\{?HOME\}?)\/\.Trash)(?:\/|$)|^\$MKTEMP\b/;
+
+function moveWords(args) {
+  const words = [];
+  for (const [, dq, sq, bare] of args.matchAll(/"([^"]*)"|'([^']*)'|((?:\\.|[^\s"'\\])+)/g)) {
+    const word = dq ?? sq ?? bare.replace(/\\(.)/g, '$1');
+    const brace = bare && word.match(/^(.*)\{([^{}]*,[^{}]*)\}(.*)$/);
+    if (brace) for (const alt of brace[2].split(',')) words.push(brace[1] + alt + brace[3]);
+    else words.push(word);
+  }
+  return words;
+}
+
+const isDirectory = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
+
+// A test moved to a temp or trash folder is a delete; one renamed to a
+// disabled suffix, or from a test name to a name no runner collects, or a
+// test folder renamed to a non-test name, is a rename-away.
+function moveVerdict(cmd, cwd) {
+  const text = cmd.replace(/\\\r?\n/g, '').replace(/\$\(\s*mktemp\b[^)]*\)|`\s*mktemp\b[^`]*`/g, '$MKTEMP');
+  for (const [, args] of text.matchAll(MOVE)) {
+    const words = moveWords(args.replace(MV_TAIL, ''));
+    const operands = [];
+    let target = null;
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i];
+      if (w === '--') { operands.push(...words.slice(i + 1)); break; }
+      if (w.startsWith('--target-directory=')) target = w.slice(19);
+      else if (w === '--target-directory' || /^-[a-zA-Z]*t$/.test(w)) target = words[++i];
+      else if (!w.startsWith('-') || w === '-') operands.push(w);
+    }
+    const flagged = target !== null;
+    if (!flagged) target = operands.pop();
+    if (!target || !operands.length) continue;
+    const intoDir = flagged || operands.length > 1 || /\/$/.test(target) || isDirectory(path.resolve(cwd || process.cwd(), target));
+    for (const raw of operands) {
+      const src = raw.replace(/\/+$/, '');
+      const file = TEST_NAME.test(src);
+      const folder = TEST_DIR_NAME.test(src);
+      if (!file && !folder && !TEST_PATH.test(src)) continue;
+      if (TEMP_DEST.test(target)) return 'delete-test';
+      const final = intoDir ? `${target.replace(/\/+$/, '')}/${path.basename(src)}` : target;
+      if (DISABLED_NAME.test(final)) return 'rename-test';
+      if (file && !TEST_NAME.test(final) && !/(?:^|\/)__tests__\//.test(final)) return 'rename-test';
+      if (folder && !TEST_DIR_NAME.test(final.replace(/\/+$/, ''))) return 'rename-test';
+    }
+  }
+  return null;
+}
+
 // Markers that turn an existing test off in place.
 const SKIP_MARKERS = [
   /@pytest\.mark\.(skip|xfail)/,          // pytest
@@ -363,6 +420,9 @@ function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL, cwd = u
   if (toolName === 'Bash') {
     const cmd = toolInput.command || '';
     if (dropsTestSuite(cmd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
+    const moved = moveVerdict(cmd, cwd);
+    if (moved === 'delete-test') return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
+    if (moved === 'rename-test') return deny('high', 'rename-test', 'renaming a test file to a disabled name');
     if (TEST_TOKEN.test(cmd)) {
       if (DELETE_VERB.test(cmd)) return deny('critical', 'delete-test', 'deleting test file(s) or test directory');
       if (RENAME_VERB.test(cmd) && DISABLED_DEST.test(cmd))
