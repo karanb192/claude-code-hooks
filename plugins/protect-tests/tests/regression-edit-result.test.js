@@ -55,3 +55,21 @@ describe('Regression: markers completed by the text around an edit', () => {
     assert.strictEqual(check('MultiEdit', { file_path: 'tests/a.test.js', edits: [{ old_string: 'toBe(2)', new_string: 'toEqual(2)' }] }).blocked, false);
   });
 });
+
+describe('Regression: the final file decides', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'protect-tests-final-'));
+  fs.writeFileSync(path.join(dir, 'a.test.js'), "it('adds', () => {});\n");
+  fs.writeFileSync(path.join(dir, 'big.test.js'), 'x'.repeat(1024 * 1024) + "\nit('adds', () => {});\n");
+
+  it('allows a MultiEdit that adds a marker and removes it again', () => {
+    const edits = [{ old_string: "it('adds'", new_string: "it.skip('adds'" }, { old_string: "it.skip('adds'", new_string: "it('adds'" }];
+    assert.strictEqual(checkTool('MultiEdit', { file_path: 'a.test.js', edits }, undefined, dir).blocked, false);
+  });
+
+  it('does not build an oversized replay for replace_all', () => {
+    const start = Date.now();
+    const r = checkTool('Edit', { file_path: 'big.test.js', old_string: 'x', new_string: 'y'.repeat(64), replace_all: true }, undefined, dir);
+    assert.strictEqual(r.blocked, false);
+    assert.ok(Date.now() - start < 2000, `took ${Date.now() - start} ms`);
+  });
+});

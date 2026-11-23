@@ -358,21 +358,27 @@ function shellAddsMarker(cmd, cwd) {
 const EDIT_CONTEXT = ['', ...new Set(['it', 'test', 'describe', 'context', 'specify', 'suite']
   .flatMap(w => [...w].map((_, i) => w.slice(0, i + 1))))];
 
+// Replay stops (returns null) when an edit does not apply or its result
+// would outgrow the read limit; the string checks then decide.
 function applyEdits(content, edits) {
   for (const e of edits) {
     const from = e && e.old_string;
     if (typeof from !== 'string' || !from || !content.includes(from)) return null;
     const to = typeof e.new_string === 'string' ? e.new_string : '';
+    const count = e.replace_all ? content.split(from).length - 1 : 1;
+    if (content.length + count * (to.length - from.length) > MAX_READ_BYTES) return null;
     content = e.replace_all ? content.split(from).join(to) : content.replace(from, () => to);
   }
   return content;
 }
 
+// The final file decides when it can be computed, so a marker added and
+// removed again within one MultiEdit is not a skip.
 function editAddsMarker(edits, filePath, cwd) {
-  if (edits.some(e => addedMarker(e && e.old_string, e && e.new_string))) return true;
   const before = readExisting(filePath, cwd);
   const after = before === null ? null : applyEdits(before, edits);
   if (after !== null) return addedMarker(before, after);
+  if (edits.some(e => addedMarker(e && e.old_string, e && e.new_string))) return true;
   return edits.some(e => EDIT_CONTEXT.some(pre =>
     addedMarker(pre + ((e && e.old_string) || ''), pre + ((e && e.new_string) || ''))));
 }
