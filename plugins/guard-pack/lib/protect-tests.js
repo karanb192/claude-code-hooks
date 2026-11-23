@@ -359,6 +359,42 @@ function shellAddsMarker(cmd, cwd) {
   return false;
 }
 
+// An edit can complete a marker with text outside the replaced span: turning
+// `('adds'` into `.skip('adds'` right after `it` writes `it.skip(`. So the
+// file is judged as it will be after the edits. When it cannot be read, the
+// strings are tried with every start of a test-function name in front.
+const EDIT_CONTEXT = ['', ...new Set(['it', 'test', 'describe', 'context', 'specify', 'suite']
+  .flatMap(w => [...w].map((_, i) => w.slice(0, i + 1))))];
+
+// Replay stops (returns null) when an edit does not apply, hits an
+// ambiguous spot, or would outgrow the read limit; the string checks then
+// decide.
+function applyEdits(content, edits) {
+  for (const e of edits) {
+    const from = e && e.old_string;
+    if (typeof from !== 'string' || !from || !content.includes(from)) return null;
+    const to = typeof e.new_string === 'string' ? e.new_string : '';
+    const count = content.split(from).length - 1;
+    // Which occurrence a single replacement hits is unknown when there are
+    // several (a Codex patch hunk can repeat elsewhere in the file).
+    if (!e.replace_all && count > 1) return null;
+    if (content.length + count * (to.length - from.length) > MAX_READ_BYTES) return null;
+    content = e.replace_all ? content.split(from).join(to) : content.replace(from, () => to);
+  }
+  return content;
+}
+
+// The final file decides when it can be computed, so a marker added and
+// removed again within one MultiEdit is not a skip.
+function editAddsMarker(edits, filePath, cwd) {
+  const before = readExisting(filePath, cwd);
+  const after = before === null ? null : applyEdits(before, edits);
+  if (after !== null) return addedMarker(before, after);
+  if (edits.some(e => addedMarker(e && e.old_string, e && e.new_string))) return true;
+  return edits.some(e => EDIT_CONTEXT.some(pre =>
+    addedMarker(pre + ((e && e.old_string) || ''), pre + ((e && e.new_string) || ''))));
+}
+
 // Returns { blocked, id, level, reason }: pure apart from reading the target
 // test file for Write and shell redirects, so it is unit-testable. cwd
 // resolves relative paths; it defaults to the process's working directory.
@@ -384,18 +420,16 @@ function checkTool(toolName, toolInput = {}, safetyLevel = SAFETY_LEVEL, cwd = u
   }
 
   if (toolName === 'Edit') {
-    if (TEST_PATH.test(toolInput.file_path || '') && addedMarker(toolInput.old_string, toolInput.new_string))
+    const file = toolInput.file_path || '';
+    if (TEST_PATH.test(file) && editAddsMarker([toolInput], file, cwd))
       return deny('high', 'skip-test', 'adding a skip/xfail/ignore marker to an existing test');
     return allow();
   }
 
   if (toolName === 'MultiEdit') {
-    if (TEST_PATH.test(toolInput.file_path || '')) {
-      for (const e of toolInput.edits || []) {
-        if (addedMarker(e.old_string, e.new_string))
-          return deny('high', 'skip-test', 'adding a skip/xfail/ignore marker to an existing test');
-      }
-    }
+    const file = toolInput.file_path || '';
+    if (TEST_PATH.test(file) && editAddsMarker(Array.isArray(toolInput.edits) ? toolInput.edits : [], file, cwd))
+      return deny('high', 'skip-test', 'adding a skip/xfail/ignore marker to an existing test');
     return allow();
   }
 

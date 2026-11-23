@@ -32,7 +32,7 @@ Export configuration variables before launching Codex. An ask-mode match becomes
 |------|--------------|-------|---------|
 | `Bash` | `rm` / `unlink` / `shred` / `trash` / `git rm` targets a test file or test directory (`tests/` or a bare `tests`), `find` deletes test files (`-delete`, `-exec rm`), or `mv` moves tests into `/tmp`, `$TMPDIR`, `~/.Trash` or `/dev/null` | `critical` | `delete-test` |
 | `Bash` | `mv` renames a test file to a disabled name (`.bak`, `.old`, `.orig`, `.disabled`, `.skip`, `.ignore`, `.tmp`, `~`) | `high` | `rename-test` |
-| `Edit` / `MultiEdit` | the edit adds a skip/xfail/ignore marker to an existing test file | `high` | `skip-test` |
+| `Edit` / `MultiEdit` | the edit adds a skip/xfail/ignore marker to an existing test file, judged on the file as it will be after the edit (so `.skip` inserted right after `it` counts) | `high` | `skip-test` |
 | `Write` | it rewrites an existing test file and the new content has more skip/xfail/ignore markers than the file on disk | `high` | `skip-test` |
 | `Bash` | `sed -i`, `perl -pi` or `ruby -pi` substitutes a marker into a test file named in the same command (a glob such as `find -name '*.test.js' \| xargs sed -i` counts), or `>`, `>>` or `tee` writes one into a test file | `high` | `skip-test` |
 | `Write` | a brand-new test file's content is already skipped/ignored | `strict` | `write-skipped-test` |
