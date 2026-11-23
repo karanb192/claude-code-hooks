@@ -5,7 +5,7 @@
  * Run: node --test plugins/protect-tests/tests/regression-edit-result.test.js
  */
 
-const { describe, it } = require('node:test');
+const { describe, it, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -60,10 +60,17 @@ describe('Regression: the final file decides', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'protect-tests-final-'));
   fs.writeFileSync(path.join(dir, 'a.test.js'), "it('adds', () => {});\n");
   fs.writeFileSync(path.join(dir, 'big.test.js'), 'x'.repeat(1024 * 1024) + "\nit('adds', () => {});\n");
+  after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
   it('allows a MultiEdit that adds a marker and removes it again', () => {
     const edits = [{ old_string: "it('adds'", new_string: "it.skip('adds'" }, { old_string: "it.skip('adds'", new_string: "it('adds'" }];
     assert.strictEqual(checkTool('MultiEdit', { file_path: 'a.test.js', edits }, undefined, dir).blocked, false);
+  });
+
+  it('does not replay an edit whose text occurs more than once', () => {
+    fs.writeFileSync(path.join(dir, 'page.test.js'), "it.run('page');\nrun('page');\n");
+    const r = checkTool('Edit', { file_path: 'page.test.js', old_string: "run('page')", new_string: "run('home')" }, undefined, dir);
+    assert.strictEqual(r.blocked, false);
   });
 
   it('does not build an oversized replay for replace_all', () => {

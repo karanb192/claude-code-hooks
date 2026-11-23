@@ -358,14 +358,18 @@ function shellAddsMarker(cmd, cwd) {
 const EDIT_CONTEXT = ['', ...new Set(['it', 'test', 'describe', 'context', 'specify', 'suite']
   .flatMap(w => [...w].map((_, i) => w.slice(0, i + 1))))];
 
-// Replay stops (returns null) when an edit does not apply or its result
-// would outgrow the read limit; the string checks then decide.
+// Replay stops (returns null) when an edit does not apply, hits an
+// ambiguous spot, or would outgrow the read limit; the string checks then
+// decide.
 function applyEdits(content, edits) {
   for (const e of edits) {
     const from = e && e.old_string;
     if (typeof from !== 'string' || !from || !content.includes(from)) return null;
     const to = typeof e.new_string === 'string' ? e.new_string : '';
-    const count = e.replace_all ? content.split(from).length - 1 : 1;
+    const count = content.split(from).length - 1;
+    // Which occurrence a single replacement hits is unknown when there are
+    // several (a Codex patch hunk can repeat elsewhere in the file).
+    if (!e.replace_all && count > 1) return null;
     if (content.length + count * (to.length - from.length) > MAX_READ_BYTES) return null;
     content = e.replace_all ? content.split(from).join(to) : content.replace(from, () => to);
   }
