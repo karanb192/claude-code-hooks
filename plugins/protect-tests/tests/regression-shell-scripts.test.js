@@ -83,6 +83,8 @@ describe('Regression: shell edit scripts that add a marker', () => {
     allowed("sed 's/it(/it.skip(/' tests/a.test.js > preview.txt; cp clean.js tests/a.test.js");
     allowed("sed 's/it(/it.skip(/' clean.js > tests/a.test.js");
     blocked("sed 's/it(/it.skip(/' tests/a.test.js | tee tests/a.test.js");
+    allowed("sed 's/it(/it.skip(/' clean.js > tmp.js && mv tmp.js tests/a.test.js");
+    allowed("sed 's/it(/it.skip(/' tests/a.test.js > tmp.js; echo ok > tmp.js; cp tmp.js tests/a.test.js");
   });
 
   it('still allows ordinary edits, removals of skips and previews', () => {

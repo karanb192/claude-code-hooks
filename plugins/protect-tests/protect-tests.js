@@ -306,7 +306,7 @@ function shellCommands(cmd) {
 
 // Infer only small literal sed/perl substitutions or grep filters. Unsupported
 // syntax uses the command-text heuristic; no submitted command is executed.
-function simpleRedirectOutput(cmd, cwd) {
+function simpleRedirectResult(cmd, cwd) {
   if (cmd.length > 4096 || /[\r\n]/.test(cmd)) return null;
   const word = `(?:"[A-Za-z0-9_./ -]+"|'[A-Za-z0-9_./ -]+'|[A-Za-z0-9_./-]+)`;
   const match = cmd.match(new RegExp(`^\\s*(sed(?:\\s+-e)?|perl\\s+-pe|grep(?:\\s+-[vF]{1,2}){0,2})\\s+'([^'\\n]{1,520})'\\s+(${word})\\s*(?:>>?\\s*|\\|\\s*tee\\s+(?:-a\\s+)?)${word}\\s*$`));
@@ -371,7 +371,12 @@ function simpleRedirectOutput(cmd, cwd) {
     if (size + input.length - end > MAX_READ_BYTES) return null;
     chunks.push(input.slice(end));
   }
-  return chunks.join('');
+  return { input, output: chunks.join('') };
+}
+
+function simpleRedirectOutput(cmd, cwd) {
+  const result = simpleRedirectResult(cmd, cwd);
+  return result && result.output;
 }
 
 // Files a command writes: redirect targets and every tee operand.
@@ -420,19 +425,24 @@ function shellAddsMarker(cmd, cwd) {
   // A script that adds a marker, with its own output put over a test file:
   // redirected or tee'd straight in, or written to a file that a later
   // command moves, copies or cats onto a test. A redirect into a test whose
-  // output the exact check above computed is not second-guessed.
+  // output the exact check above computed is not second-guessed, and output
+  // that computation shows is clean is not tracked. A file a later command
+  // overwrites stops carrying the marker.
   const outputs = new Set();
   for (const part of parts) {
     const targets = writeTargets(part);
     if (STREAM_EDITOR.test(part) && scriptAddsMarker(part)) {
-      const intoTest = targets.some(t => TEST_PATH.test(t.file));
-      if (intoTest && simpleRedirectOutput(part, cwd) === null) return true;
+      const exact = simpleRedirectResult(part, cwd);
+      if (exact && !addedMarker(exact.input, exact.output)) { for (const t of targets) outputs.delete(t.file); continue; }
+      if (!exact && targets.some(t => TEST_PATH.test(t.file))) return true;
       for (const t of targets) outputs.add(t.file);
       continue;
     }
-    if (!outputs.size) continue;
-    const words = [...part.matchAll(SHELL_WORD)].map(([, dq, sq, bare]) => dq ?? sq ?? unesc(bare));
-    if (words.some(w => outputs.has(w)) && (copiesOntoTest(part) || targets.some(t => TEST_PATH.test(t.file)))) return true;
+    if (outputs.size) {
+      const words = [...part.matchAll(SHELL_WORD)].map(([, dq, sq, bare]) => dq ?? sq ?? unesc(bare));
+      if (words.some(w => outputs.has(w)) && (copiesOntoTest(part) || targets.some(t => TEST_PATH.test(t.file)))) return true;
+    }
+    for (const t of targets) outputs.delete(t.file);
   }
   return false;
 }
