@@ -234,7 +234,9 @@ function splitSegments(command) {
 }
 
 // Expand unquoted brace lists (`{a,b}`, `x{,-old}`) the way the shell does
-// before the command sees them. Sequences (`{1..3}`) are left literal.
+// before the command sees them. Sequences (`{1..3}`) are left literal. Returns
+// null past BRACE_LIMIT words: a partial list would leave the rest unchecked.
+const BRACE_LIMIT = 64;
 function expandBraces(word) {
   for (let a = 0; a < word.length; a++) {
     if (word[a] !== '{') continue;
@@ -250,10 +252,9 @@ function expandBraces(word) {
     const pre = word.slice(0, a), post = word.slice(b + 1), out = [];
     let from = a + 1;
     for (const k of [...commas, b]) {
-      for (const w of expandBraces(pre + word.slice(from, k) + post)) {
-        out.push(w);
-        if (out.length >= 64) return out;
-      }
+      const sub = expandBraces(pre + word.slice(from, k) + post);
+      if (!sub || out.length + sub.length > BRACE_LIMIT) return null;
+      out.push(...sub);
       from = k + 1;
     }
     return out;
@@ -264,7 +265,8 @@ function expandBraces(word) {
 // Tokenize one segment into words, respecting quotes, escapes and
 // substitutions. Each token records whether any part was quoted or escaped
 // (quoted globs and `~` are literal to the shell). Substitutions stay raw, so
-// their `$` or backtick marks the word unresolvable. Unquoted `(` / `)` are
+// their `$` or backtick marks the word unresolvable, as does a brace list too
+// large to expand (`unresolvable: true`). Unquoted `(` / `)` are
 // shell operators and become standalone tokens even unspaced. Redirections
 // (`>out`, `2>&1`, `<<<word`) and their targets are not arguments: dropped.
 function tokenize(segment) {
@@ -274,7 +276,11 @@ function tokenize(segment) {
     if (started) {
       if (redirect) redirect = false;
       else if (quoted || /[$`]/.test(text)) tokens.push({ text, quoted });
-      else for (const t of expandBraces(text)) tokens.push({ text: t, quoted });
+      else {
+        const words = expandBraces(text);
+        if (!words) tokens.push({ text, quoted, unresolvable: true });
+        else for (const t of words) tokens.push({ text: t, quoted });
+      }
     }
     text = ''; quoted = false; started = false;
   };
@@ -375,10 +381,14 @@ function peelWrappers(tokens) {
     for (let s = 0; s < (w.skip || 0) && i < tokens.length; s++) i++;
     for (const [f, v] of opts) if ((w.chdir || []).includes(f) && v) chdir = v;
     if (name === 'xargs') {
-      xargs = { repl: null };
+      // How input splits into arguments: on blanks by default (-L and -J
+      // too), whole lines for -I/-i/--replace, NULs for -0, a given -d char.
+      xargs = { repl: null, split: 'blank', delim: null };
       for (const [f, v] of opts) {
-        if ((f === '-I' || f === '-J') && v) xargs.repl = v;
-        else if (f === '-i' || f === '--replace') xargs.repl = v || '{}';
+        if ((f === '-I' || f === '-i' || f === '--replace') && (v || f !== '-I')) { xargs.repl = v || '{}'; xargs.split = 'line'; }
+        else if (f === '-J' && v) xargs.repl = v;
+        else if (f === '-0' || f === '--null') xargs.split = 'nul';
+        else if ((f === '-d' || f === '--delimiter') && v) { xargs.split = 'delim'; xargs.delim = v === '\\n' ? '\n' : v === '\\t' ? '\t' : v[0]; }
       }
     }
     tokens = tokens.slice(i);
@@ -404,6 +414,63 @@ function findArgs(rest) {
 }
 
 const DELETERS = /^(rm|unlink|rmdir)$/;
+const FIND_EXEC = /^-(exec|execdir|ok|okdir)$/;
+
+// The -exec/-ok clauses of a find expression: { at, cmd, args } up to `;`/`+`.
+function findExecs(expr) {
+  const out = [];
+  for (let i = 0; i < expr.length; i++) {
+    if (!FIND_EXEC.test(expr[i].text)) continue;
+    let j = i + 1;
+    while (j < expr.length && expr[j].text !== ';' && expr[j].text !== '+') j++;
+    out.push({ at: i, end: j, cmd: path.basename(expr[i + 1]?.text || ''), args: expr.slice(i + 2, j) });
+    i = j;
+  }
+  return out;
+}
+
+// Does find write the matched paths to stdout? -print, -print0, a -printf
+// with %p/%P, an -exec/-ok that passes {} on, or no action at all (the
+// implicit -print). A fixed -printf or -fprint string is not a matched path.
+function findPrintsPaths(expr) {
+  const execs = findExecs(expr);
+  if (execs.some(e => e.args.some(a => a.text.includes('{}')))) return true;
+  let action = execs.length > 0;
+  for (let i = 0; i < expr.length; i++) {
+    const t = expr[i].text;
+    const ex = execs.find(e => e.at === i);
+    if (ex) { i = ex.end; continue; }
+    if (t === '-print' || t === '-print0') return true;
+    if (t === '-printf' && /%[pP]/.test(expr[i + 1]?.text || '')) return true;
+    if (/^-(printf|fprint0?|fprintf|ls|fls|delete|quit)$/.test(t)) action = true;
+    if (/^-(printf|fprint0?|fls)$/.test(t)) i++;
+    else if (t === '-fprintf') i += 2;
+  }
+  return !action;
+}
+
+// What `echo ARGS` writes, split the way xargs reads it. Records the shell
+// output cannot pin down (globbed args, backslashes that some echos expand,
+// quotes xargs would reinterpret) are left out.
+function xargsItems(echoArgs, mode) {
+  let k = 0, newline = true;
+  while (k < echoArgs.length && /^-[neE]+$/.test(echoArgs[k].text)) { if (echoArgs[k].text.includes('n')) newline = false; k++; }
+  let args = echoArgs.slice(k);
+  if (args.some(hasGlob)) {
+    if (mode.split !== 'blank') return [];
+    args = args.filter(t => !hasGlob(t));
+  }
+  const output = args.map(t => t.text).join(' ') + (newline ? '\n' : '');
+  let records;
+  if (mode.split === 'nul') records = output.split('\0');
+  else if (mode.split === 'delim') records = output.split(mode.delim);
+  else if (mode.split === 'line') records = output.split('\n').flatMap(l => [l.replace(/^[ \t]+/, ''), l.trim()]);
+  else records = output.split(/[ \t\n]+/);
+  const literal = mode.split === 'nul' || mode.split === 'delim';
+  return [...new Set(records)]
+    .filter(r => r && !r.includes('\\') && (literal || !/['"]/.test(r)))
+    .map(text => ({ text, quoted: true })); // xargs never globs or expands ~
+}
 
 function hasUnresolvable(text) { return /[$`]|^[<>]\(/.test(text); }
 function hasGlob(tok) { return !tok.quoted && /[*?[]/.test(tok.text); }
@@ -542,7 +609,7 @@ function analyzeCommand(command, cwd, fsx = realFsx) {
       if (target && /\$\(|`/.test(target.text)) { lastStatus = 'unknown'; closeSubshells(); continue; }
       let afters = null, exists;
       if (cmd === 'cd' && !target) { afters = [os.homedir()]; exists = true; }
-      else if (!target || hasUnresolvable(target.text) || target.text === '-') { afters = null; exists = undefined; }
+      else if (!target || target.unresolvable || hasUnresolvable(target.text) || target.text === '-') { afters = null; exists = undefined; }
       else {
         const dirs = shell === null ? [null] : shell;
         afters = [...new Set(dirs.map(d => resolveTarget(target.text, d, target.quoted)).filter(Boolean))];
@@ -587,7 +654,7 @@ function analyzeCommand(command, cwd, fsx = realFsx) {
       if (!dirs.length) dirs = [null];
     }
     const check = (tok) => {
-      if (hasGlob(tok) || hasUnresolvable(tok.text)) return null;
+      if (tok.unresolvable || hasGlob(tok) || hasUnresolvable(tok.text)) return null;
       for (const d of dirs) {
         const resolved = resolveTarget(tok.text, d, tok.quoted);
         if (!resolved) continue;
@@ -601,16 +668,14 @@ function analyzeCommand(command, cwd, fsx = realFsx) {
     // Only literal feeds are modeled: `echo WORDS`, and `find PATHS …`, whose
     // output lies under PATHS, so deleting it is a delete under those paths.
     if (peeled.xargs && src) {
-      if (src.cmd === 'find' && DELETERS.test(cmd)) {
-        for (const tok of findArgs(src.args).paths) {
+      const found = src.cmd === 'find' ? findArgs(src.args) : null;
+      if (found && DELETERS.test(cmd) && findPrintsPaths(found.expr)) {
+        for (const tok of found.paths) {
           const hit = check(tok);
           if (hit) return { level: 'critical', cmd: `find | xargs ${cmd}`, ...hit };
         }
       } else if (src.cmd === 'echo') {
-        let k = 0;
-        while (k < src.args.length && /^-[neE]+$/.test(src.args[k].text)) k++;
-        const items = src.args.slice(k).filter(t => !hasGlob(t))
-          .flatMap(t => t.text.split(/\s+/).filter(Boolean).map(text => ({ text, quoted: t.quoted })));
+        const items = xargsItems(src.args, peeled.xargs);
         const repl = peeled.xargs.repl;
         tokens = repl
           ? [tokens[0], ...tokens.slice(1).flatMap(t => t.text.includes(repl)
@@ -672,11 +737,11 @@ function analyzeCommand(command, cwd, fsx = realFsx) {
       }
     } else if (cmd === 'find') {
       // Only destructive if the expression deletes: -delete, or -exec /
-      // -execdir / -ok / -okdir running rm, unlink or rmdir (any path to them).
+      // -execdir / -ok / -okdir running rm, unlink or rmdir (any path to them)
+      // with {} among its arguments; without {} it never sees a matched path.
       const { paths, expr } = findArgs(tokens.slice(1));
-      const deletes = expr.some((t, i) =>
-        t.text === '-delete' ||
-        (/^-(exec|execdir|ok|okdir)$/.test(t.text) && DELETERS.test(path.basename(expr[i + 1]?.text || ''))));
+      const deletes = expr.some(t => t.text === '-delete') ||
+        findExecs(expr).some(e => DELETERS.test(e.cmd) && e.args.some(a => a.text.includes('{}')));
       if (deletes) {
         for (const tok of paths) {
           const hit = check(tok);
