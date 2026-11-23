@@ -95,18 +95,25 @@ function dropsTestSuite(cmd) {
     (RENAME_VERB.test(seg) && TEST_NAME_GLOB.test(seg) && DISCARD_DEST.test(seg.replace(MV_TAIL, ''))));
 }
 
-// Markers that turn an existing test off in place.
+// Markers that turn an existing test off in place. Dots may be split by
+// whitespace or a newline, as formatters and chained calls write them.
 const SKIP_MARKERS = [
-  /@pytest\.mark\.(skip|xfail)/,          // pytest
-  /@unittest\.skip/,                       // unittest
-  /\bpytest\.skip\s*\(/,
-  /@Disabled\b/,                           // JUnit 5
-  /@Ignore\b/,                             // JUnit 4 / TestNG
-  /\b(it|test|describe|context)\.skip\s*\(/, // jest / mocha / vitest
-  /\bx(it|describe|test|context)\s*\(/,      // xit / xdescribe ...
-  /\bt\.Skip(Now)?\s*\(/,                   // Go
-  /#\[ignore\]/,                           // Rust
-  /\[Ignore\]/,                            // NUnit / MSTest
+  /\bpytest\s*\.\s*mark\s*\.\s*(?:skip|skipif|xfail)(?!\w)/, // pytest decorator or pytestmark
+  /@mark\s*\.\s*(?:skip|skipif|xfail)(?!\w)/,                 // from pytest import mark
+  /\bpytest\s*\.\s*(?:skip|xfail)\s*\(/,
+  /@unittest\s*\.\s*(?:skip\w*|expectedFailure)\b/,     // unittest
+  /\.\s*skipTest\s*\(|\braise\s+(?:unittest\.)?SkipTest\b/,
+  /@Disabled\w*/,                                          // JUnit 5, including @DisabledIf...
+  /@Ignore\b/,                                             // JUnit 4
+  /@Test\s*\([^)]*\benabled\s*=\s*false\b/,              // TestNG
+  /\b(?:it|test|describe|context|suite|specify)(?:\s*\.\s*(?:concurrent|sequential|each|only|fails|failing))*\s*\.\s*(?:skip|skipIf|todo)\b/, // jest / mocha / vitest
+  /\bthis\s*\.\s*skip\s*\(/,                              // mocha, inside a test
+  /\bx(?:it|describe|test|context|specify)\b\s*[('"`]/,     // xit( / RSpec xit 'name'
+  /^[ \t]*(?:skip|pending)(?:[ \t]+|[ \t]*\([ \t]*)['"]/m,    // RSpec skip 'reason' / pending('reason')
+  /\b[tb]\s*\.\s*Skip(?:f|Now)?\s*\(/,                      // Go
+  /#\[\s*ignore\b/,                                          // Rust, bare or with a reason
+  /[[,]\s*Ignore\s*[\](]/,                                  // NUnit / MSTest, bare or with a reason
+  /\[\s*(?:Fact|Theory)\s*\([^)\]]*\bSkip\s*=/,              // xUnit
 ];
 
 function log(data) {
@@ -123,7 +130,7 @@ function addedMarker(oldStr, newStr) {
   const before = oldStr || '';
   const after = newStr || '';
   for (const m of SKIP_MARKERS) {
-    const g = new RegExp(m.source, 'g');
+    const g = new RegExp(m.source, m.flags + 'g');
     if ((after.match(g) || []).length > (before.match(g) || []).length) return true;
   }
   return false;
@@ -333,7 +340,8 @@ function simpleRedirectOutput(cmd, cwd) {
 }
 
 function shellAddsMarker(cmd, cwd) {
-  const unesc = (s) => s.replace(/\\(.)/g, '$1');
+  // sed and perl write \n in a replacement as a newline.
+  const unesc = (s) => s.replace(/\\n/g, '\n').replace(/\\(.)/g, '$1');
   for (const part of shellCommands(cmd)) {
     if (IN_PLACE.test(part) && (TEST_TOKEN.test(part) || TEST_NAME_GLOB.test(part))) {
       for (const [, , pat, rep] of part.matchAll(SUBST)) {
