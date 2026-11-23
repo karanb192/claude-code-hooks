@@ -56,14 +56,15 @@ const GIT = '\\bgit(?:\\s+(?:-[Cc]\\s*' + GIT_VAL + '|--' + GIT_LONG_VAL + '(?:=
 const PATTERNS = [
   // STRICT - force-push is normally handled by block-dangerous-commands.js.
   // Only enforced here at 'strict' so git-safety is self-sufficient standalone.
-  { level: 'strict', id: 'force-push',              segment: true, regex: new RegExp(GIT + 'push\\b[^;&|\\n]*\\s["\']?(?:--force|-f)["\']?(?=\\s|$|[;&|"\'])'), reason: 'Force-pushing is not allowed' },
+  { level: 'strict', id: 'force-push',              segment: true, regex: new RegExp(GIT + 'push\\b[^;&|\\n]*\\s["\']?(?:--force|-f)["\']?(?=\\s|$|[;&|"\')<>])'), reason: 'Force-pushing is not allowed' },
 
   // HIGH - complementary coverage the sibling hook does not provide
 
   // Block pushing directly to a protected branch by name
   // The branch as a whole ref (origin main, HEAD:main, +main, refs/heads/main), so my-main-feature is not main.
-  { level: 'high', id: 'push-main',                 segment: true, regex: new RegExp(GIT + 'push\\b[^;&|\\n]*(?:[\\s:+"\']|refs\\/heads\\/)main(?=$|[\\s;&|:"\'])'),   reason: 'Pushing to main is not allowed' },
-  { level: 'high', id: 'push-master',               segment: true, regex: new RegExp(GIT + 'push\\b[^;&|\\n]*(?:[\\s:+"\']|refs\\/heads\\/)master(?=$|[\\s;&|:"\'])'), reason: 'Pushing to master is not allowed' },
+  // A ref ends at a space, separator, quote, closing paren or redirect: (cd repo && git push origin main).
+  { level: 'high', id: 'push-main',                 segment: true, regex: new RegExp(GIT + 'push\\b[^;&|\\n]*(?:[\\s:+"\']|refs\\/heads\\/)main(?=$|[\\s;&|:"\')<>])'),   reason: 'Pushing to main is not allowed' },
+  { level: 'high', id: 'push-master',               segment: true, regex: new RegExp(GIT + 'push\\b[^;&|\\n]*(?:[\\s:+"\']|refs\\/heads\\/)master(?=$|[\\s;&|:"\')<>])'), reason: 'Pushing to master is not allowed' },
 
   // Block deleting protected branches locally
   { level: 'high', id: 'branch-delete-protected',   regex: new RegExp(GIT + 'branch\\s+.*(?:-[dD]|--delete)\\s+(?:main|master)\\b'), reason: 'Deleting a protected branch is not allowed' },
