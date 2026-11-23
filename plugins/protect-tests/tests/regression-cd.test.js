@@ -50,6 +50,9 @@ describe('Regression: a cd earlier in the command', () => {
       assert.strictEqual(run(command).blocked, false, command);
     }
     assert.strictEqual(run('cd tests && git rm -r unit').id, 'delete-test');
+    assert.strictEqual(run('cd tests && git rm ../report.txt').blocked, false);
+    assert.strictEqual(run(`cd tests && sed -i 's/it(/it.skip(/' "a.js"`).id, 'skip-test');
+    assert.strictEqual(run(`cd tests && sed -i -e 's/it(/it.skip(/' a.js`).id, 'skip-test');
   });
 
   it('still allows cleanup, test runs and commands after leaving the folder', () => {

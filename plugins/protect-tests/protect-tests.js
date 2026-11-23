@@ -290,14 +290,30 @@ function commandsWithDir(cmd, cwd) {
   return out;
 }
 
-// Words of a command after its name, resolved against the directory it runs
-// in: the paths it can act on. Scripts are usually quoted, so an in-place
-// editor's operands are its unquoted words.
-function operandPaths(part, dir, unquotedOnly = false) {
-  return [...part.matchAll(/(?:^|\s)(?:"([^"]*)"|'([^']*)'|([^\s"';&|<>()]+))/g)].slice(1)
-    .map(([, dq, sq, bare]) => unquotedOnly ? bare : dq ?? sq ?? bare)
-    .filter(w => w && !w.startsWith('-'))
-    .map(w => ({ word: w, abs: path.resolve(dir, w).replace(/\\/g, '/') }));
+// Operands of a command, resolved against the directory it runs in: the
+// words after its name (and after git's subcommand, past wrappers such as
+// sudo), without options. For an in-place editor the script is not an
+// operand: the word after -e / -f, or else its first operand.
+const WRAPPER = /^(?:sudo|doas|env|command|nohup|nice|time|exec)$/;
+
+function operandPaths(part, dir, editor = false) {
+  const words = [...part.matchAll(/(?:^|\s)(?:"([^"]*)"|'([^']*)'|([^\s"';&|<>()]+))/g)].map(([, dq, sq, bare]) => dq ?? sq ?? bare);
+  let i = 0;
+  while (i < words.length && WRAPPER.test(words[i])) { i++; while (i < words.length && words[i].startsWith('-')) i++; }
+  if (words[i] === 'git') i++;
+  i++;
+  const operands = [];
+  let scriptNext = false;
+  let scriptGiven = false;
+  for (const w of words.slice(i)) {
+    if (editor && /^(?:-e|-f|--expression|--file)$/.test(w)) { scriptNext = true; scriptGiven = true; continue; }
+    if (editor && /^--(?:expression|file)=/.test(w)) { scriptGiven = true; continue; }
+    if (scriptNext) { scriptNext = false; continue; }
+    if (!w || w.startsWith('-')) continue;
+    operands.push(w);
+  }
+  if (editor && !scriptGiven) operands.shift();
+  return operands.map(w => ({ word: w, abs: path.resolve(dir, w).replace(/\\/g, '/') }));
 }
 
 // Build and cache output that lives next to tests and is safe to clear.
