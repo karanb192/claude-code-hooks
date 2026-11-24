@@ -637,6 +637,37 @@ function gitHead(text) {
   return null;
 }
 
+// Files git writes through an output option: --output on diff, log, show
+// and the other diff commands, -o and --output-directory on format-patch,
+// and -o or --output on archive. Paths after git -C <dir> resolve there.
+function gitOutputs(cmd) {
+  const out = [];
+  for (const seg of unquotedSegments(cmd.replace(/\\\r?\n/g, ' '))) {
+    const rest = seg.trim().slice(seg.trim().match(WRAPPERS)[0].length);
+    const git = gitHead(rest);
+    if (!git) continue;
+    let dir = '';
+    for (const d of git.dirs) dir = joinDir(dir, d.value);
+    const shortO = /^(?:format-patch|archive)$/i.test(git.sub);
+    const words = shellWords(rest.slice(git.end));
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i];
+      if (w === '--') break;
+      let v;
+      const long = w.match(/^--(output|output-d[a-z-]*)(?:=(.*))?$/);
+      if (long) v = long[2] !== undefined ? long[2] : words[++i];
+      else if (shortO && /^-o/.test(w)) v = w.length > 2 ? w.slice(2) : words[++i];
+      if (v === undefined) continue;
+      out.push(dir && !/^[/~$]/.test(v) ? `${dir}/${v}` : v);
+    }
+  }
+  return out;
+}
+
+function gitWrites(cmd, tokenRegex) {
+  return /\bgit\b/i.test(cmd) && gitOutputs(cmd).some((v) => tokenRegex.test(' ' + v));
+}
+
 // The removal or move a segment runs, past wrappers and git's global options.
 function dirMutation(seg) {
   const rest = seg.slice(seg.match(WRAPPERS)[0].length);
@@ -791,8 +822,8 @@ function prefixArgs(seg, dir) {
   const base = dir.replace(/\/$/, '');
   // A folder with spaces is quoted, so the rewritten word stays one word.
   const open = /[^\w.\/~-]/.test(base) ? '"' : '';
-  // Quoted words and ./ or ../ paths are relative too.
-  return seg.replace(/(^|[\s>])(["']?)((?:\.{1,2}\/|[A-Za-z0-9_]|\.[\w-])[\w.\/-]*)/g, (m, pre, quote, word) =>
+  // Quoted words, ./ or ../ paths and --option=value values are relative too.
+  return seg.replace(/(^|[\s>]|(?<=\s--?[\w-]+=))(["']?)((?:\.{1,2}\/|[A-Za-z0-9_]|\.[\w-])[\w.\/-]*)/g, (m, pre, quote, word) =>
     quote ? `${pre}${quote}${base}/${word}` : `${pre}${open}${base}/${word}${open}`);
 }
 
@@ -902,7 +933,7 @@ function checkCommandText(rawCmd, safetyLevel, cwd, dirMoves = true) {
       return { blocked: true, id: t.id, level: t.level, reason: `deleting protected config: ${t.reason}` };
     if (MOVE_COPY_VERB.test(cmd))
       return { blocked: true, id: t.id, level: t.level, reason: `moving/copying/linking a protected config path: ${t.reason}` };
-    if (WRITE_VERB.test(cmd) || patchWrites(cmd) || tarWrites(cmd, t.regex))
+    if (WRITE_VERB.test(cmd) || patchWrites(cmd) || tarWrites(cmd, t.regex) || gitWrites(cmd, t.regex))
       return { blocked: true, id: t.id, level: t.level, reason: `writing to protected config: ${t.reason}` };
   }
   const dirChange = claudeDirChange(cmd, cwd, dirMoves);
