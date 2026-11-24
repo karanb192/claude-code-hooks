@@ -77,12 +77,12 @@ const PATTERNS = [
   { level: 'critical', id: 'rm-cwd',           regex: /\brm\s+(?:-.+\s)?(\.\/?|\*|\.\/\*)(\s|$|[;&|])/,                     reason: 'rm deleting current directory contents' },
   { level: 'critical', id: 'rm-parent',        regex: /\brm\s+(?:-.+\s)?["']?([^\s"';&|]*\/)?\.\.(\/\.{1,2})*\/?(\*)?["']?(\s|$|[;&|])/, reason: 'rm of a path ending in .. deletes a parent directory' },
   { level: 'critical', id: 'dd-disk',          regex: new RegExp('\\bdd\\b.+of=' + DISK),                                                     reason: 'dd writing to disk device' },
-  { level: 'critical', id: 'mkfs',             regex: new RegExp('\\bmkfs(?:\\.\\w+)?\\b[^;&|\\n]*\\s' + DISK), confirm: mkfsWrites,          reason: 'mkfs formatting disk' },
+  { level: 'critical', id: 'mkfs',             regex: new RegExp('\\bmkfs(?:\\.\\w+)?\\b(?:[^;&|\\n<>]|[<>]&?|&>)*\\s' + DISK), confirm: mkfsWrites,          reason: 'mkfs formatting disk' },
   // A function of any name that pipes itself into itself in the background.
-  // Quoted text in the body is skipped whole, so a message that spells the name
-  // (echo ' build | build &') is not a call. The classic :(){ ... } spelling is
+  // Quoted text and comments in the body are skipped whole, so a message or a
+  // note that spells the name (echo ' build | build &') is not a call. The classic :(){ ... } spelling is
   // refused as it always was.
-  { level: 'critical', id: 'fork-bomb',        regex: /(?<![^\s;&|({])([^\s;&|(){}<>]+)\s*\(\)\s*\{(?:\\[\s\S]|[^{}'"\\]|'[^']*'|"(?:\\[\s\S]|[^"\\])*")*(?<![^\s;&|{])\1\s*\|\s*\1\s*&|:\(\)\s*\{.*:\s*\|\s*:.*&/, reason: 'fork bomb detected' },
+  { level: 'critical', id: 'fork-bomb',        regex: /(?<![^\s;&|({])([^\s;&|(){}<>]+)\s*\(\)\s*\{(?:\\[\s\S]|[^{}'"\\#]|(?<![^\s;&|{(])(?=(#[^\n]*))\2|(?<=[^\s;&|{(])#|'[^']*'|"(?:\\[\s\S]|[^"\\])*")*(?<![^\s;&|{])\1\s*\|\s*\1\s*&|:\(\)\s*\{.*:\s*\|\s*:.*&/, reason: 'fork bomb detected' },
 
   // HIGH - Significant risk, data loss, security
   // The regex finds a fetch piped somewhere; pipesToShell walks the stages.
@@ -699,36 +699,52 @@ function pipesToShell(cmd) {
 // ext family (mkfs.ext4, or mkfs with -t ext4 or no type, which defaults to
 // ext2) and -N for xfs. Each letter that takes a value ends its cluster, so the
 // -n of mkfs.xfs (naming options) and of mkfs.fat (a volume label) is a value,
-// not a dry run. A device right after mkfs is refused as it always was.
+// not a dry run. A device right after mkfs is refused as it always was. The
+// arguments come from the shell reader, which sets redirects and their targets
+// apart (mkfs.ext4 2>/dev/null /dev/sdb1 still names the device). A line the
+// reader is not sure of, or a mkfs it does not find as a command, is refused.
 const MKFS_FIRST = /\bmkfs(\.\w+)?\s+\/dev\/(sd[a-z]|nvme|hd[a-z]|vd[a-z]|r?disk\d)/;
 const MKFS_DRY = {
   ext: { dry: 'n', value: 'bdegilmorstCEGIJLMNORTUz' },
   xfs: { dry: 'N', value: 'bdilLmnprs' },
 };
 const DISK_WORD = new RegExp('^' + DISK);
+const MKFS_NAME = /^mkfs(?:\.(\w+))?$/;
 function mkfsWrites(cmd) {
   if (MKFS_FIRST.test(cmd)) return true;
-  for (const m of cmd.matchAll(/\bmkfs(?:\.(\w+))?\b/g)) {
-    const words = shellWords(firstCommand(cmd.slice(m.index + m[0].length).split('|')[0]));
-    let type = m[1];
-    if (!type) {
-      const t = words.findIndex((w) => w === '-t' || w === '--type' || w.startsWith('--type='));
-      type = t < 0 ? 'ext2' : words[t].startsWith('--type=') ? words[t].slice(7) : words[t + 1] || '';
+  const read = readShell(cmd);
+  if (!read.sure) return true;
+  let found = 0;
+  for (const f of read.frames) {
+    for (const c of f.cmds) {
+      const all = argv(c);
+      const at = all.findIndex((w) => MKFS_NAME.test(base(w.value)));
+      if (at < 0) continue;
+      found++;
+      if (mkfsArgsWrite(MKFS_NAME.exec(base(all[at].value))[1], all.slice(at + 1).map((w) => w.value))) return true;
     }
-    const opts = /^ext[234]$/.test(type) ? MKFS_DRY.ext : type === 'xfs' ? MKFS_DRY.xfs : null;
-    let dry = false;
-    for (let k = 0; opts && k < words.length; k++) {
-      const w = words[k];
-      if (w === '--') break;
-      if (!/^-[A-Za-z]/.test(w)) continue;
-      for (let j = 1; j < w.length; j++) {
-        if (w[j] === opts.dry) dry = true;
-        if (opts.value.includes(w[j])) { if (j === w.length - 1) k++; break; }
-      }
-    }
-    if (!dry && words.some((w) => DISK_WORD.test(w))) return true;
   }
-  return false;
+  return found < (cmd.match(/\bmkfs(?:\.\w+)?\b/g) || []).length;
+}
+
+function mkfsArgsWrite(suffix, words) {
+  let type = suffix;
+  if (!type) {
+    const t = words.findIndex((w) => w === '-t' || w === '--type' || w.startsWith('--type='));
+    type = t < 0 ? 'ext2' : words[t].startsWith('--type=') ? words[t].slice(7) : words[t + 1] || '';
+  }
+  const opts = /^ext[234]$/.test(type) ? MKFS_DRY.ext : type === 'xfs' ? MKFS_DRY.xfs : null;
+  let dry = false;
+  for (let k = 0; opts && k < words.length; k++) {
+    const w = words[k];
+    if (w === '--') break;
+    if (!/^-[A-Za-z]/.test(w)) continue;
+    for (let j = 1; j < w.length; j++) {
+      if (w[j] === opts.dry) dry = true;
+      if (opts.value.includes(w[j])) { if (j === w.length - 1) k++; break; }
+    }
+  }
+  return !dry && words.some((w) => DISK_WORD.test(w));
 }
 
 function checkCommand(cmd, safetyLevel = SAFETY_LEVEL) {

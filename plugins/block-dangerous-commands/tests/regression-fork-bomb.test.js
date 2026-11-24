@@ -47,3 +47,14 @@ describe('quoted text inside a function body', () => {
     shouldBlock('bomb(){ bomb|bomb& }; bomb "x"', 'fork-bomb');
   });
 });
+
+describe('a comment inside a function body', () => {
+  it('allows a function whose comment spells a self-pipe', () => {
+    shouldAllow('ready(){ echo ready # ready|ready&\n}; ready');
+    shouldAllow('ready(){ echo ready; # ready | ready &\n}');
+  });
+  it('still blocks a real self-pipe before or after a comment', () => {
+    shouldBlock('f(){ # note\nf|f& }; f', 'fork-bomb');
+    shouldBlock('f(){ f|f& # note\n}; f', 'fork-bomb');
+  });
+});

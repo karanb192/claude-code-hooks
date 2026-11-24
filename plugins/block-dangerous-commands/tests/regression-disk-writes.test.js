@@ -57,3 +57,11 @@ describe('mkfs dry runs', () => {
       shouldBlock(c, 'mkfs');
   });
 });
+
+describe('mkfs with a redirect between its operands', () => {
+  it('still sees the device after a redirect', () => {
+    for (const c of ['mkfs.ext4 2>/dev/null /dev/sdb1', 'mkfs.ext4 -F >log /dev/sdb1', 'mkfs.ext4 </dev/null /dev/sdb1', 'mkfs -t ext4 2>&1 /dev/sdb'])
+      shouldBlock(c, 'mkfs');
+  });
+  it('still allows a dry run with a redirect', () => shouldAllow('mkfs.ext4 -n 2>/dev/null /dev/sdb1'));
+});
