@@ -65,3 +65,14 @@ describe('a paren or redirect inside quotes is part of the name', () => {
     shouldBlock("(git push --force origin 'main')", 'git-force-main');
   });
 });
+
+describe('a variable that holds a paren or redirect in a name', () => {
+  it('allows the name when it comes from a variable', () => {
+    shouldAllow("b='main)fix'; git push --force origin \"$b\"");
+    shouldAllow("b='$HOME>bak'; rm -f \"$b\"");
+  });
+  it('still blocks a variable that holds the target itself', () => {
+    shouldBlock('b=main; (git push --force origin "$b")', 'git-force-main');
+    shouldBlock('(rm -rf "$HOME")', 'rm-home-var');
+  });
+});

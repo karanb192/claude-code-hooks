@@ -99,10 +99,10 @@ const PATTERNS = [
 ];
 
 // A ) < or > after a target is an operator only outside quotes: rm -f '$HOME>bak'
-// names one file. A view that still holds quotes or escapes reads the target as
-// ending only at a space, ; & | or the end; the rendered view of the same line
-// sets every real operator apart with spaces, so a quoted target before a real
-// ) or > is still caught there.
+// names one file, and so does rm -f "$b" when b holds that text. On a line with
+// quotes or escapes every view reads the target as ending only at a space,
+// ; & | or the end; the rendered view of that line sets every real operator
+// apart with spaces, so a quoted target before a real ) or > is still caught.
 for (const p of PATTERNS) {
   if (p.regex.source.includes(')<>')) p.quoted = new RegExp(p.regex.source.split(')<>').join(''), p.regex.flags);
 }
@@ -703,10 +703,11 @@ function checkCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   // bash removes a backslash-newline outright, joining the two lines.
   cmd = cmd.replace(/\\\r?\n/g, '');
   const views = shellViews(cmd);
+  const quoted = /["'\\]/.test(cmd);
   for (const p of PATTERNS) {
     if (LEVELS[p.level] > threshold) continue;
     for (const v of views) {
-      const regex = p.quoted && /["'\\]/.test(v.text) ? p.quoted : p.regex;
+      const regex = p.quoted && quoted ? p.quoted : p.regex;
       if (regex.test(p.segment ? v.masked : v.text) && (!p.confirm || p.confirm(v.text))) return { blocked: true, pattern: p };
     }
   }
