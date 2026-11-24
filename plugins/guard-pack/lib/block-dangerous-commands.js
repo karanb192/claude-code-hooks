@@ -891,17 +891,19 @@ const SUBSTITUTION = /\$\(|`|<\(/;
 // How a shell (or source, .) is run, reading its options once: -o, -O,
 // --rcfile and --init-file take a value, a cluster with c makes the first
 // operand the program text, one with s reads commands from stdin, and -- or -
-// ends the options. The first operand is otherwise the script.
+// ends the options. The first operand is otherwise the script. rc holds the
+// --rcfile and --init-file values, files the shell also runs as code.
 function shellInvocation(words, from, shell) {
   let dashC = false;
   let dashS = false;
+  const rc = [];
   let k = from + 1;
   for (; k < words.length; k++) {
     const w = words[k].value;
     if (w === '--' || w === '-') { k++; break; }
     if (!/^[-+]./.test(w)) break;
     if (!shell) continue;
-    if (/^--(?:rcfile|init-file)$/.test(w)) { k++; continue; }
+    if (/^--(?:rcfile|init-file)$/.test(w)) { k++; if (words[k]) rc.push(words[k]); continue; }
     if (/^[-+][A-Za-z]+$/.test(w)) {
       if (w[0] === '-' && w.includes('c')) dashC = true;
       if (w[0] === '-' && w.includes('s')) dashS = true;
@@ -913,6 +915,7 @@ function shellInvocation(words, from, shell) {
     code: dashC ? operand : null,
     script: !dashC && !dashS ? operand : null,
     readsStdin: !dashC && (dashS || !operand),
+    rc,
   };
 }
 
@@ -980,7 +983,9 @@ function downloadToStdout(name, values) {
 // - a shell given it on stdin (fd 0 of < <(...) or <<<) with no script and no -c;
 // - a shell given it anywhere in its -c text, unquoted or in double quotes: the
 //   outer shell expands it first, so the shell parses the downloaded text;
-// - eval given it in any argument.
+// - eval given it in any argument;
+// - a shell given it as a startup file: --rcfile or --init-file, or BASH_ENV=
+//   or ENV= on its command line.
 // A substitution carries the download only when the downloader's stdout
 // reaches its output (not with curl -o, wget without -O -, or > file).
 // The text of a -c program or of eval is read again the same way, so a single
@@ -1028,9 +1033,21 @@ function downloadRunsAsCode(cmd, depth = 0) {
     seen.set(outer, info);
     return info;
   };
+  // <(...) as the value of BASH_ENV= or ENV= on a shell's command line: the
+  // shell runs that file as code before anything else.
+  const positions = new Map();
+  const startupFile = (outer, word) => {
+    if (!positions.has(outer)) positions.set(outer, new Map(outer.words.map((w, k) => [w, k])));
+    const k = positions.get(outer).get(word);
+    const prev = k > 0 ? outer.words[k - 1] : null;
+    if (!prev || prev.op || !/^(?:BASH_ENV|ENV)=$/.test(prev.value) || prev.end !== word.start) return false;
+    const program = programWord(argv(outer).filter((w) => w !== word && w !== prev && !inputs.has(w)));
+    return !!program && !program.dynamic && PIPE_SHELL.test(base(program.value));
+  };
   for (const f of read.frames) {
     if ((f.kind !== 'proc' && f.kind !== 'subst') || !f.parent || !carries.has(f)) continue;
     const { cmd: outer, word } = f.parent;
+    if (f.kind === 'proc' && startupFile(outer, word)) return true;
     const info = outerOf(outer);
     if (!info) continue;
     const { name, shell, from, index, run } = info;
@@ -1040,7 +1057,7 @@ function downloadRunsAsCode(cmd, depth = 0) {
     const stdinFd = ['', '0'].includes(redirectFd(cmd, word));
     if (part && part.open === '<(' && inputs.has(word)) { if (shell && run.readsStdin && stdinFd) return true; continue; }
     if (word.target === '<<<') { if (shell && run.readsStdin && stdinFd) return true; continue; }
-    if (part && part.open === '<(' && word === run.script) return true;
+    if (part && part.open === '<(' && (word === run.script || run.rc.includes(word))) return true;
     if (shell && word === run.code) return true;
   }
   if (depth >= 3) return false;
