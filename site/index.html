@@ -685,7 +685,7 @@ codex plugin add guard-pack@claude-code-hooks</pre>
       <div>
         <div class="entry-meta"><span class="tag evt">InstructionsLoaded</span><span class="tag">UserPromptSubmit · PreToolUse</span><span class="tag rt">Node · ~35ms</span></div>
         <h3><span class="no">12</span>instructions-audit</h3>
-        <p>Scans every CLAUDE.md and rules file as it loads for hidden directives: invisible-Unicode smuggling, bidi overrides, secret exfiltration, decode-and-execute, hook tampering. The event can't block by itself, so the hook locks the session instead: every prompt and tool call is refused until a human fixes the file.</p>
+        <p>Scans every CLAUDE.md and rules file for hidden directives (the start-up files on the first prompt or tool call, later files as they load): invisible-Unicode smuggling, bidi overrides, secret exfiltration, decode-and-execute, hook tampering. The event can't block by itself, so the hook locks the session instead: every prompt and tool call is refused until a human fixes the file.</p>
       </div>
       <div class="term">
         <div class="term-bar"><div class="term-dots"><i></i><i></i><i></i></div><div class="term-title">instructions-audit</div></div>

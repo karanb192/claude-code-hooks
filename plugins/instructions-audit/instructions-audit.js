@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 /**
  * Instructions Audit - InstructionsLoaded Hook
- * Audits CLAUDE.md / .claude/rules/*.md content as it is loaded into context
- * and halts the session when the file carries hidden or hostile directives:
+ * Audits CLAUDE.md / .claude/rules/*.md content (files that load during the
+ * session as they load; the files read at session start on the first prompt
+ * or tool call, see "start-up instruction files" below) and halts the
+ * session when a file carries hidden or hostile directives:
  * invisible Unicode smuggling (the TrapDoor campaign signature), directives
  * that read or exfiltrate secret material, remote content piped to a shell,
  * decode-and-execute constructs, and directives that make the agent rewrite
@@ -273,18 +275,25 @@ function scanDirectives(content, threshold, findings) {
 // UserPromptSubmit and PreToolUse registrations of this same script read it
 // and deny everything for that session until a human clears it.
 
-const STATE_DIR = path.join(process.env.HOME || process.env.USERPROFILE || require('os').homedir(), '.claude', 'hooks-state', 'instructions-audit');
+const HOME = process.env.HOME || process.env.USERPROFILE || require('os').homedir();
+const STATE_DIR = path.join(HOME, '.claude', 'hooks-state', 'instructions-audit');
 
 function flagPath(sessionId) {
   const safe = String(sessionId || 'unknown-session').replace(/[^A-Za-z0-9._-]/g, '_');
   return path.join(STATE_DIR, `${safe}.json`);
 }
 
-function writeFlag(sessionId, info) {
+function auditedPath(sessionId) {
+  return flagPath(sessionId).replace(/\.json$/, '.audited');
+}
+
+// The session's start-up files have been audited (or it is locked already),
+// so deleting a lock flag clears it instead of re-auditing and relocking.
+function markAudited(sessionId) {
   try {
     fs.mkdirSync(STATE_DIR, { recursive: true });
-    fs.writeFileSync(flagPath(sessionId), JSON.stringify({ ts: new Date().toISOString(), ...info }));
-    // Flags for long-gone sessions are inert; sweep anything over 7 days old.
+    fs.writeFileSync(auditedPath(sessionId), new Date().toISOString());
+    // Flags and markers for long-gone sessions are inert; sweep anything over 7 days old.
     for (const f of fs.readdirSync(STATE_DIR)) {
       const p = path.join(STATE_DIR, f);
       try { if (Date.now() - fs.statSync(p).mtimeMs > 7 * 24 * 3600 * 1000) fs.unlinkSync(p); } catch {}
@@ -292,8 +301,127 @@ function writeFlag(sessionId, info) {
   } catch {}
 }
 
+function writeFlag(sessionId, info) {
+  try {
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    fs.writeFileSync(flagPath(sessionId), JSON.stringify({ ts: new Date().toISOString(), ...info }));
+  } catch {}
+  markAudited(sessionId);
+}
+
 function readFlag(sessionId) {
   try { return JSON.parse(fs.readFileSync(flagPath(sessionId), 'utf8')); } catch { return null; }
+}
+
+// ─── start-up instruction files ─────────────────────────────────────────────
+// Claude Code loads the files it reads at session start before a plugin's
+// hooks are registered, so InstructionsLoaded never reaches this script for
+// them when it is installed as a plugin. The first UserPromptSubmit or
+// PreToolUse of each session therefore finds and audits those files itself,
+// then records that the session was audited. The scan is bounded; a start-up
+// set it cannot finish reading blocks the call (fail closed).
+
+const MAX_FILES = 200;
+const MAX_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 16 * 1024 * 1024;
+const MAX_IMPORT_DEPTH = 5;
+const MAX_IMPORTS_PER_FILE = 64;
+const MAX_RULE_DEPTH = 6;
+const PROJECT_FILES = ['CLAUDE.md', 'CLAUDE.local.md', path.join('.claude', 'CLAUDE.md'), 'AGENTS.md'];
+const MANAGED_FILES = {
+  darwin: ['/Library/Application Support/ClaudeCode/CLAUDE.md'],
+  linux: ['/etc/claude-code/CLAUDE.md'],
+  win32: ['C:\\Program Files\\ClaudeCode\\CLAUDE.md'],
+};
+
+// @path imports outside code fences and inline code, the way Claude Code
+// expands them: relative to the importing file, or ~/ for the home directory.
+function importsOf(content) {
+  const out = [];
+  let fenced = false;
+  for (const line of content.split('\n')) {
+    if (/^\s*(?:```|~~~)/.test(line)) { fenced = !fenced; continue; }
+    if (fenced) continue;
+    const text = line.replace(/`[^`]*`/g, ' ');
+    for (const m of text.matchAll(/(?:^|\s)@((?:~\/|\.{1,2}\/|\/)?[^\s`'"()<>[\]]+)/g)) {
+      out.push(m[1].replace(/[.,;:!?]+$/, ''));
+      if (out.length >= MAX_IMPORTS_PER_FILE) return out;
+    }
+  }
+  return out;
+}
+
+function startupFiles(cwd, home, platform = process.platform) {
+  const seen = new Set();
+  const files = [];
+  let total = 0;
+  const add = (file, depth = 0) => {
+    let real;
+    let st;
+    try { real = fs.realpathSync(file); st = fs.statSync(real); } catch { return; }
+    // Only regular files: a FIFO or device would hang the hook.
+    if (!st.isFile() || seen.has(real)) return;
+    seen.add(real);
+    if (files.length >= MAX_FILES) throw new Error(`more than ${MAX_FILES} start-up instruction files`);
+    if (st.size > MAX_FILE_BYTES) throw new Error(`${file} is larger than ${MAX_FILE_BYTES} bytes`);
+    total += st.size;
+    if (total > MAX_TOTAL_BYTES) throw new Error(`start-up instruction files exceed ${MAX_TOTAL_BYTES} bytes`);
+    let content;
+    // Unreadable: Claude Code cannot load it either.
+    try { content = fs.readFileSync(real, 'utf8'); } catch { return; }
+    files.push({ file, content });
+    if (depth >= MAX_IMPORT_DEPTH) return;
+    for (const imp of importsOf(content)) {
+      const target = imp.startsWith('~/') ? path.join(home, imp.slice(2)) : imp;
+      for (const dir of new Set([path.dirname(file), path.dirname(real)])) add(path.resolve(dir, target), depth + 1);
+    }
+  };
+  const rules = (dir, depth = 0) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    entries.sort((a, b) => (a.name < b.name ? -1 : 1));
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { if (depth < MAX_RULE_DEPTH) rules(p, depth + 1); }
+      else if (e.name.endsWith('.md')) add(p);
+    }
+  };
+  for (const f of MANAGED_FILES[platform] || []) add(f);
+  add(path.join(home, '.claude', 'CLAUDE.md'));
+  rules(path.join(home, '.claude', 'rules'));
+  // The project files in the working directory and every parent up to, but
+  // not including, the filesystem root.
+  for (let d = path.resolve(cwd); path.dirname(d) !== d; d = path.dirname(d)) {
+    for (const f of PROJECT_FILES) add(path.join(d, f));
+    rules(path.join(d, '.claude', 'rules'));
+  }
+  return files;
+}
+
+// Audit the start-up files once per session. Returns the lock flag on a
+// finding (and writes it), or null. Throws when the files cannot be read in
+// full, so the caller can fail closed.
+function auditStartup(data, home = HOME) {
+  const level = LEVELS[process.env.HOOK_AUDIT_LEVEL] ? process.env.HOOK_AUDIT_LEVEL : SAFETY_LEVEL;
+  const warnOnly = envBool('HOOK_AUDIT_WARN_ONLY', false);
+  let hit = null;
+  let flagged = 0;
+  for (const { file, content } of startupFiles(data.cwd || process.cwd(), home)) {
+    const findings = auditContent(content, level);
+    if (!findings.length) continue;
+    flagged++;
+    log({
+      level: warnOnly ? 'WARNED' : 'HALTED', file, load_reason: 'session_start (audited at first prompt or tool call)',
+      session_id: data.session_id, cwd: data.cwd,
+      findings: findings.map((f) => ({ id: f.id, priority: f.level, line: f.line })),
+    });
+    console.error(formatFindings(findings, file));
+    if (!hit) hit = { file, count: findings.length, first: `${findings[0].id} line ${findings[0].line}` };
+  }
+  if (hit && flagged > 1) hit.others = flagged - 1;
+  if (hit && !warnOnly) writeFlag(data.session_id, hit);
+  else if (data.session_id) markAudited(data.session_id);
+  return hit && !warnOnly ? hit : null;
 }
 
 function auditContent(content, safetyLevel = SAFETY_LEVEL) {
@@ -329,10 +457,22 @@ async function main() {
 
     // Enforcement arm: on the blocking events, honor an existing lockdown.
     if (hook_event_name === 'UserPromptSubmit' || hook_event_name === 'PreToolUse') {
-      const flag = readFlag(session_id);
+      let flag = readFlag(session_id);
+      if (!flag && !(session_id && fs.existsSync(auditedPath(session_id)))) {
+        try {
+          flag = auditStartup(data);
+        } catch (e) {
+          log({ level: 'ERROR', error: e.message, session_id, cwd });
+          if (process.env.HOOK_FAIL_OPEN === 'true') return console.log('{}');
+          const reason = `🚨 [guard-error] instructions-audit could not audit the start-up instruction files (${String(e && e.message).slice(0, 200)}), so this call is blocked. Fix the files, or set HOOK_FAIL_OPEN=true to let calls through when a guard fails.`;
+          if (hook_event_name === 'UserPromptSubmit') return console.log(JSON.stringify({ decision: 'block', reason }));
+          return console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }));
+        }
+      }
       if (!flag) return console.log('{}');
+      const others = flag.others ? ` and ${flag.others} other file(s)` : '';
       const notice =
-        `🚨 instructions-audit locked this session: ${flag.count} suspicious pattern(s) in ${flag.file} ` +
+        `🚨 instructions-audit locked this session: ${flag.count} suspicious pattern(s) in ${flag.file}${others} ` +
         `(first: [${flag.first}]). Fix or quarantine the file and start a fresh session; ` +
         `if the findings are false positives, delete ${flagPath(session_id)} to clear the lock.`;
       if (hook_event_name === 'UserPromptSubmit') {
@@ -386,5 +526,7 @@ if (require.main === module) {
   module.exports = {
     TEXT_PATTERNS, LEVELS, SAFETY_LEVEL, NEGATION_CONTEXT,
     auditContent, formatFindings, sanitizeExcerpt, codepointLabel, flagPath,
+    importsOf, startupFiles, auditStartup, auditedPath,
+    MAX_FILES, MAX_FILE_BYTES, MAX_IMPORT_DEPTH,
   };
 }
