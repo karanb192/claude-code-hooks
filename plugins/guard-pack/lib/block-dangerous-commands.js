@@ -91,10 +91,10 @@ const PATTERNS = [
   // A trailing /. or /.. (~/., /Users/alice/..) still names the home directory or above;
   // a /* (~/*) or a doubled slash (~//) still deletes everything in it, and a dot glob
   // made only of wildcards (~/.*, ~/.???*, ~/.[!.]*) deletes its hidden entries.
-  { level: 'critical', id: 'rm-home',          regex: /\brm\s+(?:-.+\s|[^\s;&|][^;&|\n]*\s)?["']?~(\/(\.{1,2}|\*+|\.(?:\?|\*|\[(?:\[:[a-z]+:\]|[^\]\s\/])*\])+)?)*["']?(\s|$|[;&|)<>])/,             reason: 'rm targeting home directory' },
-  { level: 'critical', id: 'rm-home-var',      regex: /\brm\s+(?:-.+\s|[^\s;&|][^;&|\n]*\s)?["']?\$(HOME|\{HOME\})(\/(\.{1,2}|\*+|\.(?:\?|\*|\[(?:\[:[a-z]+:\]|[^\]\s\/])*\])+)?)*["']?(\s|$|[;&|)<>])/, reason: 'rm targeting $HOME' },
+  { level: 'critical', id: 'rm-home',          regex: /\brm\s+(?:-.+\s|(?:[^\s;&|#][^\s;&|]*[ \t]+)+)?["']?~(\/(\.{1,2}|\*+|\.(?:\?|\*|\[(?:\[:[a-z]+:\]|[^\]\s\/])*\])+)?)*["']?(\s|$|[;&|)<>])/,             reason: 'rm targeting home directory' },
+  { level: 'critical', id: 'rm-home-var',      regex: /\brm\s+(?:-.+\s|(?:[^\s;&|#][^\s;&|]*[ \t]+)+)?["']?\$(HOME|\{HOME\})(\/(\.{1,2}|\*+|\.(?:\?|\*|\[(?:\[:[a-z]+:\]|[^\]\s\/])*\])+)?)*["']?(\s|$|[;&|)<>])/, reason: 'rm targeting $HOME' },
   { level: 'critical', id: 'rm-home-trailing', regex: /\brm\s.*\s["']?(~|\$(HOME|\{HOME\}))(\/(\.{1,2}|\*+|\.(?:\?|\*|\[(?:\[:[a-z]+:\]|[^\]\s\/])*\])+)?)*["']?(\s*$|[;&|)<>])/, reason: 'rm with trailing ~/ or $HOME' },
-  { level: 'critical', id: 'rm-home-abs',      regex: /\brm\s+(?:-.+\s|[^\s;&|][^;&|\n]*\s)?["']?\/(home|Users)(\/[^\/\s"';&|]+)?(\/(\.{1,2}|\*+|\.(?:\?|\*|\[(?:\[:[a-z]+:\]|[^\]\s\/])*\])+)?)*["']?(\s|$|[;&|)<>])/, reason: 'rm targeting a home directory by absolute path' },
+  { level: 'critical', id: 'rm-home-abs',      regex: /\brm\s+(?:-.+\s|(?:[^\s;&|#][^\s;&|]*[ \t]+)+)?["']?\/(home|Users)(\/[^\/\s"';&|]+)?(\/(\.{1,2}|\*+|\.(?:\?|\*|\[(?:\[:[a-z]+:\]|[^\]\s\/])*\])+)?)*["']?(\s|$|[;&|)<>])/, reason: 'rm targeting a home directory by absolute path' },
   { level: 'critical', id: 'rm-root',          regex: /\brm\s+(?:-.+\s)?\/+(\*|\s|$|[;&|)<>])/,                               reason: 'rm targeting root filesystem' },
   { level: 'critical', id: 'rm-system',        regex: /\brm\s+(?:-.+\s)?\/(etc|usr|var|bin|sbin|lib|boot|dev|proc|sys)(\/|\s|$|[;&|)<>])/, reason: 'rm targeting system directory' },
   // Only a glob that matches every name: stars with at most one ? (*, **, ?*, *?). ??* skips one-letter names.
@@ -102,8 +102,9 @@ const PATTERNS = [
   // or nearly every one, and with a trailing / every hidden directory; one with a literal
   // character after the dot (.*.swp, .cache*) does not. The home rules and this one read a target after
   // other operands in the same command, with or without flags (rm a b .*). Those
-  // operands start at a non-space, so a long run of spaces after rm is read once.
-  { level: 'critical', id: 'rm-cwd',           regex: /\brm\s+(?:-.+\s|[^\s;&|][^;&|\n]*\s)?(\.\/?|(\.\/)?(?:\*+(?:\?\**)?|\?\*+|\.(?:\?|\*|\[(?:\[:[a-z]+:\]|[^\]\s\/])*\])+\/?))(\s|$|[;&|)<>])/,          reason: 'rm deleting current directory contents' },
+  // operands are whole words that do not start a comment (#), so a long run of
+  // spaces after rm is read once. Any run of ./ before the glob is the cwd too (././.*).
+  { level: 'critical', id: 'rm-cwd',           regex: /\brm\s+(?:-.+\s|(?:[^\s;&|#][^\s;&|]*[ \t]+)+)?((?:\.\/+)*\.\/?|(?:\.\/+)*(?:\*+(?:\?\**)?|\?\*+|\.(?:\?|\*|\[(?:\[:[a-z]+:\]|[^\]\s\/])*\])+\/?))(\s|$|[;&|)<>])/,          reason: 'rm deleting current directory contents' },
   { level: 'critical', id: 'rm-parent',        regex: /\brm\s+(?:-.+\s)?["']?([^\s"';&|]*\/)?\.\.(\/\.{1,2})*\/?(\*)?["']?(\s|$|[;&|)<>])/, reason: 'rm of a path ending in .. deletes a parent directory' },
   { level: 'critical', id: 'dd-disk',          regex: new RegExp('\\bdd\\b.+of=' + DISK),                                                     reason: 'dd writing to disk device' },
   { level: 'critical', id: 'mkfs',             regex: new RegExp('\\bmkfs(?:\\.\\w+)?\\b(?:[^;&|\\n<>]|[<>]&?|&>)*\\s' + DISK), confirm: mkfsWrites,          reason: 'mkfs formatting disk' },
@@ -893,7 +894,7 @@ function programWord(words) {
 // 'rm -rf ~/*'), an assigned value, which globs where it is expanded, and a
 // $(...) inside double quotes, whose words are read on their own, keep theirs.
 function quotedGlobsBlanked(cmd) {
-  if (!/[*?]/.test(cmd) || !/['"\\]/.test(cmd)) return cmd;
+  if (!/[*?[\]]/.test(cmd) || !/['"\\]/.test(cmd)) return cmd;
   const read = readShell(cmd);
   const at = [];
   for (const f of read.frames) {

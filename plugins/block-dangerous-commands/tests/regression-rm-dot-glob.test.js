@@ -74,3 +74,19 @@ describe('dot globs after other operands, with a trailing slash, and their bread
   });
   it('still blocks a quoted ~ directory, read as home', () => shouldBlock("rm -rf '~'/.*", 'rm-home'));
 });
+
+describe('repeated ./ components, quoted brackets and comments', () => {
+  it('blocks a glob behind any run of ./ components', () => {
+    for (const c of ['rm -rf ././.*', 'rm -rf ./././*', 'rm -rf .//.*', 'rm -rf ./.']) shouldBlock(c, 'rm-cwd');
+  });
+  it('allows a quoted bracket expression, which names one file', () => {
+    for (const c of ["rm -f '.[ab]'", 'rm -f ".[ab]"', 'rm -f .\\[!.]*']) shouldAllow(c);
+  });
+  it('allows a glob that is only in a comment after rm', () => {
+    for (const c of ['rm scratch # inspect .*', 'rm x #y .*']) shouldAllow(c);
+  });
+  it('still refuses on purpose a glob used as an input redirect, and a comment after flags, as main does', () => {
+    shouldBlock('rm x < .*', 'rm-cwd');
+    shouldBlock('rm -f x # .*', 'rm-cwd');
+  });
+});
