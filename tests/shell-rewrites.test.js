@@ -102,6 +102,9 @@ const REFUSED = [
   { cmd: "echo 'rm -rf ~' > >(sh)", id: 'rm-home' },
   { cmd: "echo 'cat .env' | xargs -I{} sh -c {}", id: 'cat-env' },
   { cmd: 'echo "$API_KEY"', id: 'echo-secret-var' },
+  // A quoted word with a space stays as typed for the patterns, but the file
+  // operand check reads the word as bash passes it.
+  { cmd: 'cat "my dir/.e"nv', id: 'read-secret-file' },
 ];
 
 const ALLOWED = [
@@ -134,9 +137,8 @@ const KNOWN_MISSED = [
   // but a neutral name moved there by the later call does not.
   { cmd: "cat > Makefile <<'EOF'\nclean:\n\trm -rf ~\nEOF" },
   { cmd: "mkdir -p d && cat > d/x <<'EOF'\nrm -rf ~\nEOF" },
-  // A loop variable is not resolved; a quoted word with a space stays as typed.
+  // A loop variable is not resolved.
   { cmd: 'for g in git; do $g push origin main; done' },
-  { cmd: 'cat "my dir/.e"nv' },
 ];
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'shell-rewrites-'));
