@@ -65,6 +65,7 @@ const MAIN_REF = '(?:[\\s:"\']|refs\\/heads\\/)(?:main|master)(?=$|[\\s;&|)<>"\'
 // scanned once, not once per position.
 const SHELL = '(?<![^\\s|;&()<>"\'`$])(?:[^\\s|;&()<>"\'`$]*\\/)?(?:ba|z|da|k)?sh(?![\\w.-])';
 const FETCH = '(?:[^\\s|;&(]*\\/)?(?:curl|wget)\\b';
+const FETCH_NAME = /(?:curl|wget)\b/;
 // Shell options before -c or a script argument; never a word with c in it, so
 // a run of them stays linear before the -c check.
 const SHELL_FLAGS = '(?:\\s+[-+][abd-zA-Z]+)*';
@@ -108,8 +109,10 @@ const PATTERNS = [
   { level: 'critical', id: 'fork-bomb',        regex: /(?<![^\s;&|({])([^\s;&|(){}<>]+)\s*\(\)\s*\{(?:\\[\s\S]|[^{}'"\\#]|(?<![^\s;&|{(])(?=(#[^\n]*))\2|(?<=[^\s;&|{(])#|'[^']*'|"(?:\\[\s\S]|[^"\\])*")*(?<![^\s;&|{])\1\s*\|\s*\1\s*&|:\(\)\s*\{.*:\s*\|\s*:.*&/, reason: 'fork bomb detected' },
 
   // HIGH - Significant risk, data loss, security
-  // The regex finds a fetch piped somewhere; pipesToShell walks the stages.
-  { level: 'high', id: 'curl-pipe-sh',   regex: new RegExp(FETCH + '.*\\|'), confirm: pipesToShell,                    reason: 'piping URL to shell (RCE risk)' },
+  // The regex finds a fetch; fetchThenPipe finds a pipe after it on the same
+  // line and pipesToShell walks the stages. A path before curl never changes
+  // whether a line matches, so the rule starts at the name and stays linear.
+  { level: 'high', id: 'curl-pipe-sh',   regex: FETCH_NAME, confirm: (t) => fetchThenPipe(t) && pipesToShell(t), reason: 'piping URL to shell (RCE risk)' },
   // Shell flags may come first (bash -x <(curl ...), bash -lc "$(curl ...)"); the
   // download may arrive as a file, on stdin (< <(...), <<< "$(...)") or as -c
   // text, in $(...) or backticks.
@@ -754,8 +757,17 @@ function stageCommands(stage) {
   return out;
 }
 
+// A fetch with a | after it on the same line. Each line is scanned once.
+function fetchThenPipe(cmd) {
+  for (const line of cmd.split(/[\n\r\u2028\u2029]/)) {
+    const m = FETCH_NAME.exec(line);
+    if (m && line.indexOf('|', m.index + m[0].length) >= 0) return true;
+  }
+  return false;
+}
+
 function pipesToShell(cmd) {
-  const fetch = new RegExp(FETCH).exec(cmd);
+  const fetch = FETCH_NAME.exec(cmd);
   if (!fetch) return false;
   for (const command of cmd.slice(fetch.index).split('|').slice(1).flatMap(stageCommands)) {
     // `bash; echo`, `bash>out`, `|& bash`, `(bash)`; a quoted `FOO="a;b"` does not end it.
