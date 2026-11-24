@@ -95,3 +95,13 @@ describe('git clean with a redirect between its operands', () => {
   });
   it('still allows a dry run before any redirect', () => shouldAllow('git clean -n 2>/dev/null -f'));
 });
+
+describe('sudo rm with a redirect before rm (strict)', () => {
+  it('blocks a redirect between sudo and rm or among sudo options', () => {
+    for (const c of ['sudo 2>/dev/null rm x', 'sudo -n 2>/dev/null rm x', 'sudo >/dev/null rm x', 'sudo 2>&1 rm x', 'sudo -u 2>/dev/null root rm x'])
+      shouldBlock(c, 'sudo-rm', 'strict');
+  });
+  it('still allows rm as an option value, an argument or a later command after a redirect', () => {
+    for (const c of ['sudo -u rm 2>/dev/null ls', 'sudo 2>/dev/null apt remove rm', 'sudo ls 2>/dev/null; rm x']) shouldAllow(c, 'strict');
+  });
+});

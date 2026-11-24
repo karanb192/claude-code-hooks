@@ -112,7 +112,7 @@ const PATTERNS = [
   // the push options so the value of -o or --push-option (-o +build) is not a refspec.
   { level: 'strict', id: 'git-force-any',    segment: true, regex: new RegExp(GIT + 'push\\b(?=[^;&|\\n]*' + FORCE_FLAG + ')|' + GIT + 'push\\b[^;&|\\n]*\\s["\']?\\+[^\\s;&|]'), confirm: (t) => pushForces(t), reason: 'force push (use --force-with-lease)' },
   { level: 'strict', id: 'git-checkout-dot', regex: new RegExp(GIT + 'checkout\\s+\\.'),                                     reason: 'git checkout . discards changes' },
-  { level: 'strict', id: 'sudo-rm',          regex: /\bsudo\s+rm\b|\bsudo\b[^;&|\n]*\brm\b/, confirm: (t) => /\bsudo\s+rm\b/.test(t) || sudoRunsRm(t), reason: 'sudo rm has elevated privileges' },
+  { level: 'strict', id: 'sudo-rm',          regex: /\bsudo\s+rm\b|\bsudo\b(?:[^;&|\n<>]|[<>]&?|&>)*\brm\b/, confirm: (t) => /\bsudo\s+rm\b/.test(t) || sudoRunsRm(t), reason: 'sudo rm has elevated privileges' },
   { level: 'strict', id: 'docker-prune',     regex: /\bdocker\s+(system|image|container|builder|buildx|network)\s+prune/,      reason: 'docker prune removes unused images, containers, networks or build cache' },
   { level: 'strict', id: 'crontab-r',        regex: /\bcrontab\s+-r/,                                                      reason: 'removes all cron jobs' },
 ];
@@ -709,23 +709,39 @@ function pipesToShell(cmd) {
 }
 
 // sudo's own options (-n, -u root, --) and a path to rm still run rm, and sudo
-// named by its path (/usr/bin/sudo) is still sudo.
-function sudoRunsRm(cmd) {
+// named by its path (/usr/bin/sudo) is still sudo. The words are read twice:
+// as text up to the next separator, and with the shell reader, which sets a
+// redirect and its target apart, so sudo 2>/dev/null rm x and
+// sudo -n >/dev/null rm x still run rm. A line the reader is not sure of is refused.
+function sudoWordsRunRm(words) {
   const [shortValue, longValue] = WRAPPERS.sudo;
+  let k = 0;
+  while (k < words.length) {
+    const w = words[k];
+    if (w === '--') { k++; break; }
+    if (/^[A-Za-z_]\w*=/.test(w)) { k++; continue; }
+    if (!w.startsWith('-') || w === '-') break;
+    k++;
+    if (w.startsWith('--')) { if (!w.includes('=') && longValue.includes(w.slice(2))) k++; continue; }
+    const letters = w.slice(1);
+    if ([...letters].findIndex(c => shortValue.includes(c)) === letters.length - 1) k++;
+  }
+  return words[k] !== undefined && base(words[k]) === 'rm';
+}
+
+function sudoRunsRm(cmd) {
   for (const m of cmd.matchAll(/(?<![\w.-])sudo(?=\s)/g)) {
-    const words = shellWords(firstCommand(cmd.slice(m.index + 4).split('|')[0]));
-    let k = 0;
-    while (k < words.length) {
-      const w = words[k];
-      if (w === '--') { k++; break; }
-      if (/^[A-Za-z_]\w*=/.test(w)) { k++; continue; }
-      if (!w.startsWith('-') || w === '-') break;
-      k++;
-      if (w.startsWith('--')) { if (!w.includes('=') && longValue.includes(w.slice(2))) k++; continue; }
-      const letters = w.slice(1);
-      if ([...letters].findIndex(c => shortValue.includes(c)) === letters.length - 1) k++;
+    if (sudoWordsRunRm(shellWords(firstCommand(cmd.slice(m.index + 4).split('|')[0])))) return true;
+  }
+  const read = readShell(cmd);
+  if (!read.sure) return true;
+  for (const f of read.frames) {
+    for (const c of f.cmds) {
+      const words = argv(c).map((w) => w.value);
+      for (let j = 0; j < words.length; j++) {
+        if (base(words[j]) === 'sudo' && sudoWordsRunRm(words.slice(j + 1))) return true;
+      }
     }
-    if (words[k] !== undefined && base(words[k]) === 'rm') return true;
   }
   return false;
 }
