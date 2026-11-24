@@ -982,8 +982,10 @@ async function main() {
     }
     console.log('{}');
   } catch (e) {
-    log({ level: 'ERROR', error: e.message });
-    console.log(data !== null && typeof data === 'object' ? guardError(e) : '{}');
+    // A JSON parse error quotes the input it failed on, so log a fixed text.
+    const parsed = data !== null && typeof data === 'object';
+    log({ level: 'ERROR', error: parsed ? e.message : 'hook input is not valid JSON' });
+    console.log(parsed ? guardError(e) : '{}');
   }
 }
 

@@ -66,3 +66,22 @@ describe('config-guard hook: the log file never holds argument text', () => {
     assert.strictEqual(JSON.parse(text.trim().split('\n').pop()).command, 'mysql');
   });
 });
+
+describe('config-guard hook: malformed input is logged with a fixed text', () => {
+  it('the JSON parse error never copies the input into the log', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-log-'));
+    try {
+      const r = spawnSync(process.execPath, [path.join(__dirname, '..', 'config-guard.js')], {
+        input: 'hunter2',
+        env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home }, encoding: 'utf8', timeout: 20000, cwd: home,
+      });
+      assert.strictEqual(r.stdout.trim(), '{}');
+      const dir = path.join(home, '.claude', 'hooks-logs');
+      const text = fs.readdirSync(dir).map(f => fs.readFileSync(path.join(dir, f), 'utf8')).join('');
+      assert.ok(!text.includes('hunter2'), text);
+      assert.strictEqual(JSON.parse(text.trim().split('\n').pop()).error, 'hook input is not valid JSON');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
