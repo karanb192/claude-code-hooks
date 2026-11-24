@@ -254,8 +254,8 @@ const BASH_PATTERNS = [
   // HIGH - Environment exposure
   { level: 'high', id: 'env-dump',               regex: /\bprintenv\b|(?:^|[;&|(]\s*)(?:env|set|export|declare\s+-x)\s*(?:$|[;&|)])/, reason: 'Environment dump may expose secrets' },
   // The keyword anywhere in a letters-only name, or a whole-segment SECRET_VAR (S3_SECRET_KEY, DB_PASS, GH_PAT).
-  { level: 'high', id: 'echo-secret-var',        regex: new RegExp('\\becho\\b[^;|&]*(?:\\$\\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\\}?|' + SECRET_VAR + ')', 'i'), reason: 'Echoing secret variable' },
-  { level: 'high', id: 'printf-secret-var',      regex: new RegExp('\\bprintf\\b[^;|&]*(?:\\$\\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\\}?|' + SECRET_VAR + ')', 'i'), reason: 'Printing secret variable' },
+  { level: 'high', id: 'echo-secret-var',        regex: new RegExp('\\becho\\b[^;|&]*(?:\\$\\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\\}?|' + SECRET_VAR + ')', 'i'), spaced: true, reason: 'Echoing secret variable' },
+  { level: 'high', id: 'printf-secret-var',      regex: new RegExp('\\bprintf\\b[^;|&]*(?:\\$\\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\\}?|' + SECRET_VAR + ')', 'i'), spaced: true, reason: 'Printing secret variable' },
   { level: 'high', id: 'cat-secrets-file',       regex: /\b(cat|less|head|tail|more)\s+[^|;]*(credentials?|secrets?)\.(json|ya?ml|toml)/i, reason: 'Reading secrets file' },
   { level: 'high', id: 'cat-netrc',              regex: /\b(cat|less|head|tail|more)\s+[^|;]*\.netrc/i,                    reason: 'Reading .netrc credentials' },
   { level: 'high', id: 'source-env',             regex: /\bsource\s+[^|;]*\.env\b|(?:^|[;&|]\s*)\.\s+[^|;]*\.env\b|^\.\s+[^|;]*\.env\b/i, reason: 'Sourcing .env loads secrets' },
@@ -831,6 +831,27 @@ function maskSeparatorsApart(text) {
   return maskQuotedSeparators(text.replace(/_/g, '\u0002')).replace(/_/g, '\u0001').replace(/\u0002/g, '_');
 }
 
+// The bash-split view writes a quoted ; | or & as _, so "$USER;TOKEN" reads as $USER_TOKEN although
+// the shell expands only $USER. spaced: the print rules must also match the command with each quoted
+// separator written as a space, which keeps the words apart.
+function spaceQuotedSeparators(cmd) {
+  let out = '';
+  let q = '';
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (ch === '\\' && q !== "'" && i + 1 < cmd.length) { out += ch + cmd[++i]; continue; }
+    if (q) { if (ch === q) q = ''; else if (/[;|&]/.test(ch)) { out += ' '; continue; } }
+    else if (ch === '"' || ch === "'") q = ch;
+    out += ch;
+  }
+  return out;
+}
+function spacedMatch(p, cmd) {
+  const spaced = spaceQuotedSeparators(cmd);
+  if (spaced === cmd) return true;
+  return shellViews(spaced).some(v => p.regex.test(maskTemplates(v.text)) || p.regex.test(maskTemplates(maskSeparatorsApart(v.text))));
+}
+
 function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   if (!cmd) return { blocked: false, pattern: null };
   cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
@@ -843,7 +864,8 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   const views = texts.flatMap(t => [maskTemplates(t), maskTemplates(maskSeparatorsApart(t))]);
   const quoted = views.concat(read.map(v => maskTemplates(v.masked)));
   let rule = BASH_PATTERNS.find(p => LEVELS[p.level] <= threshold
-    && ((p.quoted ? quoted : views).some(v => (!p.pre || p.pre.test(v)) && p.regex.test(v)) || (p.also && texts.some(t => p.also(t)))));
+    && ((p.quoted ? quoted : views).some(v => (!p.pre || p.pre.test(v)) && p.regex.test(v)) || (p.also && texts.some(t => p.also(t))))
+    && (!p.spaced || spacedMatch(p, cmd)));
   // env-dump also reads each command in code, so a dump anywhere in the line counts.
   const dump = BASH_PATTERNS.find(p => p.id === 'env-dump');
   if (!rule && LEVELS[dump.level] <= threshold && texts.some(dumpsEnvironment)) rule = dump;
