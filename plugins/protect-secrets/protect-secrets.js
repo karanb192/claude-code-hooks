@@ -991,6 +991,53 @@ function uploadArgs(name, ops) {
   return out.map(u => ({ value: u.value && uploadedFile(u.value, u.kind), word: u.kind === 'T' ? u.word : null }));
 }
 
+// git prints a file's contents from its objects: show REV:path, cat-file -p or blob, blame, grep,
+// archive, and diff, show or log with a patch. Both REV:path and a path after the revision count.
+const GIT_GLOBAL_VALUE = /^(?:-C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env|--super-prefix|--list-cmds)$/;
+const GIT_NO_CONTENT = /^(?:-s|--no-patch|--stat|--numstat|--shortstat|--name-only|--name-status|--summary|--raw|--dirstat|--compact-summary|--quiet|--exit-code|--check)(?:=|$)/;
+const GIT_PATCH = /^(?:-p|-u|--patch|-U\d*|--unified(?:=\d+)?|--word-diff(?:=\w+)?|--full-diff|--patch-with-stat|--patch-with-raw|--cc|-c)$/;
+function gitObjectPath(v) {
+  const m = /^(?:[^:]*:)([0-3]:)?(.+)$/.exec(v);
+  return m && !/^[a-z][\w+.-]*:\/\//i.test(v) ? m[2] : null;
+}
+function gitFileAccess(ops, take, ctx) {
+  let k = 0;
+  while (k < ops.length && /^-/.test(ops[k].value)) {
+    if (GIT_GLOBAL_VALUE.test(ops[k].value)) k++;
+    k++;
+  }
+  const sub = ops[k]?.value;
+  const args = ops.slice(k + 1);
+  const words = args.filter(w => !/^-/.test(w.value) || w.value === '--');
+  const flags = args.filter(w => /^-./.test(w.value)).map(w => w.value);
+  const read = (v, w) => take('read', secretPath(v, w, ctx));
+  const objects = () => { for (const w of words) { const p = gitObjectPath(w.value); if (p) read(p, null); } };
+  const paths = (from) => { for (const w of words.slice(from)) if (w.value !== '--' && !gitObjectPath(w.value)) read(w.value, w); };
+  if (sub === 'show') {
+    objects();
+    if (!flags.some(f => GIT_NO_CONTENT.test(f))) paths(0);
+  } else if (sub === 'cat-file') {
+    if (!flags.some(f => /^-[tse]$/.test(f) || /^--batch/.test(f))) objects();
+  } else if (sub === 'diff' || sub === 'difftool') {
+    objects();
+    if (!flags.some(f => GIT_NO_CONTENT.test(f))) paths(0);
+  } else if (sub === 'log' || sub === 'whatchanged') {
+    for (let i = 0; i < args.length; i++) {
+      const v = args[i].value;
+      if (v === '-L') { const p = gitObjectPath(args[i + 1]?.value || ''); if (p) read(p, null); i++; }
+      else if (/^-L./.test(v)) { const p = gitObjectPath(v.slice(2)); if (p) read(p, null); }
+    }
+    if (flags.some(f => GIT_PATCH.test(f)) && !flags.some(f => GIT_NO_CONTENT.test(f) && !/^--stat|^--summary/.test(f))) { objects(); paths(0); }
+  } else if (sub === 'blame' || sub === 'annotate' || sub === 'archive') {
+    objects();
+    paths(0);
+  } else if (sub === 'grep') {
+    objects();
+    const pattern = flags.some(f => /^-[A-Za-z]*[ef]$|^--(?:regexp|file)\b/.test(f)) ? 0 : 1;
+    paths(pattern);
+  }
+}
+
 function commandFileAccess(cmd, ctx) {
   const found = (kind, file) => file && { id: FILE_ACCESS[kind].id, level: file.level, reason: `${FILE_ACCESS[kind].reason} (${file.reason})` };
   // Every operand is checked and the most severe file wins, so operand order never lowers the level.
@@ -1008,6 +1055,10 @@ function commandFileAccess(cmd, ctx) {
   const ops = words.slice(k + 1);
   if (name === 'curl' || name === 'wget') {
     for (const u of uploadArgs(name, ops)) take('send', secretPath(u.value, u.word, ctx));
+    return best;
+  }
+  if (name === 'git') {
+    gitFileAccess(ops, take, ctx);
     return best;
   }
   if (name === 'source' || name === '.') {
