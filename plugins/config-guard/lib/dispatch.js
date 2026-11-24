@@ -82,9 +82,9 @@ const GUARDS = [
   {
     name: 'git-safety',
     emojis: STD_EMOJIS,
-    run(mod, tool, input) {
+    run(mod, tool, input, cwd) {
       if (tool !== 'Bash') return null;
-      const r = mod.checkCommand(input?.command || '');
+      const r = mod.checkCommand(input?.command || '', null, undefined, cwd);
       if (!r.blocked) return null;
       return { id: r.pattern.id, level: r.pattern.level, ask: false, reason: `[${r.pattern.id}] ${r.reason}` };
     },

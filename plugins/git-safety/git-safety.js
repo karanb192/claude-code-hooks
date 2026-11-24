@@ -112,11 +112,25 @@ function log(data) {
   } catch {}
 }
 
-function getCurrentBranch() {
+// The branch git reports for a folder. With the payload's cwd given, a folder
+// that is not a git repository has no branch (''), and any other failure (the
+// folder is missing, git cannot run) reads as UNREADABLE, which the branch
+// rules refuse. Without a cwd, the hook's own folder is read as before.
+const UNREADABLE = '(unreadable branch)';
+const isProtectedBranch = (b) => b === UNREADABLE || PROTECTED_BRANCHES.includes(b);
+
+function getCurrentBranch(cwd) {
+  if (!cwd) {
+    try {
+      return execFileSync('git', ['branch', '--show-current'], { encoding: 'utf-8' }).trim();
+    } catch {
+      return '';
+    }
+  }
   try {
-    return execFileSync('git', ['branch', '--show-current'], { encoding: 'utf-8' }).trim();
-  } catch {
-    return '';
+    return execFileSync('git', ['branch', '--show-current'], { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, LC_ALL: 'C' } }).trim();
+  } catch (e) {
+    return /not a git repository/i.test(String(e.stderr || '')) ? '' : UNREADABLE;
   }
 }
 
@@ -797,11 +811,11 @@ const WRAPPERS = new Set(['env', 'sudo', 'doas', 'nice', 'nohup', 'timeout', 'co
 // any group. Returns every branch-rule call with the branch it reaches, and
 // known: false when anything in the line could run git out of sight, move
 // HEAD another way or name a directory that cannot be read.
-function resolveBranches(cmd, sessionBranch) {
+function resolveBranches(cmd, sessionBranch, cwd) {
   const out = { ops: [], known: false, pulls: 0 };
   if (!/\bgit\b/.test(cmd)) return out;
   const read = readShell(cmd);
-  const session = process.cwd();
+  const session = cwd ? path.resolve(cwd) : process.cwd();
   let known = read.sure && read.frames.length === 1 && !read.heredocs.length && !/\$\(|`|[<>]\(/.test(cmd);
   for (const f of read.frames) {
     let dir = session;
@@ -887,7 +901,7 @@ function resolveBranches(cmd, sessionBranch) {
       };
       if (sub.value === 'checkout' || sub.value === 'switch') {
         const now = effective(switched.get(repo));
-        const from = PROTECTED_BRANCHES.includes(now) ? now : null;
+        const from = isProtectedBranch(now) ? now : null;
         const at = listClean && !c.words.some(x => !x.op && !x.spans.length && x.value === '!') ? n : -1;
         // An expansion, glob, brace list or ~ in any operand is known only when
         // the shell runs, so the branch may become anything, main included: a
@@ -992,14 +1006,16 @@ function plusIsPushOption(cmd) {
   return true;
 }
 
-function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL) {
+// cwd is the folder the command runs in (the payload's cwd); branches are read
+// there and cd or -C in the command resolve from it.
+function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL, cwd = undefined) {
   const threshold = LEVELS[safetyLevel] || LEVELS.high;
   // bash removes a backslash-newline outright, joining the two lines.
   cmd = cmd.replace(/\\\r?\n/g, '');
   const views = shellViews(cmd).map(v => ({ ...v, ref: maskQuotedOperators(v.masked) }));
-  const sessionBranch = () => (branch === null ? (branch = getCurrentBranch()) : branch);
+  const sessionBranch = () => (branch === null ? (branch = getCurrentBranch(cwd)) : branch);
   let resolved = null;
-  const resolve = () => resolved || (resolved = resolveBranches(cmd, sessionBranch));
+  const resolve = () => resolved || (resolved = resolveBranches(cmd, sessionBranch, cwd));
   for (const p of PATTERNS) {
     if (LEVELS[p.level] > threshold) continue;
     const view = (v) => (!p.segment ? v.text : REF_RULES.has(p.id) ? v.ref : v.masked);
@@ -1007,14 +1023,14 @@ function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL) {
     if (p.flags && !views.some(v => p.flags.test(view(v)) || p.plainFlags.test(v.masked)) && plusIsPushOption(cmd)) continue;
 
     if (p.branchOnly) {
-      if (!branch) branch = getCurrentBranch();
-      if (!PROTECTED_BRANCHES.includes(branch)) continue;
+      if (!branch) branch = getCurrentBranch(cwd);
+      if (!isProtectedBranch(branch)) continue;
       if (!writesCommit(p, views, branch)) continue;
       // The session is on a protected branch, but every such call in the line
       // runs only after a switch to a branch that is not protected.
       const r = resolve();
       const mine = r.ops.filter(o => o.id === p.id);
-      if (r.known && mine.length && mine.every(o => o.certain && !PROTECTED_BRANCHES.includes(o.branch))) continue;
+      if (r.known && mine.length && mine.every(o => o.certain && !isProtectedBranch(o.branch))) continue;
       // A pull judged by the branch it reaches (git switch master && git pull
       // origin master): the line was read with certainty, every mention of pull
       // is a plain git pull the reader judged, and none merges there.
@@ -1026,7 +1042,7 @@ function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL) {
   }
 
   if (LEVELS.high <= threshold) {
-    const hit = resolve().ops.find(o => PROTECTED_BRANCHES.includes(o.branch));
+    const hit = resolve().ops.find(o => isProtectedBranch(o.branch));
     if (hit) {
       const p = PATTERNS.find(x => x.id === hit.id);
       return { blocked: true, pattern: p, reason: p.reason.replace('{branch}', hit.branch) };
@@ -1060,7 +1076,7 @@ async function main() {
     if (tool_name !== 'Bash') return console.log('{}');
 
     const cmd = tool_input?.command || '';
-    const result = checkCommand(cmd);
+    const result = checkCommand(cmd, null, SAFETY_LEVEL, cwd);
 
     if (result.blocked) {
       const p = result.pattern;
