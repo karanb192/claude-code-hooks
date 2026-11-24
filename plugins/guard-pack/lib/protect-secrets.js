@@ -146,10 +146,17 @@ const floatingNames = secretFiles.filter(p => !p.regex.source.startsWith(PATH_AN
 const SECRET_GLOB = '(?:\\.[A-Za-z]{0,3}[*?]|\\.(?:ssh|aws|kube|gnupg|azure|docker|config\\/gcloud)\\/[^\\s"\']*[*?])';
 const SECRET_NAME = '(?:' + FILE_DIR + '(?:' + anchoredNames.join('|') + '|' + SECRET_GLOB + ')|' + FILE_ANY + '(?:' + floatingNames.join('|') + '))(?![A-Za-z0-9])';
 const SECRET_FILE = '(?:^|[\\s"\'=<@(])\\s*' + SECRET_NAME;
+// The whole operand: a backup copy (.npmrc.bak) still counts, a different file (.npmrc.md) does not.
+const SECRET_OPERAND = SECRET_FILE + '(?:\\.(?:bak|backup|old|orig|save|tmp)|~)?(?![^\\s"\'`;|&<>()])';
 const SECRET_WORD = '(?:SECRETS?|KEY|TOKEN|PASSWORD|PASSWD|PASSW|PASSPHRASE|PASS|CREDENTIALS?|API_KEY|APIKEY|PAT)';
 // Whole name segments, so $AUTHOR and $TOKENS_USED stay clean; AUTH and PRIVATE only as the last segment.
 const SECRET_TAIL = '(?:_(?:ID|FILE|PATH|VALUE|VAL|STR|STRING|B64|BASE64|JSON|PEM|DATA|CONTENT|TEXT|RAW|HEX|PROD|PRODUCTION|DEV|STAGING|TEST|OLD|NEW|[0-9]+))*';
 const SECRET_VAR = '\\$\\{?!?(?:(?:[A-Z0-9]+_)*' + SECRET_WORD + SECRET_TAIL + '|(?:[A-Z0-9]+_)*(?:AUTH|PRIVATE))\\}?(?![A-Za-z0-9_])';
+// One grep's words: & only inside a redirection such as 2>&1 or &>, so && and a newline end it.
+const GREP_ANY = '(?:[^|;&\\n]|(?<=[<>])&|&(?=>))';
+// The same, stopping at a -- after which every word is an operand.
+const GREP_ARGS = '(?:(?!\\s--(?:\\s|$))' + GREP_ANY + ')';
+const GREP_TERM = '(?:password|secret|api.?key|token|credential)';
 // Not a heredoc, herestring, process substitution or /dev/*.
 const REDIRECT_IN = '(?<!<)<(?![<(])\\s*(?!\\/dev\\/)';
 // -T as a whole flag: the patterns run case-insensitive, so a bare -T also matches --max-time.
@@ -227,8 +234,12 @@ const BASH_PATTERNS = [
   { level: 'high', id: 'find-exec-cat-env',      regex: /find\b.*\.env.*-exec|find\b.*-exec.*(cat|less)/i,                 reason: 'Finding and reading .env files' },
 
   // STRICT
-  { level: 'strict', id: 'grep-password',        regex: /\bgrep\b[^|;]*(-r|--recursive)[^|;]*(password|secret|api.?key|token|credential)/i, reason: 'Grep for secrets may expose them' },
-  { level: 'strict', id: 'base64-secrets',       regex: /\bbase64\b[^|;]*(\.env|credentials|secrets|id_rsa|\.pem)/i,       reason: 'Base64 encoding secrets' },
+  // The recursive flag may come after the pattern or the path, or sit in a cluster (-rn, -iR).
+  // It must belong to the same grep (no && or newline in between) and come before a -- that ends the options.
+  // quoted: also read the copy where a quoted & or newline is blanked, so grep -r "a&token" still counts.
+  // (?=(...))\1 takes the first flag or term and never retries a later one, which keeps the match linear.
+  { level: 'strict', id: 'grep-password',        regex: new RegExp('\\bgrep\\b(?=(' + GREP_ARGS + '*?(?:-r|--recursive|\\s-[A-Za-z]*r)))\\1' + GREP_ANY + '*?' + GREP_TERM + '|\\bgrep\\b(?=(' + GREP_ARGS + '*?' + GREP_TERM + '))\\2' + GREP_ARGS + '*?\\s(?:-[A-Za-z]*r[A-Za-z]*|--(?:dereference-)?recursive)(?![\\w-])', 'i'), quoted: true, reason: 'Grep for secrets may expose them' },
+  { level: 'strict', id: 'base64-secrets',       regex: new RegExp('\\bbase64\\b[^|;]*(?:\\.env|credentials|secrets|id_rsa|\\.pem|' + SECRET_OPERAND + ')', 'i'), also: base64ReadsSecret, reason: 'Base64 encoding secrets' },
 
   // STRICT - Delegation sinks (any file contents into an external model)
   { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&\\n]*' + SINK_CMD + '|' + SINK_CMD + SEG_QA + REDIRECT_IN + FILE_TOKEN + '|' + SINK_CMD + '[^;|&\\n]*' + SUBST_FILE + '|' + SINK_FILE_FLAG, 'i'), reason: 'Piping file contents to an external model CLI' },
@@ -759,9 +770,13 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   if (!cmd) return { blocked: false, pattern: null };
   cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
   const threshold = LEVELS[safetyLevel] || 2;
-  const texts = shellViews(cmd).map(v => v.text);
+  const read = shellViews(cmd);
+  const texts = read.map(v => v.text);
   const views = texts.map(maskTemplates);
-  const rule = BASH_PATTERNS.find(p => LEVELS[p.level] <= threshold && views.some(v => p.regex.test(v)));
+  // quoted: the rule also reads the copy where a quoted separator is blanked. also: a check in code.
+  const quoted = views.concat(read.map(v => maskTemplates(v.masked)));
+  const rule = BASH_PATTERNS.find(p => LEVELS[p.level] <= threshold
+    && ((p.quoted ? quoted : views).some(v => p.regex.test(v)) || (p.also && texts.some(t => p.also(t)))));
   const quotedGlobs = literalGlobs(texts[0]);
   let hit = null;
   texts.forEach((text, i) => { hit = stronger(hit, secretFileAccess(text, safetyLevel, i ? quotedGlobs : null)); });
@@ -982,6 +997,28 @@ function secretFileAccess(text, safetyLevel, literal) {
     for (const cmd of frame.cmds) best = stronger(best, commandFileAccess(cmd, ctx));
   }
   return best;
+}
+
+// base64 given a file the file tools refuse, judged on the whole name as they judge it, so a name the
+// pattern's word list does not spell out (.azure/accessTokens.json) still counts. A backup suffix
+// (.bak, .backup, .old, .orig, .save, .tmp, ~) is the same file.
+const BACKUP_SUFFIX = /(?:\.(?:bak|backup|old|orig|save|tmp)|~)$/i;
+function base64ReadsSecret(text) {
+  const named = (v) => {
+    const parts = [v, ...v.split(/[=@<(]/).slice(1)];
+    if (/^-[A-Za-z]./.test(v)) parts.push(v.slice(2));
+    return parts.some(p => p && (checkFilePath(p, 'high').blocked || checkFilePath(p.replace(BACKUP_SUFFIX, ''), 'high').blocked));
+  };
+  if (!/base64/.test(text)) return false;
+  for (const f of readShell(text).frames) {
+    for (const cmd of f.cmds) {
+      const at = cmd.words.findIndex(w => !w.op && !w.target && base(w.value) === 'base64');
+      if (at < 0) continue;
+      if (cmd.words.slice(at + 1).some(w => !w.op && named(w.value))) return true;
+      if (cmd.words.some(w => w.target && named(w.value))) return true;
+    }
+  }
+  return false;
 }
 
 // Mask each allowlisted file name on its own; matching the allowlist against
