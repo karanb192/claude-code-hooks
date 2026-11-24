@@ -54,14 +54,29 @@ const ASK = {
 // git with global options before the subcommand (git -C repo push, git -c k=v push).
 // Option values may be quoted, attached (-C/repo) or a separate word (--git-dir /repo).
 // The alternatives never match the same text, so a long option run stays linear.
-const GIT_VAL = '(?:"[^"]*"|\'[^\']*\'|[^\\s"\'][^\\s]*)';
+// A value may mix quoted and plain parts (core.editor="code --wait") and
+// escaped spaces (my\ repo).
+const GIT_VAL = '(?:[^\\s"\'\\\\]|\\\\[\\s\\S]|"[^"]*"|\'[^\']*\')+';
 const GIT_LONG_VAL = '(?:git-dir|work-tree|namespace|exec-path|super-prefix|config-env)';
 const GIT = '\\bgit(?:\\s+(?:-[Cc]\\s*' + GIT_VAL + '|--' + GIT_LONG_VAL + '(?:=|\\s+)' + GIT_VAL + '|--(?!' + GIT_LONG_VAL + '\\b)[\\w-]+(?:=\\S+)?|-(?![Cc])[A-Za-z]))*\\s+';
 const MAIN_REF = '(?:[\\s:"\']|refs\\/heads\\/)(?:main|master)(?=$|[\\s;&|)<>"\'])';
 // A shell word, not the "sh" in a *.sh file name; optional path (/bin/bash).
 const SHELL = '(?<![\\w.\\/-])(?:[^\\s|;&]*\\/)?(?:ba|z|da|k)?sh(?![\\w.-])';
 const FETCH = '(?:[^\\s|;&(]*\\/)?(?:curl|wget)\\b';
-const FORCE_FLAG = '\\s["\']?(?:--force|-f)["\']?(?=\\s|$|[;&|)<>"\'])';
+// docker with global options before the subcommand (docker --context prod volume rm).
+// An option that takes a value never matches the plain-flag branch, so a long
+// option run stays linear.
+const DOCKER_VALUE = '(?:-[cHl]|--(?:context|host|config|log-level|tlscacert|tlscert|tlskey))';
+const DOCKER = '\\bdocker(?:\\s+(?:' + DOCKER_VALUE + '(?:=|\\s+)\\S+|--(?!(?:context|host|config|log-level|tlscacert|tlscert|tlskey)(?:[=\\s]|$))[\\w-]+|-(?![cHl](?:[=\\s]|$))[A-Za-z][\\w-]*))*\\s+';
+// docker compose with its own options before the subcommand, so down is the
+// subcommand and not a service name (docker compose run down ls -v).
+const COMPOSE_VALUE = '(?:file|project-name|project-directory|env-file|profile|ansi|progress|parallel|context|host|log-level|tlscacert|tlscert|tlskey)';
+const COMPOSE = '\\bdocker(?:-compose|\\s+compose)(?:\\s+(?:(?:-[fpcH]|--' + COMPOSE_VALUE + ')(?:=|\\s+)\\S+|--(?!' + COMPOSE_VALUE + '(?:[=\\s]|$))[\\w-]+(?:=\\S*)?|-(?![fpcH](?:[=\\s]|$))[A-Za-z]\\S*))*\\s+';
+// chmod with its own options before the mode, so a file named 0777 is not the mode.
+const CHMOD = '\\bchmod(?:\\s+(?:-[RfvchHLP]+|--(?:recursive|verbose|changes|silent|quiet|dereference|no-dereference|preserve-root|no-preserve-root)?)(?=\\s))*\\s+';
+// -f alone or in a short-flag cluster (-fu, -uf, -vf). -o takes the rest of
+// its word as a value, so an f after it is not a flag.
+const FORCE_FLAG = '\\s["\']?(?:--force|-[A-Za-np-z0-9]*f[A-Za-z0-9]*)["\']?(?=\\s|$|[;&|)<>"\'])';
 
 const PATTERNS = [
   // CRITICAL - Catastrophic, unrecoverable
@@ -85,16 +100,20 @@ const PATTERNS = [
   // Flag and branch in either order, within one command segment; +main is a force refspec.
   // A bare --force-with-lease never matches the (?=\s|...) after --force, so it needs no exception.
   { level: 'high', id: 'git-force-main', segment: true, regex: new RegExp(GIT + 'push\\b(?=[^;&|\\n]*' + FORCE_FLAG + ')(?=[^;&|\\n]*' + MAIN_REF + ')|' + GIT + 'push\\b[^;&|\\n]*\\s["\']?\\+(?:[^\\s:]*:)?(?:refs\\/heads\\/)?(?:main|master)(?=$|[\\s;&|)<>"\'])'), reason: 'force push to main/master' },
-  { level: 'high', id: 'git-reset-hard', regex: new RegExp(GIT + 'reset\\b[^;&|\\n]*\\s--hard\\b'),                       reason: 'git reset --hard loses uncommitted work' },
-  { level: 'high', id: 'git-clean-f',    regex: new RegExp(GIT + 'clean\\s+(-\\w*f|-f)'),                                 reason: 'git clean -f deletes untracked files' },
-  { level: 'high', id: 'chmod-777',      regex: /\bchmod\b.+\b777\b/,                                                     reason: 'chmod 777 is a security risk' },
-  { level: 'high', id: 'docker-vol-rm',  regex: /\bdocker\s+volume\s+(rm|prune)/,                                         reason: 'docker volume deletion loses data' },
+  { level: 'high', id: 'git-reset-hard', regex: new RegExp(GIT + 'reset\\b[^;&|\\n]*\\s--h(?:a(?:rd?)?)?(?![\\w-])'),     reason: 'git reset --hard loses uncommitted work' },
+  { level: 'high', id: 'git-clean-f',    regex: new RegExp(GIT + 'clean\\s+(-\\w*f|-f)|' + GIT + 'clean\\b(?:[^;&|\\n<>]|[<>]&?|&>)*\\s["\']?(?:--f(?:o(?:r(?:ce?)?)?)?(?![\\w-])|-[A-Za-df-z]*f)'), confirm: (t) => cleanForces(t), reason: 'git clean -f deletes untracked files' },
+  // 777 with a leading 0 or a special bit (0777, 1777), or rwx for everyone spelled symbolically (a+rwx), as the mode.
+  { level: 'high', id: 'chmod-777',      regex: new RegExp('\\bchmod\\b.+\\b777\\b|' + CHMOD + '["\']?(?:0*[1-7]?777|(?:a|ugo|uog|gou|guo|ogu|oug)[+=](?=[rwxXst]*r)(?=[rwxXst]*w)(?=[rwxXst]*x)[rwxXst]+)["\']?(?=\\s|$|[;&|)<>])'), reason: 'chmod 777 is a security risk' },
+  // docker volume rm|remove|prune after global options, compose down -v, system prune --volumes.
+  { level: 'high', id: 'docker-vol-rm',  regex: new RegExp(DOCKER + '(?:volume\\s+(?:rm|remove|prune)\\b|system\\s+prune\\b[^;&|\\n]*\\s--volumes(?![\\w-]))|' + COMPOSE + 'down(?![\\w-])(?=[^;&|\\n]*\\s(?:-[A-Za-z]*v[A-Za-z]*|--volumes)(?![\\w-]))'), reason: 'docker volume deletion loses data' },
 
   // STRICT - Cautionary, context-dependent
-  { level: 'strict', id: 'git-force-any',    segment: true, regex: new RegExp(GIT + 'push\\b(?=[^;&|\\n]*' + FORCE_FLAG + ')'), reason: 'force push (use --force-with-lease)' },
+  // A +ref refspec force-pushes that ref like --force does; pushForces reads
+  // the push options so the value of -o or --push-option (-o +build) is not a refspec.
+  { level: 'strict', id: 'git-force-any',    segment: true, regex: new RegExp(GIT + 'push\\b(?=[^;&|\\n]*' + FORCE_FLAG + ')|' + GIT + 'push\\b[^;&|\\n]*\\s["\']?\\+[^\\s;&|]'), confirm: (t) => pushForces(t), reason: 'force push (use --force-with-lease)' },
   { level: 'strict', id: 'git-checkout-dot', regex: new RegExp(GIT + 'checkout\\s+\\.'),                                     reason: 'git checkout . discards changes' },
-  { level: 'strict', id: 'sudo-rm',          regex: /\bsudo\s+rm\b/,                                                       reason: 'sudo rm has elevated privileges' },
-  { level: 'strict', id: 'docker-prune',     regex: /\bdocker\s+(system|image)\s+prune/,                                   reason: 'docker prune removes images' },
+  { level: 'strict', id: 'sudo-rm',          regex: /\bsudo\s+rm\b|\bsudo\b(?:[^;&|\n<>]|[<>]&?|&>)*\brm\b/, confirm: (t) => /\bsudo\s+rm\b/.test(t) || sudoRunsRm(t), reason: 'sudo rm has elevated privileges' },
+  { level: 'strict', id: 'docker-prune',     regex: /\bdocker\s+(system|image|container|builder|buildx|network)\s+prune/,      reason: 'docker prune removes unused images, containers, networks or build cache' },
   { level: 'strict', id: 'crontab-r',        regex: /\bcrontab\s+-r/,                                                      reason: 'removes all cron jobs' },
 ];
 
@@ -104,7 +123,7 @@ const PATTERNS = [
 // ; & | or the end; the rendered view of that line sets every real operator
 // apart with spaces, so a quoted target before a real ) or > is still caught.
 for (const p of PATTERNS) {
-  if (p.regex.source.includes(')<>')) p.quoted = new RegExp(p.regex.source.split(')<>').join(''), p.regex.flags);
+  if (/^(?:rm-|git-force-)/.test(p.id) && p.regex.source.includes(')<>')) p.quoted = new RegExp(p.regex.source.split(')<>').join(''), p.regex.flags);
 }
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
@@ -696,6 +715,123 @@ function pipesToShell(cmd) {
     }
   }
   return false;
+}
+
+// sudo's own options (-n, -u root, --) and a path to rm still run rm, and sudo
+// named by its path (/usr/bin/sudo) is still sudo. The words are read twice:
+// as text up to the next separator, and with the shell reader, which sets a
+// redirect and its target apart, so sudo 2>/dev/null rm x and
+// sudo -n >/dev/null rm x still run rm. A line the reader is not sure of is refused.
+function sudoWordsRunRm(words) {
+  const [shortValue, longValue] = WRAPPERS.sudo;
+  let k = 0;
+  while (k < words.length) {
+    const w = words[k];
+    if (w === '--') { k++; break; }
+    if (/^[A-Za-z_]\w*=/.test(w)) { k++; continue; }
+    if (!w.startsWith('-') || w === '-') break;
+    k++;
+    if (w.startsWith('--')) { if (!w.includes('=') && longValue.includes(w.slice(2))) k++; continue; }
+    const letters = w.slice(1);
+    if ([...letters].findIndex(c => shortValue.includes(c)) === letters.length - 1) k++;
+  }
+  return words[k] !== undefined && base(words[k]) === 'rm';
+}
+
+function sudoRunsRm(cmd) {
+  for (const m of cmd.matchAll(/(?<![\w.-])sudo(?=\s)/g)) {
+    if (sudoWordsRunRm(shellWords(firstCommand(cmd.slice(m.index + 4).split('|')[0])))) return true;
+  }
+  const read = readShell(cmd);
+  if (!read.sure) return true;
+  for (const f of read.frames) {
+    for (const c of f.cmds) {
+      const words = argv(c).map((w) => w.value);
+      for (let j = 0; j < words.length; j++) {
+        if (base(words[j]) === 'sudo' && sudoWordsRunRm(words.slice(j + 1))) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// The arguments after <sub> of each git command the shell reader finds, with
+// redirects and their targets set apart; each list's .early counts the
+// arguments before the first redirect. null, so the caller refuses, when the
+// reader is not sure of the line or finds fewer such commands than the text names.
+function gitArgs(cmd, sub, textRegex) {
+  const read = readShell(cmd);
+  if (!read.sure) return null;
+  const lists = [];
+  for (const f of read.frames) {
+    for (const c of f.cmds) {
+      const words = argv(c).map((w) => w.value);
+      const g = words.findIndex((w) => base(w) === 'git');
+      const s = g < 0 ? -1 : words.indexOf(sub, g + 1);
+      if (s < 0) continue;
+      const redirect = c.words.findIndex((w) => w.op && w.op !== '(' && w.op !== ')');
+      const list = words.slice(s + 1);
+      list.early = redirect < 0 ? list.length : Math.max(0, c.words.slice(0, redirect).filter((w) => !w.op && !w.target).length - s - 1);
+      lists.push(list);
+    }
+  }
+  return lists.length < (cmd.match(textRegex) || []).length ? null : lists;
+}
+
+// git clean deletes only with a force flag and no dry run. The value of -e or
+// --exclude is a pattern (-e -foo), not a flag. A force flag in the first word
+// after clean (-f, -nf, -fn, -efoo) counts on its own, as it always has, and a
+// force flag after a redirect counts too; a dry run after a redirect is not read.
+const GIT_CLEAN = new RegExp(GIT + 'clean\\b', 'g');
+const GIT_CLEAN_FIRST = new RegExp(GIT + 'clean\\s+(-\\w*f|-f)');
+function cleanForces(cmd) {
+  if (GIT_CLEAN_FIRST.test(cmd)) return true;
+  const lists = gitArgs(cmd, 'clean', GIT_CLEAN);
+  return !lists || lists.some((words) => {
+    let force = false;
+    let dry = false;
+    for (let k = 0; k < words.length; k++) {
+      const w = words[k];
+      if (w === '--') break;
+      if (w.startsWith('--')) {
+        const neg = w.startsWith('--no-');
+        const name = w.slice(neg ? 5 : 2);
+        if (!neg && /^e(?:x(?:c(?:l(?:u(?:de?)?)?)?)?)?$/.test(name)) k++;
+        else if (/^f(?:o(?:r(?:ce?)?)?)?$/.test(name)) force = !neg;
+        else if (/^d(?:r(?:y(?:-(?:r(?:un?)?)?)?)?)?$/.test(name)) dry = (!neg && k < words.early) || (neg ? false : dry);
+        continue;
+      }
+      if (!w.startsWith('-')) continue;
+      for (let j = 1; j < w.length; j++) {
+        if (w[j] === 'e') { if (j === w.length - 1) k++; break; }
+        if (w[j] === 'f') force = true;
+        if (w[j] === 'n' && k < words.early) dry = true;
+      }
+    }
+    return force && !dry;
+  });
+}
+
+// A force flag, or a +ref refspec once each option has taken exactly its own
+// value: -o and --push-option take one word (-o +build), an attached value
+// (-ofoo, -oo) takes none, so -oo +topic and -o -o +x still push +refs.
+const GIT_PUSH = new RegExp(GIT + 'push\\b', 'g');
+const PUSH_FORCE_FLAG = new RegExp(GIT + 'push\\b(?=[^;&|\\n]*' + FORCE_FLAG + ')');
+const PUSH_VALUE = new Set(['-o', '--push-option']);
+function pushForces(cmd) {
+  if (PUSH_FORCE_FLAG.test(maskQuotedSeparators(cmd))) return true;
+  const lists = gitArgs(cmd, 'push', GIT_PUSH);
+  return !lists || lists.some((words) => {
+    for (let k = 0; k < words.length; k++) {
+      const w = words[k];
+      if (w === '--') return words.slice(k + 1).some((x) => x.startsWith('+'));
+      if (PUSH_VALUE.has(w)) { k++; continue; }
+      if (w.startsWith('--')) continue;
+      if (/^-./.test(w)) { if (w.indexOf('o') === w.length - 1) k++; continue; }
+      if (w.startsWith('+')) return true;
+    }
+    return false;
+  });
 }
 
 function checkCommand(cmd, safetyLevel = SAFETY_LEVEL) {
