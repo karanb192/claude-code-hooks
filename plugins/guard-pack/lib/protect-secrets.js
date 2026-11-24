@@ -300,8 +300,8 @@ const BASH_PATTERNS = [
   { level: 'strict', id: 'base64-secrets',       regex: new RegExp('\\bbase64\\b[^|;]*(?:\\.env|credentials|secrets|id_rsa|\\.pem|' + SECRET_OPERAND + ')', 'i'), also: base64ReadsSecret, reason: 'Base64 encoding secrets' },
 
   // STRICT - Delegation sinks (any file contents into an external model)
-  { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&\\n]*' + SINK_CMD + '|' + SINK_CMD + SEG_QA + REDIRECT_IN + FILE_TOKEN + '|' + SINK_CMD + '[^;|&\\n]*' + SUBST_FILE + '|' + SINK_CMD + '[^;|&\\n]*(?:\\$\\(|`)\\s*' + READER_CMD + '|' + LEAD_REDIRECT + SINK_CLI + SINK_END + '|' + SINK_FILE_FLAG, 'i'), pre: SINK_NAME, reason: 'Piping file contents to an external model CLI' },
-  { level: 'strict', id: 'model-api-file-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + API_BODY + FILE_TOKEN + '|' + HTTPIE_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + HTTPIE_FILE_ITEM + '[\\w.~\\/]|' + OLD_READER + '[^;&\\n]*' + HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')|' + READER_CMD + '[^;&\\n]*' + PIPE_HTTP + '(?=[^;|&\\n]*' + SINK_HOST + ')', 'i'), pre: SINK_HOST_NAME, reason: 'Sending file contents to a model API endpoint' },
+  { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&\\n]*' + SINK_CMD + '|' + SINK_CMD + SEG_QA + REDIRECT_IN + FILE_TOKEN + '|' + SINK_CMD + '[^;|&\\n]*' + SUBST_FILE + '|' + SINK_CMD + '[^;|&\\n]*(?:\\$\\(|`)\\s*' + READER_CMD + '|' + LEAD_REDIRECT + SINK_CLI + SINK_END + '|' + SINK_FILE_FLAG, 'i'), pre: SINK_NAME, stdinGrep: true, reason: 'Piping file contents to an external model CLI' },
+  { level: 'strict', id: 'model-api-file-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + API_BODY + FILE_TOKEN + '|' + HTTPIE_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + HTTPIE_FILE_ITEM + '[\\w.~\\/]|' + OLD_READER + '[^;&\\n]*' + HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')|' + READER_CMD + '[^;&\\n]*' + PIPE_HTTP + '(?=[^;|&\\n]*' + SINK_HOST + ')', 'i'), pre: SINK_HOST_NAME, stdinGrep: true, reason: 'Sending file contents to a model API endpoint' },
 ];
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
@@ -831,6 +831,69 @@ function maskSeparatorsApart(text) {
   return maskQuotedSeparators(text.replace(/_/g, '\u0002')).replace(/_/g, '\u0001').replace(/\u0002/g, '_');
 }
 
+// The strict file rules read grep with its first two words as a pattern and a file, but grep -A 3 foo
+// gives -A the value 3 and reads stdin. grep's options are read here as getopt reads them, with case
+// kept (the rules match case-insensitively, and -a takes no value where -A does). stdinGrep: when a
+// grep in the command names no file and does not recurse, the rule must still match with that grep
+// set aside.
+const GREP_FAMILY = new Set(['grep', 'egrep', 'fgrep', 'zgrep']);
+const GREP_SHORT_VALUE = 'ABCmdDef';
+const GREP_LONG_VALUE = /^--(?:after-context|before-context|context|max-count|devices|directories|regexp|file|include|exclude|exclude-dir|exclude-from|label|binary-files)$/;
+function grepReadsFiles(ops) {
+  let patternGiven = false;
+  const operands = [];
+  let options = true;
+  for (let j = 0; j < ops.length; j++) {
+    const v = ops[j].value;
+    if (ops[j].dynamic) return true;
+    if (options && v === '--') { options = false; continue; }
+    if (options && /^--./.test(v)) {
+      const name = v.replace(/=[\s\S]*$/, '');
+      if (/^--(?:recursive|dereference-recursive)$/.test(name) || (name === '--directories' && /recurse/.test(v + (ops[j + 1]?.value || '')))) return true;
+      if (/^--(?:regexp|file)$/.test(name)) patternGiven = true;
+      if (GREP_LONG_VALUE.test(name) && !v.includes('=')) j++;
+      continue;
+    }
+    if (options && /^-./.test(v)) {
+      for (let c = 1; c < v.length; c++) {
+        if (v[c] === 'r' || v[c] === 'R') return true;
+        if (!GREP_SHORT_VALUE.includes(v[c])) continue;
+        if (v[c] === 'e' || v[c] === 'f') patternGiven = true;
+        const value = c + 1 < v.length ? v.slice(c + 1) : ops[++j]?.value;
+        if ((v[c] === 'd' || v[c] === 'D') && /recurse/.test(value || '')) return true;
+        if (v[c] === 'f') return true;
+        break;
+      }
+      continue;
+    }
+    operands.push(v);
+  }
+  return operands.length > (patternGiven ? 0 : 1);
+}
+function setAsideStdinGrep(text) {
+  if (!/grep/.test(text)) return text;
+  const spots = [];
+  for (const f of readShell(text).frames) {
+    for (const cmd of f.cmds) {
+      const words = argv(cmd);
+      const k = commandIndex(words);
+      const w = words[k];
+      if (!w || w.dynamic || w.spans.length || !GREP_FAMILY.has(base(w.value))) continue;
+      // An input redirect makes stdin a file, so such a grep still reads one.
+      if (cmd.words.some(x => x.target && /^<(?:&|>)?$/.test(x.target))) continue;
+      if (!grepReadsFiles(words.slice(k + 1))) spots.push([w.start, w.end]);
+    }
+  }
+  let out = text;
+  for (const [a, b] of spots.sort((x, y) => y[0] - x[0])) out = out.slice(0, a) + 'stdin_filter' + out.slice(b);
+  return out;
+}
+function stdinGrepMatch(p, texts) {
+  const aside = texts.map(setAsideStdinGrep);
+  if (aside.every((t, i) => t === texts[i])) return true;
+  return aside.flatMap(t => [maskTemplates(t), maskTemplates(maskSeparatorsApart(t))]).some(v => (!p.pre || p.pre.test(v)) && p.regex.test(v));
+}
+
 function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   if (!cmd) return { blocked: false, pattern: null };
   cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
@@ -843,7 +906,8 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   const views = texts.flatMap(t => [maskTemplates(t), maskTemplates(maskSeparatorsApart(t))]);
   const quoted = views.concat(read.map(v => maskTemplates(v.masked)));
   let rule = BASH_PATTERNS.find(p => LEVELS[p.level] <= threshold
-    && ((p.quoted ? quoted : views).some(v => (!p.pre || p.pre.test(v)) && p.regex.test(v)) || (p.also && texts.some(t => p.also(t)))));
+    && ((p.quoted ? quoted : views).some(v => (!p.pre || p.pre.test(v)) && p.regex.test(v)) || (p.also && texts.some(t => p.also(t))))
+    && (!p.stdinGrep || stdinGrepMatch(p, texts)));
   // env-dump also reads each command in code, so a dump anywhere in the line counts.
   const dump = BASH_PATTERNS.find(p => p.id === 'env-dump');
   if (!rule && LEVELS[dump.level] <= threshold && texts.some(dumpsEnvironment)) rule = dump;
