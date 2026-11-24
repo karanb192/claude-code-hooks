@@ -56,6 +56,17 @@ const REFUSED = [
   // Code that reads its arguments as files.
   [`ruby -e 'puts ARGF.read' .env`, 'high'],
   [`perl -e 'print <>' .env`, 'high'],
+  // Code that evaluates a string may evaluate its own argument.
+  [`python3 -c "import sys; exec(sys.argv[1])" "print(open('.env').read())"`, 'high'],
+  [`node -e "eval(process.argv[1])" "require('fs').readFileSync('.env')"`, 'high'],
+  [`ruby -e 'eval(ARGV[0])' 'puts File.read(".env")'`, 'high'],
+  // PowerShell takes paths as bare words after its file cmdlets and aliases.
+  ['pwsh -c "get-content .env"', 'high'],
+  ['pwsh -c "Get-Content .env"', 'high'],
+  ['powershell -Command "Get-Content .env"', 'high'],
+  ['pwsh -c "gc .env"', 'high'],
+  ['pwsh -c "type .npmrc"', 'high'],
+  ['pwsh -c "$x = (Get-Content -Path .env -Raw); $x"', 'high'],
 ];
 
 const ALLOWED = [
@@ -77,6 +88,9 @@ const ALLOWED = [
   [`python3 -c "import sys; print(sys.argv[1])" .env`, 'high'],
   [`node -e "console.log(process.argv[1])" .env`, 'high'],
   [`perl -Mfeature=say -E 'say 1'`, 'high'],
+  [`python3 -c "import sys; exec(sys.argv[1])" "print(1)"`, 'high'],
+  ['pwsh -c "Get-Content README.md"', 'high'],
+  ['pwsh -c "Write-Output .env"', 'high'],
 ];
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {

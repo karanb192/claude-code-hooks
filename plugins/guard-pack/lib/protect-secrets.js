@@ -997,7 +997,7 @@ function uploadArgs(name, ops) {
 // literals and + joins ('.e' 'nv'), and Ruby's and Perl's %q(), %Q{}, q() and qq{}. A literal counts
 // only when the code can reach a file or another program; code that only prints or formats a string
 // such as print('.env') opens nothing. With such code, a protected file named as an argument counts.
-const INTERPRETER = /^(?:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|ruby|perl|php|lua[0-9.]*|luajit|Rscript|osascript|julia|pwsh)$/;
+const INTERPRETER = /^(?:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|ruby|perl|php|lua[0-9.]*|luajit|Rscript|osascript|julia|pwsh|powershell)(?:\.exe)?$/i;
 // Bounded lengths keep the scan linear on a long run of unclosed openers.
 const CODE_QUOTED = /(['"`])((?:\\[\s\S]|(?!\1)[^\\\n]){0,512})\1|%[qQ]?([(\[{<])([^)\]}>]{0,512})[)\]}>]|\bq{1,2}([(\[{<])([^)\]}>]{0,512})[)\]}>]/g;
 const CODE_FILE_API = /\b(?:open\w*|read\w*|load\w*|Path|path\w*|File\w*|fs|require|import|__import__|IO|io|stream\w*|cat|copy\w*|move|exec\w*|system|subprocess|spawn\w*|popen\w*|eval|getattr|compile|os|sys|shutil|pathlib|glob\w*|fopen|file\w*|slurp|include\w*|source|dofile|loadfile|Deno|Bun|fetch|http\w*|url\w*|socket|send|write\w*|ARGV|ARGF|argv|STDIN|stdin|qx|Kernel|public_send|method|instance_eval|class_eval|binding|globals|vars|builtins|ctypes|mmap|codecs|pickle|marshal|dotenv|environ|getenv|ENV|curl|Get-Content|gc|type|do)\b|`|<\w*>|%x/;
@@ -1059,8 +1059,26 @@ const INTERP_OPTIONS = [
   [/^julia$/, { code: 'eE', value: 'LJCpt' }],
   [/./, { code: 'e', value: '' }],
 ];
+// PowerShell takes paths as bare words: Get-Content .env, gc .env, (cat ~/.ssh/id_rsa). Every word
+// after a file cmdlet or alias in the same statement, other than a -Parameter, is checked as a path.
+const PWSH_FILE_CMDLET = /^(?:get-content|gc|cat|type|select-string|sls|copy-item|copy|cp|cpi|move-item|move|mv|mi|get-item|gi|set-content|sc|add-content|ac|out-file|import-csv|ipcsv|import-clixml|get-filehash|format-hex|fhx|remove-item|rm|del|erase|ri|invoke-item|ii|import-module|ipmo)$/i;
+function pwshBarewords(code, take, ctx) {
+  for (const statement of code.split(/[;|\n(){}]+/)) {
+    let after = false;
+    for (const token of statement.trim().split(/\s+/)) {
+      if (!token) continue;
+      if (!after) { if (PWSH_FILE_CMDLET.test(token)) after = true; continue; }
+      if (/^-[A-Za-z]/.test(token)) continue;
+      const v = token.replace(/^['"]|['"],?$/g, '');
+      if (v) take('read', secretPath(v, null, ctx));
+    }
+  }
+}
+
 function codeWords(name, ops) {
   const code = new Set();
+  name = name.toLowerCase().replace(/\.exe$/, '');
+  if (name === 'powershell') name = 'pwsh';
   const spec = INTERP_OPTIONS.find(([re]) => re.test(name))[1];
   for (let j = 0; j < ops.length; j++) {
     const v = ops[j].value;
@@ -1109,11 +1127,18 @@ function commandFileAccess(cmd, ctx) {
   }
   if (INTERPRETER.test(name)) {
     const code = codeWords(name, ops);
+    const pwsh = /^(?:pwsh|powershell)/i.test(name);
     let opens = false;
+    let evaluates = false;
     for (const j of code) {
       const v = ops[j].value;
-      if (codeReads(/^-[A-Za-z]|^--[\w-]+=/.test(v) ? v.replace(/^--[\w-]+=|^-[A-Za-z]*?[cepr]/i, '') : v, take, ctx)) opens = true;
+      const text = /^-[A-Za-z]|^--[\w-]+=/.test(v) ? v.replace(/^--[\w-]+=|^-[A-Za-z]*?[cepr]/i, '') : v;
+      if (codeReads(text, take, ctx)) opens = true;
+      if (CODE_EVAL.test(text)) evaluates = true;
+      if (pwsh) pwshBarewords(text, take, ctx);
     }
+    // Code that evaluates a string may evaluate its own arguments: exec(sys.argv[1]).
+    if (evaluates) ops.forEach((w, j) => { if (!code.has(j)) codeReads(w.value, take, ctx); });
     for (const h of ctx.heredocs || []) if (h.cmd === cmd && codeReads(ctx.src.slice(h.bodyStart, h.bodyEnd), take, ctx)) opens = true;
     // Code that opens, runs or reads a file may take the name as an argument.
     if (opens && [...code].some(j => CODE_OPENS.test(ops[j].value))) ops.forEach((w, j) => { if (!code.has(j) && !/^-/.test(w.value)) take('read', secretPath(w.value, w, ctx)); });
