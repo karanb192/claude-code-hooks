@@ -88,6 +88,30 @@ describe('pull forms read exactly', () => {
   });
 });
 
+describe('only a plain git call moves the branch', () => {
+  it('words handed to another program do not leave main', () => {
+    for (const c of ['git switch main && logger git switch scratch && git commit -m x', 'git switch main && echo git switch scratch && git commit -m x', 'git switch main && ./git switch scratch && git commit -m x'])
+      shouldBlock(c, 'commit-on-protected', 'feature');
+  });
+  it('a wrapped switch does not leave main either', () => {
+    for (const c of ['git switch main && env git switch scratch && git commit -m x', 'git switch main && sudo git switch scratch && git commit -m x'])
+      shouldBlock(c, 'commit-on-protected', 'feature');
+    shouldBlock('env git switch -c fix && git commit -m x', 'commit-on-protected');
+  });
+  it('words handed to another program do not move a feature session onto main', () => {
+    for (const c of ['logger git switch main; git commit -m x', 'logger "git switch main" && git commit -m x'])
+      shouldAllow(c, 'feature');
+  });
+});
+
+describe('a pull judged on the branch it reaches', () => {
+  it('allows a same-branch pull after a certain switch to master', () => shouldAllow('git switch master && git pull origin master'));
+  it('blocks it when the switch may not have run, or the source differs', () => {
+    for (const c of ['git switch master; git pull origin master', 'git switch master && git pull origin feature'])
+      shouldBlock(c, 'pull-merge-on-protected');
+  });
+});
+
 describe('controls', () => {
   it('allows the same calls on a feature branch', () => {
     for (const c of ['git cherry-pick abc123', 'git revert HEAD', 'git am fix.patch', 'git pull --rebase', 'git pull origin other-branch'])

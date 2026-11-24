@@ -785,6 +785,8 @@ function switchTarget(sub, args, isBranch) {
 const STEADY = new Set([...INERT, ...DATA_READERS].filter(c => c !== 'tee'));
 const STEADY_GIT = /^(?:add|status|diff|log|show|commit|merge|reset|push|fetch|pull|restore|rm|mv|tag|stash|cherry-pick|revert|am|checkout|switch|rebase)$/;
 const LIST_END = new Set([';', '\n']);
+const PLAIN_GIT = /^(?:git|\/(?:usr\/(?:local\/)?bin|bin|opt\/homebrew\/bin)\/git)$/;
+const WRAPPERS = new Set(['env', 'sudo', 'doas', 'nice', 'nohup', 'timeout', 'command', 'exec', 'stdbuf', 'ionice', 'xargs', 'caffeinate']);
 
 // Commit, merge, rebase, reset and push reach the branch of the repository the
 // command runs in, not always the session's. Walk each command list in order:
@@ -796,7 +798,7 @@ const LIST_END = new Set([';', '\n']);
 // known: false when anything in the line could run git out of sight, move
 // HEAD another way or name a directory that cannot be read.
 function resolveBranches(cmd, sessionBranch) {
-  const out = { ops: [], known: false };
+  const out = { ops: [], known: false, pulls: 0 };
   if (!/\bgit\b/.test(cmd)) return out;
   const read = readShell(cmd);
   const session = process.cwd();
@@ -831,15 +833,23 @@ function resolveBranches(cmd, sessionBranch) {
         if (dir && dir.length > 4096) dir = null;
         return;
       }
-      // A wrapper (env, sudo, nice, timeout) still runs git: read the git it
-      // names, and the line's target branch is no longer certain.
+      // Only plain git moves the branch. A wrapper that runs its arguments
+      // (env, sudo, nice, timeout) or another program named git still counts
+      // for the refusals, but its checkout or switch never moves the branch off
+      // main: the guard cannot be sure what it ran. Words handed to any other
+      // program (logger git switch x) are text, not a call.
       let g = k;
+      let wrapped = false;
       if (w.value !== 'git') {
         if (STEADY.has(w.value)) return;
         known = false;
-        if (base(w.value) !== 'git') {
-          g = words.findIndex((x, i) => i > k && !x.dynamic && base(x.value) === 'git');
-          if (g < 0) return;
+        if (!PLAIN_GIT.test(w.value)) {
+          if (base(w.value) !== 'git' && !WRAPPERS.has(w.value)) return;
+          wrapped = true;
+          if (base(w.value) !== 'git') {
+            g = words.findIndex((x, i) => i > k && !x.dynamic && base(x.value) === 'git');
+            if (g < 0) return;
+          }
         }
       }
       if (!dir) { known = false; return; }
@@ -882,8 +892,13 @@ function resolveBranches(cmd, sessionBranch) {
         // An expansion, glob, brace list or ~ in any operand is known only when
         // the shell runs, so the branch may become anything, main included: a
         // protected branch already reached stays, and nothing counts as certain.
-        if (words.slice(j + 1).some(x => x.dynamic || /[*?[~]|\{[^}]*(?:,|\.\.)/.test(x.value))) {
-          if (from) switched.set(repo, { branch: from, at: -1, from: null });
+        const unresolved = words.slice(j + 1).some(x => x.dynamic || /[*?[~]|\{[^}]*(?:,|\.\.)/.test(x.value));
+        if (wrapped || unresolved) {
+          // A wrapped switch may still reach a protected branch it names.
+          let maybe = unresolved ? null : switchTarget(sub.value, args, (name) => hasBranch(gitDir, name));
+          if (maybe === BACK) maybe = before.get(repo);
+          const onto = from || (typeof maybe === 'string' && PROTECTED_BRANCHES.includes(maybe) ? maybe : null);
+          if (onto) switched.set(repo, { branch: onto, at: -1, from: null });
           else switched.delete(repo);
           before.set(repo, now);
           known = false;
@@ -898,6 +913,7 @@ function resolveBranches(cmd, sessionBranch) {
       }
       const id = BRANCH_RULES[sub.value];
       if (!id) return;
+      if (sub.value === 'pull') out.pulls++;
       const rest = words.slice(j + 1);
       if (sub.value === 'pull' ? !pullMerges(rest, effective(switched.get(repo))) : commitFree(sub.value, rest)) return;
       const rec = switched.get(repo);
@@ -999,6 +1015,10 @@ function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL) {
       const r = resolve();
       const mine = r.ops.filter(o => o.id === p.id);
       if (r.known && mine.length && mine.every(o => o.certain && !PROTECTED_BRANCHES.includes(o.branch))) continue;
+      // A pull judged by the branch it reaches (git switch master && git pull
+      // origin master): the line was read with certainty, every mention of pull
+      // is a plain git pull the reader judged, and none merges there.
+      if (p.sub === 'pull' && r.known && !mine.length && r.pulls && r.pulls === (cmd.match(/(?<![\w-])pull(?![\w-])/g) || []).length) continue;
     }
 
     const reason = p.reason.replace('{branch}', branch || '');
