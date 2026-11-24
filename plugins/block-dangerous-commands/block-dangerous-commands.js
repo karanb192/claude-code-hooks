@@ -701,10 +701,35 @@ function pipesToShell(cmd) {
   return false;
 }
 
+// The program a command runs: past assignments, keywords and wrappers (sudo,
+// env, nice ...) with their options and option values. A wrapper option this
+// does not know ends the walk on a word that is not rm, which keeps the glob.
+function programWord(words) {
+  let k = commandIndex(words);
+  while (k < words.length && !words[k].dynamic && Object.prototype.hasOwnProperty.call(WRAPPERS, base(words[k].value))) {
+    const name = base(words[k].value);
+    const [shortValue, longValue] = WRAPPERS[name];
+    k++;
+    while (k < words.length) {
+      const w = words[k].value;
+      if (w === '--') { k++; break; }
+      if (name === 'env' && /^[A-Za-z_]\w*=/.test(w)) { k++; continue; }
+      if (name === 'timeout' && /^\d/.test(w)) { k++; break; }
+      if (!w.startsWith('-') || w === '-') break;
+      k++;
+      if (w.startsWith('--')) { if (!w.includes('=') && longValue.includes(w.slice(2))) k++; continue; }
+      const letters = w.slice(1);
+      if ([...letters].findIndex((c) => shortValue.includes(c)) === letters.length - 1) k++;
+    }
+  }
+  return words[k];
+}
+
 // The line with each * or ? that an rm argument holds inside quotes or after a
-// backslash replaced by _. Text a shell or eval on the same command runs (sh -c
-// 'rm -rf ~/*') and an assigned value, which globs where it is expanded, keep
-// theirs; so does a $(...) inside double quotes, whose words are read on their own.
+// backslash replaced by _, for a command whose program is rm itself, so a file
+// named sh or eval is just a name. A shell or eval that runs text (sh -c
+// 'rm -rf ~/*'), an assigned value, which globs where it is expanded, and a
+// $(...) inside double quotes, whose words are read on their own, keep theirs.
 function quotedGlobsBlanked(cmd) {
   if (!/[*?]/.test(cmd) || !/['"\\]/.test(cmd)) return cmd;
   const read = readShell(cmd);
@@ -712,7 +737,8 @@ function quotedGlobsBlanked(cmd) {
   for (const f of read.frames) {
     for (const c of f.cmds) {
       const words = argv(c);
-      if (!words.some((w) => base(w.value) === 'rm') || words.some((w) => SHELL_NAME.test(base(w.value)) || w.value === 'eval')) continue;
+      const program = programWord(words);
+      if (!program || program.dynamic || base(program.value) !== 'rm') continue;
       for (const w of words) {
         if (/^[A-Za-z_]\w*\+?=/.test(w.lead)) continue;
         const nested = w.parts.filter((p) => p.frame);

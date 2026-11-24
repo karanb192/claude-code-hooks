@@ -65,3 +65,14 @@ describe('a quoted or narrower glob is not everything', () => {
   });
   it('still blocks a quoted star that main refuses', () => shouldBlock("rm -rf '*'", 'rm-cwd'));
 });
+
+describe('a file named like a shell is just a name', () => {
+  it('allows a quoted glob next to a file named sh or eval', () => {
+    for (const c of ["rm -f '?*' sh", "rm -f '?*' eval", "sudo -u root rm -f '?*'"]) shouldAllow(c);
+  });
+  it('still blocks a glob that a shell or eval runs', () => {
+    shouldBlock("sh -c 'rm -rf ~/*'", 'rm-home');
+    shouldBlock("eval 'rm -rf ~/*'", 'rm-home');
+    shouldBlock("bash -c \"rm -rf ~/*\" '?*'", 'rm-home');
+  });
+});
