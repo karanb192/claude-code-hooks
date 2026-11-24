@@ -235,26 +235,13 @@ function log(data) {
   } catch {}
 }
 
-// What the log keeps of a refused command: command names, flags without their values, shell
-// operators and words shaped like paths. Every other word becomes *, so a token, password or header
-// value typed inline never reaches the log file.
-const LOG_OPERATOR = /^(?:\|\|?|&&?|;|[<>]{1,2}|\d?>&\d|&>>?)$/;
-function redactCommand(command) {
+// What the log keeps of a refused call: the guard, the rule and, for Bash,
+// the command name alone. No argument text is logged, so a token or
+// password typed into the command never reaches the log file.
+function commandName(command) {
   if (typeof command !== 'string') return undefined;
-  if (!command.trim()) return '';
-  let head = true;
-  const out = [];
-  for (const word of command.trim().split(/\s+/)) {
-    if (LOG_OPERATOR.test(word)) { out.push(word); head = /^(?:\|\|?|&&?|;)$/.test(word); continue; }
-    if (head && /^[\w./-]{1,32}$/.test(word)) out.push(word);
-    // A short flag is kept only while it is too short to carry an attached value such as -pSECRET.
-    else if (/^-[A-Za-z]{1,3}$/.test(word) || /^--[a-z][a-z-]*$/.test(word)) out.push(word);
-    else if (/^--[a-z][a-z-]*=/.test(word)) out.push(word.slice(0, word.indexOf('=') + 1) + '*');
-    else if (/^(?:[~.]|\.?\.?\/)[\w./~-]*$/.test(word) || /^[\w.-]+\/[\w./-]*$/.test(word)) out.push(word);
-    else out.push('*');
-    head = false;
-  }
-  return out.join(' ').slice(0, 200);
+  const first = command.trim().split(/\s+/)[0] || '';
+  return /^[\w./-]{1,32}$/.test(first) ? path.posix.basename(first) : undefined;
 }
 
 // True when the command redirects output into a protected token:
@@ -983,8 +970,8 @@ async function main() {
     if (result.blocked) {
       const shouldAsk = ASK[result.level] === true;
       const decision = shouldAsk ? 'ask' : 'deny';
-      const target = tool_input?.file_path || redactCommand(tool_input?.command);
-      log({ level: shouldAsk ? 'ASK' : 'BLOCKED', id: result.id, priority: result.level, decision, tool: tool_name, target, session_id, cwd, permission_mode });
+      const command = tool_name === 'Bash' ? commandName(tool_input?.command) : undefined;
+      log({ level: shouldAsk ? 'ASK' : 'BLOCKED', guard: 'config-guard', id: result.id, priority: result.level, decision, tool: tool_name, command, session_id, cwd, permission_mode });
       return console.log(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -1005,6 +992,6 @@ if (require.main === module) {
 } else {
   module.exports = {
     PROTECTED_PATHS, BASH_TOKENS, LEVELS, SAFETY_LEVEL, ASK,
-    checkTool, checkFilePath, checkBashCommand, stripTextHeredocs, registeredHookScripts, redactCommand,
+    checkTool, checkFilePath, checkBashCommand, stripTextHeredocs, registeredHookScripts, commandName,
   };
 }

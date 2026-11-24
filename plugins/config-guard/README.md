@@ -83,7 +83,7 @@ From 1.2.0, a guard that cannot finish its check refuses the call instead of all
 
 ## Data & privacy
 
-Logs decisions (pattern id, tool, target, session id) to `~/.claude/hooks-logs/`. A refused Bash command is logged in redacted form: command names, short flags, long flag names, shell operators and path-shaped words stay, and every other word becomes `*`, so an inline token or password never reaches the log. No network calls; everything stays on your local machine.
+Logs decisions (guard, pattern id, level, tool, session id and, for Bash, the command name) to `~/.claude/hooks-logs/`. No path or argument text is logged, so an inline token or password never reaches the log. No network calls; everything stays on your local machine.
 
 ## Uninstall
 
