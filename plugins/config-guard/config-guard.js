@@ -139,9 +139,10 @@ const BASH_TOKENS = [
 const DELETE_VERB    = /(\brm\b|\bunlink\b|\bshred\b|\btrash\b|\bgit\s+rm\b|\bfind\b[^|;&]*\s-delete\b)/i;
 const MOVE_COPY_VERB = /\b(mv|cp|rsync|install|ln|ditto)\b/i;
 // Tools that take the file to write as an argument: downloaders with an
-// output flag, sponge, touch (creating counts) and archive extraction. patch
-// and tar -C depend on their mode, so patchWrites and tarWrites judge them.
-const WRITE_VERB     = /\b(tee|truncate|dd|sponge|touch)\b|\bcurl\b[^|;&]*\s(?:-[a-zA-Z]*o|--output(?:-dir)?)\b|\bwget\b[^|;&]*\s(?:-[a-zA-Z]*[OP]|--output-document|--directory-prefix)|\bunzip\b[^|;&]*\s-[a-zA-Z]*[dxC]\b/i;
+// output flag, sponge and touch (creating counts). patch, tar and unzip
+// depend on their mode and members, so patchWrites, tarWrites and
+// unzipWrites judge them.
+const WRITE_VERB     = /\b(tee|truncate|dd|sponge|touch)\b|\bcurl\b[^|;&]*\s(?:-[a-zA-Z]*o|--output(?:-dir)?)\b|\bwget\b[^|;&]*\s(?:-[a-zA-Z]*[OP]|--output-document|--directory-prefix)/i;
 // Short flags cluster (-Ei, -ni), GNU spells it --in-place, ruby takes -pi
 // like perl, and GNU awk is often installed as plain awk. BSD sed's -I is
 // in-place too, so sed stays case-insensitive.
@@ -233,6 +234,15 @@ function log(data) {
     const file = path.join(LOG_DIR, `${new Date().toISOString().slice(0, 10)}.jsonl`);
     fs.appendFileSync(file, JSON.stringify({ ts: new Date().toISOString(), hook: 'config-guard', ...data }) + '\n');
   } catch {}
+}
+
+// What the log keeps of a refused call: the guard, the rule and, for Bash,
+// the command name alone. No argument text is logged, so a token or
+// password typed into the command never reaches the log file.
+function commandName(command) {
+  if (typeof command !== 'string') return undefined;
+  const first = command.trim().split(/\s+/)[0] || '';
+  return /^[\w./-]{1,32}$/.test(first) ? path.posix.basename(first) : undefined;
 }
 
 // True when the command redirects output into a protected token:
@@ -349,6 +359,319 @@ function tarOutputs(args) {
     }
   }
   return { archive, side };
+}
+
+// Added to a tar or unzip command rewritten after a cd: the folder the
+// shell is in, used as the destination when the command names none. It
+// starts with a control character, so no typed word can look like it.
+const CD_MARK = '\u0001cd=';
+
+// The member names a tar extraction writes, given on its command line.
+// Options that take a value skip it (attached or as the next word); with
+// -O or --to-stdout nothing is written. A long option not known to take a
+// value is treated as a flag, so its next word counts as a member. Also
+// returns --strip-components, and whether a rename option makes the
+// destination unknown.
+const TAR_VALUE = 'bCfFgHIKLNTVX';
+const TAR_LONG_VALUE = /^--(?:file|directory|files-from|exclude|exclude-from|transform|xform|owner|group|mode|mtime|newer|newer-mtime|after-date|listed-incremental|index-file|volno-file|label|rsh-command|use-compress-program|to-command|info-script|new-volume-script|starting-file|tape-length|blocking-factor|record-size|format|quoting-style|strip-components|strip|suffix|level|sparse-version|pax-option|owner-map|group-map|warning|checkpoint-action)$/;
+function tarExtraction(args) {
+  const words = shellWords(args);
+  const members = [];
+  let options = true, strip = 0, renamed = false, dest = '', shell = '';
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (w.startsWith(CD_MARK)) { shell = w.slice(CD_MARK.length); continue; }
+    if (!options || w === '-' || !w.startsWith('-')) {
+      if (options && i === 0 && /^[a-zA-Z]+$/.test(w)) {
+        if (w.includes('O')) return { members: [] };
+        let next = i;
+        for (const c of w) if (TAR_VALUE.includes(c)) { next++; if (c === 'C' && words[next] !== undefined) dest = words[next]; }
+        i = next;
+        continue;
+      }
+      members.push(w);
+      continue;
+    }
+    if (w === '--') { options = false; continue; }
+    if (w.startsWith('--')) {
+      if (/^--to-(?:stdout|command)\b/.test(w)) return { members: [] };
+      const st = w.match(/^--strip(?:-c[a-z-]*)?(?:=(.*))?$/);
+      if (st) {
+        const v = st[1] !== undefined ? st[1] : words[++i];
+        if (/^\d{1,3}$/.test(v || '')) strip = Number(v); else renamed = true;
+        continue;
+      }
+      if (/^--(?:transform|xform)\b/.test(w)) renamed = true;
+      const dir = w.match(/^--directory(?:=(.*))?$/);
+      if (dir) { dest = dir[1] !== undefined ? dir[1] : (words[++i] || ''); continue; }
+      if (TAR_LONG_VALUE.test(w)) i++;
+      continue;
+    }
+    for (let k = 1; k < w.length; k++) {
+      if (w[k] === 'O') return { members: [] };
+      // bsdtar's -s rewrites member names.
+      if (w[k] === 's') renamed = true;
+      if (TAR_VALUE.includes(w[k])) {
+        const value = k === w.length - 1 ? words[++i] : w.slice(k + 1);
+        if (w[k] === 'C' && value !== undefined) dest = value;
+        break;
+      }
+    }
+  }
+  return { members, strip, renamed, dest: dest || shell };
+}
+
+// The members an unzip call extracts: the words after the archive name, up
+// to -x. -l, -t, -v, -z, -Z, -p and -c list, test or print without writing.
+// -j drops the folders, so each member lands under its own name.
+function unzipExtraction(args) {
+  const words = shellWords(args);
+  const members = [];
+  let archive = false, excluding = false, junk = false, dest = '', folderStop = false, shell = '';
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (w.startsWith(CD_MARK)) { shell = w.slice(CD_MARK.length); continue; }
+    if (w.startsWith('-') && w !== '-') {
+      excluding = false;
+      for (let k = 1; k < w.length; k++) {
+        const c = w[k];
+        if ('ltvzZpc'.includes(c)) return { members: [] };
+        if (c === 'j') junk = true;
+        if (c === 'W') folderStop = true;
+        if (c === 'x') { excluding = true; break; }
+        if ('dPOI'.includes(c)) {
+          const value = k === w.length - 1 ? words[++i] : w.slice(k + 1);
+          if (c === 'd' && value !== undefined) dest = value;
+          break;
+        }
+      }
+      continue;
+    }
+    if (excluding) continue;
+    if (!archive) { archive = true; continue; }
+    members.push(w);
+  }
+  return { members, junk, dest: dest || shell, folderStop };
+}
+
+function unzipWrites(cmd) {
+  for (const seg of cmd.split(/[|;&]/)) {
+    const m = /\bunzip\b/i.exec(seg);
+    if (m && /\s-[a-zA-Z]*[dxC]\b/i.test(seg.slice(m.index + m[0].length))) return true;
+  }
+  return false;
+}
+
+// Archive-side wildcards: * and ? match any character, / included, a
+// [...] class one character, \ escapes. A pattern compiles to a list of
+// steps for a small automaton, so whether it can match a name of a given
+// shape is decided without listing names.
+// With unzip -W, * and ? stop at a / and ** crosses folders.
+function globSteps(glob, folderStop = false) {
+  const steps = [];
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === '*') {
+      const wide = !folderStop || glob[i + 1] === '*';
+      while (glob[i + 1] === '*') i++;
+      const last = steps[steps.length - 1];
+      if (last && last.star) last.wide = last.wide || wide;
+      else steps.push({ star: true, wide });
+      continue;
+    }
+    if (c === '?') { steps.push({ test: (ch) => !folderStop || ch !== '/' }); continue; }
+    if (c === '\\' && i + 1 < glob.length) { const lit = glob[++i]; steps.push({ test: (ch) => ch === lit, lit }); continue; }
+    if (c === '[') {
+      const end = glob.indexOf(']', i + 2);
+      if (end > 0) {
+        let body = glob.slice(i + 1, end);
+        const neg = body[0] === '!' || body[0] === '^';
+        if (neg) body = body.slice(1);
+        const has = (ch) => {
+          for (let k = 0; k < body.length; k++) {
+            if (body[k + 1] === '-' && k + 2 < body.length) { if (ch >= body[k] && ch <= body[k + 2]) return true; k += 2; }
+            else if (body[k] === ch) return true;
+          }
+          return false;
+        };
+        steps.push({ test: (ch) => has(ch) !== neg });
+        i = end;
+        continue;
+      }
+    }
+    steps.push({ test: (ch) => ch === c, lit: c });
+  }
+  return steps;
+}
+
+function globClose(steps, states) {
+  const out = new Set(states);
+  for (const s of states) for (let k = s; k < steps.length && steps[k].star; k++) out.add(k + 1);
+  return out;
+}
+
+function globStep(steps, states, ch) {
+  const next = new Set();
+  for (const s of states) {
+    if (s >= steps.length) continue;
+    if (steps[s].star) { if (steps[s].wide || ch !== '/') next.add(s); }
+    else if (steps[s].test(ch)) next.add(s + 1);
+  }
+  return globClose(steps, next);
+}
+
+// States the pattern can be in after some name that is empty or ends in a
+// folder, when that leading name may be anything.
+function globAnyFolder(steps) {
+  const atFolder = globClose(steps, [0]);
+  const seen = new Set();
+  const queue = [...atFolder].map((s) => [s, true]);
+  while (queue.length) {
+    const [s, slash] = queue.pop();
+    const key = `${s}:${slash}`;
+    if (seen.has(key) || s >= steps.length) continue;
+    seen.add(key);
+    const step = steps[s];
+    let moves;
+    if (step.star) moves = step.wide ? [[s, true], [s, false]] : [[s, false]];
+    else if (step.lit !== undefined) moves = [[s + 1, step.lit === '/']];
+    else moves = step.test('/') ? [[s + 1, true], [s + 1, false]] : [[s + 1, false]];
+    for (const [to, sl] of moves) {
+      for (const t of globClose(steps, [to])) {
+        if (sl) atFolder.add(t);
+        queue.push([t, sl]);
+      }
+    }
+  }
+  return atFolder;
+}
+
+// Whether the pattern can match prefix + mid + suffix, where the prefix is
+// empty ('none') or any folders ('any'), and the suffix is empty ('none')
+// or anything ('any').
+function globCan(glob, prefix, mid, suffix) {
+  const { steps } = glob;
+  let states = prefix === 'any' ? glob.anyFolder : glob.start;
+  for (const ch of mid) {
+    states = globStep(steps, states, ch);
+    if (!states.size) return false;
+  }
+  return suffix === 'any' ? states.size > 0 : states.has(steps.length);
+}
+
+// Protected paths an archive member could land on, at any folder depth. A
+// folder covers itself and everything under it; a file only its own name.
+const PROTECTED_FORMS = [
+  ['.claude/settings.json', false], ['.claude/settings.local.json', false], ['managed-settings.json', false],
+  ['.claude/hooks', true], ['hooks.json', false], ['.mcp.json', false], ['.claude.json', false],
+  ['.claude-plugin', true], ['.codex-plugin', true], ['CLAUDE.md', false], ['CLAUDE.local.md', false],
+  ['AGENTS.md', false], ['AGENTS.override.md', false], ['.claude/rules', true], ['.claude/agents', true],
+  ['.claude/commands', true], ['.claude/plugins', true], ['.claude/subagent-spawn-cap', true],
+];
+
+// Where each extracted member lands: the -C or -d folder, then the member
+// after --strip-components or -j. A member whose destination cannot be
+// known is judged by its own name.
+function archiveExtractions(cmd) {
+  const found = [];
+  // A destination built from an expansion is unknown: judge members as named.
+  const known = (dest) => (/[$`()]/.test(dest || '') ? '' : dest || '');
+  for (const seg of unquotedSegments(cmd.replace(/\\\r?\n/g, ' '))) {
+    const tar = TAR_RUN.exec(seg);
+    if (tar && TAR_EXTRACT.test(tar[1])) {
+      const x = tarExtraction(tar[1]);
+      for (const m of x.members) found.push({ member: m, strip: x.renamed ? 0 : x.strip, junk: false, dest: known(x.dest), folderStop: false });
+    }
+    const zip = /(?<![\w.])unzip\b([\s\S]*)/i.exec(seg);
+    if (zip) {
+      const x = unzipExtraction(zip[1]);
+      for (const m of x.members) found.push({ member: m, strip: 0, junk: x.junk, dest: known(x.dest), folderStop: x.folderStop });
+    }
+  }
+  return found;
+}
+
+function homePath(p) {
+  return /[$`]/.test(p) ? p : p.replace(/^~(?=\/|$)/, HOME_DIR);
+}
+
+function landing(member, strip, junk, dest) {
+  const into = (rel) => (dest ? joinDir(homePath(dest), rel) || rel : rel);
+  // A name built from a variable cannot be followed through the strip.
+  if (/[$`]/.test(member)) return into(joinDir('', member));
+  const named = homePath(member).replace(/(.)\/+$/, '$1');
+  const parts = joinDir('', named).split('/').filter((p) => p !== '');
+  if (junk) return parts.length ? into(parts[parts.length - 1]) : null;
+  if (parts.length <= strip) return null;
+  const rel = parts.slice(strip).join('/');
+  return into(named.startsWith('/') && !strip ? '/' + rel : rel);
+}
+
+// Whether a wildcard member can land on a protected form, given where the
+// extraction writes and how it renames members.
+function globLands(glob, strip, junk, dest, form, folder) {
+  const deep = strip > 0 ? 'any' : 'none';
+  const covers = (prefix, rest) => (folder
+    ? globCan(glob, prefix, rest + '/', 'any') || globCan(glob, prefix, rest, 'none')
+    : globCan(glob, prefix, rest, 'none'));
+  // The form at any depth inside the member.
+  if (!junk && covers('any', form)) return true;
+  if (junk && !form.includes('/') && globCan(glob, 'any', form, 'none')) return true;
+  // The form starting inside the destination folder.
+  const d = dest ? joinDir('', homePath(dest)).split('/').filter(Boolean) : [];
+  const f = form.split('/');
+  for (let k = 1; k <= Math.min(d.length, f.length); k++) {
+    if (d.slice(d.length - k).join('/') !== f.slice(0, k).join('/')) continue;
+    const rest = f.slice(k).join('/');
+    if (!rest) {
+      if (folder) return true;
+      continue;
+    }
+    if (junk) {
+      if (!rest.includes('/') && globCan(glob, 'any', rest, folder ? 'any' : 'none')) return true;
+    } else if (covers(deep, rest)) return true;
+  }
+  return false;
+}
+
+// The protected-path rule an extraction writes, if any.
+function archiveWrite(cmd, threshold, tokens) {
+  const found = archiveExtractions(cmd);
+  if (!found.length) return null;
+  const active = tokens.filter((t) => LEVELS[t.level] <= threshold);
+  const forms = PROTECTED_FORMS
+    .map(([form, folder]) => [form, folder, active.find((t) => t.regex.test(' ' + (folder ? form + '/x' : form)))])
+    .filter(([, , t]) => t);
+  const seen = new Set();
+  for (const { member, strip, junk, dest, folderStop } of found) {
+    const key = `${strip}:${junk}:${folderStop}:${dest}:${member}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (!/[*?[]/.test(member)) {
+      const to = landing(member, strip, junk, dest);
+      const hit = to && active.find((t) => t.regex.test(' ' + to));
+      if (hit) return hit;
+      continue;
+    }
+    // The pattern text itself is still judged as a path, as before.
+    const named = active.find((t) => t.regex.test(' ' + member));
+    if (named) return named;
+    // A pattern this long is not worth the work of judging: refuse it.
+    if (member.length > 512 && forms.length) return forms[0][2];
+    const steps = globSteps(member, folderStop);
+    const glob = { steps, start: globClose(steps, [0]), anyFolder: globAnyFolder(steps) };
+    for (const [form, folder, t] of forms) if (globLands(glob, strip, junk, dest, form, folder)) return t;
+  }
+  return null;
+}
+
+// An archive extraction that writes a .claude folder by name.
+function extractsClaudeDir(cmd) {
+  return archiveExtractions(cmd).some(({ member, strip, junk, dest }) => {
+    if (/[*?[]/.test(member) && CLAUDE_DIR_OPERAND.test(' ' + member)) return true;
+    const to = landing(member, strip, junk, dest);
+    return to !== null && CLAUDE_DIR_OPERAND.test(' ' + to);
+  });
 }
 
 function tarWrites(cmd, tokenRegex) {
@@ -618,7 +941,7 @@ function rawWords(text) {
 const GIT_VALUE_OPTION = /^--(?:git-dir|work-tree|namespace|super-prefix|config-env)$/;
 function gitHead(text) {
   const words = rawWords(text);
-  if (!words.length || !/^git$/i.test(words[0].value)) return null;
+  if (!words.length || !/(?:^|\/)git$/i.test(words[0].value)) return null;
   const dirs = [];
   let other = false;
   for (let i = 1; i < words.length; i++) {
@@ -633,6 +956,118 @@ function gitHead(text) {
     if (/^-c./.test(v) || /^--(?:git-dir|work-tree|namespace|super-prefix|config-env)=/.test(v)) { other = true; continue; }
     if (v.startsWith('-')) continue;
     return { sub: v, end: w.end, dirs, other };
+  }
+  return null;
+}
+
+// Files git writes through an output option: --output on diff, log, show
+// and the other diff commands, -o and --output-directory on format-patch,
+// -o or --output on archive, and the file git bundle create writes. Paths
+// after git -C <dir> resolve there.
+// Subcommands that reject --output as an unknown option (checked against
+// git 2.x), so a search pattern or message that reads --output=... is
+// data. blame, cherry-pick, revert, shortlog, reflog and rev-list do open
+// an --output file, so they are not listed.
+const GIT_NO_OUTPUT = /^(?:grep|commit|add|rm|mv|status|checkout|switch|restore|branch|tag|fetch|pull|push|merge|rebase|reset|clone|init|config|remote|cat-file|ls-files|ls-tree|rev-parse|show-ref|clean|gc|describe|notes)$/i;
+// Options of diff and log whose value is the next word.
+const GIT_TEXT_VALUE = /^(?:--grep|--author|--committer|--grep-reflog|-S|-G)$/;
+// Wrappers that run the next command, with the options that take a value.
+// An option a wrapper is not known to have is tried both ways, as a flag
+// and as taking the next word, so the command after it is never missed.
+const WRAPPER_VALUE = {
+  sudo: /^-[ugpCDrtTURh]$|^--(?:user|group|prompt|close-from|chdir|role|type|command-timeout|other-user|chroot|host)$/,
+  doas: /^-[uC]$/,
+  env: /^-[uCPS]$|^--(?:unset|chdir|split-string)$/,
+  command: null,
+  exec: /^-a$/,
+  nice: /^-n$|^--adjustment$/,
+  nohup: null,
+  time: /^-[fo]$|^--(?:format|output)$/,
+  timeout: /^-[sk]$|^--(?:signal|kill-after)$/,
+  // -e, -i and -l take their value only when attached.
+  xargs: /^-[aEILnPsd]$|^--(?:arg-file|max-args|max-procs|max-chars|delimiter|process-slot-var)$/,
+};
+const WRAPPER_POSITIONAL = { timeout: 1 };
+function commandStarts(words, i = 0, budget = { n: 16 }) {
+  const out = [];
+  for (;;) {
+    while (i < words.length && /^[A-Za-z_]\w*=/.test(words[i].value)) i++;
+    if (i >= words.length) return out;
+    const name = path.posix.basename(words[i].value);
+    if (!(name in WRAPPER_VALUE)) { out.push(i); return out; }
+    const takes = WRAPPER_VALUE[name];
+    let j = i + 1;
+    while (j < words.length) {
+      const v = words[j].value;
+      if (v === '--') { j++; break; }
+      if (!v.startsWith('-') || v === '-') break;
+      if (v.includes('=') && v.startsWith('--')) { j++; continue; }
+      if (takes && takes.test(v)) { j += 2; continue; }
+      // An unknown option: also try it as taking a value, a bounded number
+      // of times; the path that reads it as a flag always continues.
+      if (budget.n-- > 0) out.push(...commandStarts(words, j + 2, budget));
+      j++;
+    }
+    i = j + (WRAPPER_POSITIONAL[name] || 0);
+  }
+}
+
+// The git commands a segment runs, each from its git word, after any
+// wrappers, their options and assignments.
+function gitCommandTexts(seg) {
+  const words = rawWords(seg);
+  return [...new Set(commandStarts(words))]
+    .filter((k) => k < words.length && /(?:^|\/)git$/i.test(words[k].value))
+    .map((k) => seg.slice(words[k].start));
+}
+
+function gitOutputs(cmd) {
+  const out = [];
+  for (const seg of unquotedSegments(cmd.replace(/\\\r?\n/g, ' '))) for (const rest of gitCommandTexts(seg.trim())) {
+    const git = gitHead(rest);
+    if (!git || GIT_NO_OUTPUT.test(git.sub)) continue;
+    let dir = '';
+    for (const d of git.dirs) dir = joinDir(dir, d.value);
+    const shortO = /^(?:format-patch|archive)$/i.test(git.sub);
+    const words = shellWords(rest.slice(git.end));
+    // Both the path as typed and its normalised form, in the -C folder.
+    const at = (v) => { out.push(v); const n = joinDir(dir, v); if (n) out.push(n); };
+    // After a cd the rewritten command reads dir/create, so match the last part.
+    if (/^bundle$/i.test(git.sub) && /(?:^|\/)create$/.test(words[0] || '')) {
+      // The file is the first operand after the options. A separate
+      // --version value may stand before it, so the next operand counts too.
+      let separate = false;
+      for (let i = 1; i < words.length; i++) {
+        const w = words[i];
+        if (w === '--version') { separate = true; continue; }
+        if (w.startsWith('-') && w !== '-' && w !== '--') continue;
+        if (w === '--') { if (words[i + 1] !== undefined) at(words[i + 1]); break; }
+        at(w);
+        if (!separate) break;
+        separate = false;
+      }
+    }
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i];
+      if (w === '--') break;
+      if (GIT_TEXT_VALUE.test(w)) { i++; continue; }
+      let v;
+      const long = w.match(/^--(output|output-d[a-z-]*)(?:=(.*))?$/);
+      if (long) v = long[2] !== undefined ? long[2] : words[++i];
+      else if (shortO && /^-o/.test(w)) v = w.length > 2 ? w.slice(2) : words[++i];
+      if (v === undefined) continue;
+      at(v);
+    }
+  }
+  return out;
+}
+
+// The protected-path rule a git output option writes, if any.
+function gitWrite(cmd, threshold, tokens) {
+  if (!/git/i.test(cmd)) return null;
+  const outputs = gitOutputs(cmd);
+  for (const t of tokens) {
+    if (LEVELS[t.level] <= threshold && outputs.some((v) => t.regex.test(' ' + v))) return t;
   }
   return null;
 }
@@ -763,8 +1198,22 @@ function prefixWords(seg, dir) {
   const wrap = seg.match(WRAPPERS)[0];
   const rest = seg.slice(wrap.length);
   const git = gitHead(rest);
-  const head = git ? rest.slice(0, git.end) : (rest.match(/^\S*/) || [''])[0];
-  return wrap + head + prefixArgs(rest.slice(head.length), dir);
+  const first = (rest.match(/^\S*/) || [''])[0];
+  // unzip and tar write members into the folder the shell is in, so the
+  // rewritten command names it as their destination too.
+  const quoted = /[^\w.\/~-]/.test(dir) ? `"${dir}"` : dir;
+  const into = /^(?:unzip|(?:bsd)?tar)$/.test(path.posix.basename(first)) ? ` ${CD_MARK}${quoted}` : '';
+  const plain = prefixArgsBoth(wrap + first, rest.slice(first.length), dir, into);
+  if (!git) return plain;
+  const withHead = prefixArgsBoth(wrap + rest.slice(0, git.end), rest.slice(git.end), dir);
+  // git named by a path keeps the plain reading too, so nothing the
+  // narrower reading misses goes unchecked.
+  return gitByPath(rest) ? `${plain} ; ${withHead}` : withHead;
+}
+
+function gitByPath(text) {
+  const first = rawWords(text)[0];
+  return !!first && !/^git$/i.test(first.value);
 }
 
 // git -C <dir> works like a cd for its own paths: drop the -C options and
@@ -785,14 +1234,27 @@ function rewriteGitDir(seg, dir) {
     kept.push(rest.slice(words[i].start, words[i].end));
   }
   const args = rest.slice(git.end);
-  return wrap + kept.join(' ') + (eff && eff !== '.' ? prefixArgs(args, eff) : args);
+  return eff && eff !== '.' ? prefixArgsBoth(wrap + kept.join(' '), args, eff) : wrap + kept.join(' ') + args;
 }
-function prefixArgs(seg, dir) {
+const PREFIX_WORD = /(^|[\s>]|(?<=\s--?[\w-]+=)|(?<=\s-[a-zA-Z]*[dC]))(["']?)((?:\.{1,2}\/|[A-Za-z0-9_]|\.[\w-])[\w.\/-]*)/g;
+const PREFIX_WORD_O = /(^|[\s>]|(?<=\s--?[\w-]+=)|(?<=\s-o)|(?<=\s-[a-zA-Z]*[dC]))(["']?)((?:\.{1,2}\/|[A-Za-z0-9_]|\.[\w-])[\w.\/-]*)/g;
+
+// -oNAME is an output file for git format-patch, git archive and many other
+// tools, but a cluster of flags for unzip (-od). Both readings are checked.
+function prefixArgsBoth(head, seg, dir, tail = '') {
+  const read = head + prefixArgs(seg, dir) + tail;
+  if (!/\s-o[^\s]/.test(seg)) return read;
+  return `${read} ; ${head}${prefixArgs(seg, dir, true)}${tail}`;
+}
+
+function prefixArgs(seg, dir, attachedO = false) {
   const base = dir.replace(/\/$/, '');
   // A folder with spaces is quoted, so the rewritten word stays one word.
   const open = /[^\w.\/~-]/.test(base) ? '"' : '';
-  // Quoted words and ./ or ../ paths are relative too.
-  return seg.replace(/(^|[\s>])(["']?)((?:\.{1,2}\/|[A-Za-z0-9_]|\.[\w-])[\w.\/-]*)/g, (m, pre, quote, word) =>
+  // Quoted words, ./ or ../ paths, --option=value values and an attached
+  // -d or -C folder are relative too.
+  const re = attachedO ? PREFIX_WORD_O : PREFIX_WORD;
+  return seg.replace(re, (m, pre, quote, word) =>
     quote ? `${pre}${quote}${base}/${word}` : `${pre}${open}${base}/${word}${open}`);
 }
 
@@ -856,6 +1318,10 @@ function withCdTargets(cmd) {
         if (r !== seg) changed = true;
         parts.push(r);
       }
+      if (gitByPath(seg.slice(seg.match(WRAPPERS)[0].length))) {
+        if (dirs.includes('')) parts.push(seg);
+        for (const d of dirs) if (d !== '') { changed = true; parts.push(prefixWords(seg, d)); }
+      }
       continue;
     }
     if (dirs.includes('')) parts.push(seg);
@@ -902,8 +1368,19 @@ function checkCommandText(rawCmd, safetyLevel, cwd, dirMoves = true) {
       return { blocked: true, id: t.id, level: t.level, reason: `deleting protected config: ${t.reason}` };
     if (MOVE_COPY_VERB.test(cmd))
       return { blocked: true, id: t.id, level: t.level, reason: `moving/copying/linking a protected config path: ${t.reason}` };
-    if (WRITE_VERB.test(cmd) || patchWrites(cmd) || tarWrites(cmd, t.regex))
+    if (WRITE_VERB.test(cmd) || patchWrites(cmd) || tarWrites(cmd, t.regex) || unzipWrites(cmd))
       return { blocked: true, id: t.id, level: t.level, reason: `writing to protected config: ${t.reason}` };
+  }
+  if (extractsClaudeDir(cmd)) {
+    return { blocked: true, id: 'claude-dir', level: 'critical', reason: 'extracting a .claude folder from an archive overwrites its settings and hooks' };
+  }
+  const archived = archiveWrite(cmd, threshold, [...BASH_TOKENS, ...registeredHookTokens(cwd)]);
+  if (archived) {
+    return { blocked: true, id: archived.id, level: archived.level, reason: `extracting an archive member onto protected config: ${archived.reason}` };
+  }
+  const gitOut = gitWrite(cmd, threshold, [...BASH_TOKENS, ...registeredHookTokens(cwd)]);
+  if (gitOut) {
+    return { blocked: true, id: gitOut.id, level: gitOut.level, reason: `git output option writes protected config: ${gitOut.reason}` };
   }
   const dirChange = claudeDirChange(cmd, cwd, dirMoves);
   if (dirChange === true) {
@@ -961,8 +1438,8 @@ async function main() {
     if (result.blocked) {
       const shouldAsk = ASK[result.level] === true;
       const decision = shouldAsk ? 'ask' : 'deny';
-      const target = tool_input?.file_path || tool_input?.command?.slice(0, 100);
-      log({ level: shouldAsk ? 'ASK' : 'BLOCKED', id: result.id, priority: result.level, decision, tool: tool_name, target, session_id, cwd, permission_mode });
+      const command = tool_name === 'Bash' ? commandName(tool_input?.command) : undefined;
+      log({ level: shouldAsk ? 'ASK' : 'BLOCKED', guard: 'config-guard', id: result.id, priority: result.level, decision, tool: tool_name, command, session_id, cwd, permission_mode });
       return console.log(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -973,8 +1450,10 @@ async function main() {
     }
     console.log('{}');
   } catch (e) {
-    log({ level: 'ERROR', error: e.message });
-    console.log(data !== null && typeof data === 'object' ? guardError(e) : '{}');
+    // A JSON parse error quotes the input it failed on, so log a fixed text.
+    const parsed = data !== null && typeof data === 'object';
+    log({ level: 'ERROR', error: parsed ? e.message : 'hook input is not valid JSON' });
+    console.log(parsed ? guardError(e) : '{}');
   }
 }
 
@@ -983,6 +1462,6 @@ if (require.main === module) {
 } else {
   module.exports = {
     PROTECTED_PATHS, BASH_TOKENS, LEVELS, SAFETY_LEVEL, ASK,
-    checkTool, checkFilePath, checkBashCommand, stripTextHeredocs, registeredHookScripts,
+    checkTool, checkFilePath, checkBashCommand, stripTextHeredocs, registeredHookScripts, commandName,
   };
 }
