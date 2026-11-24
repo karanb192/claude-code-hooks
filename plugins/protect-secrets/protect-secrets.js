@@ -1237,14 +1237,23 @@ function maskTemplates(cmd) {
 
 // The log names the program a refused command runs and nothing of its arguments, the same record
 // guard-pack writes: a token, password or header value typed inline never reaches the log file.
+// A declaration builtin (export, readonly, declare, typeset, local) is logged as itself, since the
+// word after it is an argument. When the program is not plain text, no name is logged.
+const LOG_PASS = new Set(['!', '{', '(', 'if', 'then', 'else', 'elif', 'do', 'while', 'until', 'time']);
+const LOG_DECLARATIONS = new Set(['export', 'readonly', 'declare', 'typeset', 'local']);
 function commandName(command) {
   if (typeof command !== 'string' || !command.trim()) return undefined;
   const cmd = readShell(command).top.cmds[0];
   if (!cmd) return undefined;
-  const words = argv(cmd);
-  const w = words[commandIndex(words)];
-  const name = w && !w.dynamic ? base(w.value) : '';
-  return /^[\w.+-]{1,40}$/.test(name) ? name : '?';
+  for (const w of argv(cmd)) {
+    if (w.dynamic || w.spans.length) return undefined;
+    if (LOG_DECLARATIONS.has(w.value)) return w.value;
+    if (LOG_PASS.has(w.value) || /^-p$/.test(w.value) || /^[A-Za-z_]\w*\+?=/.test(w.value)) continue;
+    if (KEYWORDS.has(w.value)) return undefined;
+    const name = base(w.value);
+    return /^[\w.+-]{1,40}$/.test(name) ? name : undefined;
+  }
+  return undefined;
 }
 
 function check(toolName, toolInput, safetyLevel = SAFETY_LEVEL) {
@@ -1316,7 +1325,8 @@ async function main() {
     }
     console.log('{}');
   } catch (e) {
-    log({ level: 'ERROR', error: e.message });
+    // A parse error message quotes the input, so the log keeps a fixed description instead.
+    log({ level: 'ERROR', error: data === undefined ? 'hook input is not valid JSON' : `check failed (${e && e.name})` });
     console.log(data !== null && typeof data === 'object' ? guardError(e) : '{}');
   }
 }
