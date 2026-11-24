@@ -60,8 +60,13 @@ describe('dot globs after other operands, with a trailing slash, and their bread
     for (const c of ['rm x .*', 'rm a b .[!.]*', 'rm x *']) shouldBlock(c, 'rm-cwd');
     shouldBlock('rm x ~/.* y', 'rm-home');
   });
-  it('allows a dot glob that needs three or more characters after the dot', () => {
-    for (const c of ['rm -rf ~/.????????????*', 'rm -rf ~/.???*']) shouldAllow(c);
+  it('blocks a dot glob made only of wildcards, whatever the ? count', () => {
+    for (const c of ['rm -rf ~/.???*', 'rm -rf ~/.????*', 'rm -rf ~/.[a-z]*', 'rm -rf ~/.[[:alpha:]]*', 'rm -rf ~/.?']) shouldBlock(c, 'rm-home');
+    shouldBlock('rm -rf .???*', 'rm-cwd');
+  });
+  it('still refuses a long run of ? on purpose', () => shouldBlock('rm -rf ~/.????????????*', 'rm-home'));
+  it('allows a dot glob with a literal character after the dot', () => {
+    for (const c of ['rm -rf ~/.cache*', 'rm -rf ~/.c*', 'rm -rf ~/.*rc', 'rm -f .*.swp', 'rm -f .env.*']) shouldAllow(c);
   });
   it('allows a quoted bracket expression, which is literal', () => shouldAllow("rm -rf ~/.'[!.]'*"));
   it('allows a dot glob in another command after rm', () => {
