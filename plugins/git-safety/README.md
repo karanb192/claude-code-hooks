@@ -34,7 +34,7 @@ Export configuration variables before launching Codex. An ask-mode match becomes
 
 Blocked at the default `high` level:
 
-- `git push` naming `main` or `master` as a ref (`origin main`, `HEAD:main`, `+main`, `refs/heads/main`, `heads/main`; any flags). A branch that only contains the word, such as `my-main-feature`, is not blocked
+- `git push` naming `main` or `master` as a ref (`origin main`, `HEAD:main`, `+main`, `refs/heads/main`, `heads/main`; any flags; also inside a subshell, as in `(cd repo && git push origin main)`, or right before a redirect). A branch that only contains the word, such as `my-main-feature`, is not blocked
 - `git branch -d` / `-D` / `--delete` on `main` or `master`, with any other flags or branch names in the same call (`-d -f main`, `-Dq main`, `-D old main`)
 - `git commit`, `git merge`, `git rebase`, `git reset`, `git push` while the current branch **is** `main` or `master`
 - `gh pr merge`, `gh pr close`, `gh issue close`, `gh release delete`, `gh repo delete`, also with flags such as `-R owner/repo` between the two words

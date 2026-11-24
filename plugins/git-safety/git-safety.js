@@ -64,14 +64,15 @@ const PATTERNS = [
   // -f may sit in a short-flag cluster (-fu, -uf), but not after -o, whose value is the rest of the word.
   // A refspec with a leading + (origin +feature) force-updates that ref. flags is the rule without
   // that branch: when only a + word matched, plusIsPushOption may waive it.
-  { level: 'strict', id: 'force-push',              segment: true, regex: new RegExp(GIT + 'push\\b[^;&|\\n]*\\s["\']?(?:(?:--force|-[A-Za-eg-np-z0-9]*f[A-Za-z0-9]*)["\']?(?=\\s|$|[;&|"\'])|\\+[^\\s;&|])'), flags: new RegExp(GIT + 'push\\b[^;&|\\n]*\\s["\']?(?:--force|-[A-Za-eg-np-z0-9]*f[A-Za-z0-9]*)["\']?(?=\\s|$|[;&|"\'])'), reason: 'Force-pushing is not allowed' },
+  { level: 'strict', id: 'force-push',              segment: true, regex: new RegExp(GIT + 'push\\b[^;&|\\n]*\\s["\']?(?:(?:--force|-[A-Za-eg-np-z0-9]*f[A-Za-z0-9]*)["\']?(?=\\s|$|[;&|"\')<>])|\\+[^\\s;&|])'), flags: new RegExp(GIT + 'push\\b[^;&|\\n]*\\s["\']?(?:--force|-[A-Za-eg-np-z0-9]*f[A-Za-z0-9]*)["\']?(?=\\s|$|[;&|"\')<>])'), reason: 'Force-pushing is not allowed' },
 
   // HIGH - complementary coverage the sibling hook does not provide
 
   // Block pushing directly to a protected branch by name
   // The branch as a whole ref (origin main, HEAD:main, +main, refs/heads/main, heads/main), so my-main-feature is not main.
-  { level: 'high', id: 'push-main',                 segment: true, regex: new RegExp(GIT + 'push\\b[^;&|\\n]*[\\s:+"\'](?:(?:refs\\/)?heads\\/)?main(?=$|[\\s;&|:"\'])'),   reason: 'Pushing to main is not allowed' },
-  { level: 'high', id: 'push-master',               segment: true, regex: new RegExp(GIT + 'push\\b[^;&|\\n]*[\\s:+"\'](?:(?:refs\\/)?heads\\/)?master(?=$|[\\s;&|:"\'])'), reason: 'Pushing to master is not allowed' },
+  // A ref ends at a space, separator, quote, closing paren or redirect: (cd repo && git push origin main).
+  { level: 'high', id: 'push-main',                 segment: true, regex: new RegExp(GIT + 'push\\b[^;&|\\n]*[\\s:+"\'](?:(?:refs\\/)?heads\\/)?main(?=$|[\\s;&|:"\')<>])'),   reason: 'Pushing to main is not allowed' },
+  { level: 'high', id: 'push-master',               segment: true, regex: new RegExp(GIT + 'push\\b[^;&|\\n]*[\\s:+"\'](?:(?:refs\\/)?heads\\/)?master(?=$|[\\s;&|:"\')<>])'), reason: 'Pushing to master is not allowed' },
 
   // Block deleting protected branches locally: a delete flag anywhere in the call (-d, -D, -Dq,
   // --delete) and main or master as any whole branch word (-d -f main, -D old main, -D -- main).
@@ -598,6 +599,29 @@ function shellViews(cmd) {
 }
 // <<< shell-reading
 
+// Inside quotes, ( ) < > are part of the ref, not shell operators: git accepts
+// 'main)fix' and 'master<preview' as branch names, so they cannot end a ref.
+// Only the push rules read this copy, and each also runs without the paren and
+// redirect boundary on the unmasked copy, so a quote this reader pairs
+// differently from bash ($'\'', an apostrophe in a heredoc) cannot hide a push.
+const REF_RULES = new Set(['force-push', 'push-main', 'push-master']);
+const unbounded = (re) => re && new RegExp(re.source.split(')<>]').join(']'));
+for (const p of PATTERNS) if (REF_RULES.has(p.id)) { p.plain = unbounded(p.regex); p.plainFlags = unbounded(p.flags); }
+function maskQuotedOperators(s) {
+  let out = '';
+  let q = '';
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '\\' && q !== "'" && i + 1 < s.length) { out += ch + s[++i]; continue; }
+    if (q) {
+      if (ch === q) q = '';
+      else if (/[()<>]/.test(ch)) { out += '_'; continue; }
+    } else if (ch === '"' || ch === "'") q = ch;
+    out += ch;
+  }
+  return out;
+}
+
 const PUSH_FLAGS = new Set(['--verbose', '--quiet', '--dry-run', '--porcelain', '--all', '--branches', '--mirror', '--tags', '--follow-tags', '--no-follow-tags', '--atomic', '--no-atomic', '--verify', '--no-verify', '--set-upstream', '--thin', '--no-thin', '--progress', '--no-progress', '--prune', '--no-prune', '--force', '--force-with-lease', '--no-force-with-lease', '--force-if-includes', '--no-force-if-includes', '--delete', '--ipv4', '--ipv6', '--signed', '--no-signed', '--no-recurse-submodules']);
 const PUSH_VALUE_OPTS = new Set(['--repo', '--receive-pack', '--exec', '--recurse-submodules']);
 
@@ -631,11 +655,12 @@ function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL) {
   const threshold = LEVELS[safetyLevel] || LEVELS.high;
   // bash removes a backslash-newline outright, joining the two lines.
   cmd = cmd.replace(/\\\r?\n/g, '');
-  const views = shellViews(cmd);
+  const views = shellViews(cmd).map(v => ({ ...v, ref: maskQuotedOperators(v.masked) }));
   for (const p of PATTERNS) {
     if (LEVELS[p.level] > threshold) continue;
-    if (!views.some(v => p.regex.test(p.segment ? v.masked : v.text))) continue;
-    if (p.flags && !views.some(v => p.flags.test(v.masked)) && plusIsPushOption(cmd)) continue;
+    const view = (v) => (!p.segment ? v.text : REF_RULES.has(p.id) ? v.ref : v.masked);
+    if (!views.some(v => p.regex.test(view(v)) || (p.plain && p.plain.test(v.masked)))) continue;
+    if (p.flags && !views.some(v => p.flags.test(view(v)) || p.plainFlags.test(v.masked)) && plusIsPushOption(cmd)) continue;
 
     if (p.branchOnly) {
       if (!branch) branch = getCurrentBranch();
