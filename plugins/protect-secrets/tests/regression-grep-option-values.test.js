@@ -32,6 +32,12 @@ const REFUSED = [
   ['grep -d $M -A 3 foo | llm', 'strict'],
   ['grep -A $N foo | llm', 'strict'],
   ['grep -A 3 foo - src/a.ts | llm', 'strict'],
+  // A glob or brace can expand to file operands after the pattern.
+  ['ps | env grep -A 3 foo * | llm', 'strict'],
+  ['env grep -A 3 *.ts | llm', 'strict'],
+  ['grep -A 3 foo *.ts | llm', 'strict'],
+  ['env grep -A 3 {foo,src/app.ts} | llm', 'strict'],
+  ['grep -m 1 foo ? | llm', 'strict'],
 ];
 
 const ALLOWED = [

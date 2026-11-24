@@ -905,6 +905,14 @@ function grepWordIndex(words) {
   }
   return k < words.length ? k : -1;
 }
+function expandsToMany(word, src) {
+  for (let p = word.start; p < word.end; p++) {
+    if (!/[*?[{]/.test(src[p])) continue;
+    if (word.spans.some(s => p >= s.start && p < s.end)) continue;
+    return true;
+  }
+  return false;
+}
 function setAsideStdinGrep(text) {
   if (!/grep/.test(text)) return text;
   const spots = [];
@@ -916,6 +924,8 @@ function setAsideStdinGrep(text) {
       if (!w || w.dynamic || w.spans.length || !GREP_FAMILY.has(base(w.value))) continue;
       // An input redirect makes stdin a file, so such a grep still reads one.
       if (cmd.words.some(x => x.target && /^<(?:&|>)?$/.test(x.target))) continue;
+      // A glob or brace the shell expands can turn one word into several file operands.
+      if (words.some(x => expandsToMany(x, text))) continue;
       if (grepStdinOnly(words.slice(k + 1))) spots.push([w.start, w.end]);
     }
   }
