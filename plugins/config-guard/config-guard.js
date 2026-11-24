@@ -941,7 +941,7 @@ function rawWords(text) {
 const GIT_VALUE_OPTION = /^--(?:git-dir|work-tree|namespace|super-prefix|config-env)$/;
 function gitHead(text) {
   const words = rawWords(text);
-  if (!words.length || !/^git$/i.test(words[0].value)) return null;
+  if (!words.length || !/(?:^|\/)git$/i.test(words[0].value)) return null;
   const dirs = [];
   let other = false;
   for (let i = 1; i < words.length; i++) {
@@ -956,6 +956,118 @@ function gitHead(text) {
     if (/^-c./.test(v) || /^--(?:git-dir|work-tree|namespace|super-prefix|config-env)=/.test(v)) { other = true; continue; }
     if (v.startsWith('-')) continue;
     return { sub: v, end: w.end, dirs, other };
+  }
+  return null;
+}
+
+// Files git writes through an output option: --output on diff, log, show
+// and the other diff commands, -o and --output-directory on format-patch,
+// -o or --output on archive, and the file git bundle create writes. Paths
+// after git -C <dir> resolve there.
+// Subcommands that reject --output as an unknown option (checked against
+// git 2.x), so a search pattern or message that reads --output=... is
+// data. blame, cherry-pick, revert, shortlog, reflog and rev-list do open
+// an --output file, so they are not listed.
+const GIT_NO_OUTPUT = /^(?:grep|commit|add|rm|mv|status|checkout|switch|restore|branch|tag|fetch|pull|push|merge|rebase|reset|clone|init|config|remote|cat-file|ls-files|ls-tree|rev-parse|show-ref|clean|gc|describe|notes)$/i;
+// Options of diff and log whose value is the next word.
+const GIT_TEXT_VALUE = /^(?:--grep|--author|--committer|--grep-reflog|-S|-G)$/;
+// Wrappers that run the next command, with the options that take a value.
+// An option a wrapper is not known to have is tried both ways, as a flag
+// and as taking the next word, so the command after it is never missed.
+const WRAPPER_VALUE = {
+  sudo: /^-[ugpCDrtTURh]$|^--(?:user|group|prompt|close-from|chdir|role|type|command-timeout|other-user|chroot|host)$/,
+  doas: /^-[uC]$/,
+  env: /^-[uCPS]$|^--(?:unset|chdir|split-string)$/,
+  command: null,
+  exec: /^-a$/,
+  nice: /^-n$|^--adjustment$/,
+  nohup: null,
+  time: /^-[fo]$|^--(?:format|output)$/,
+  timeout: /^-[sk]$|^--(?:signal|kill-after)$/,
+  // -e, -i and -l take their value only when attached.
+  xargs: /^-[aEILnPsd]$|^--(?:arg-file|max-args|max-procs|max-chars|delimiter|process-slot-var)$/,
+};
+const WRAPPER_POSITIONAL = { timeout: 1 };
+function commandStarts(words, i = 0, budget = { n: 16 }) {
+  const out = [];
+  for (;;) {
+    while (i < words.length && /^[A-Za-z_]\w*=/.test(words[i].value)) i++;
+    if (i >= words.length) return out;
+    const name = path.posix.basename(words[i].value);
+    if (!(name in WRAPPER_VALUE)) { out.push(i); return out; }
+    const takes = WRAPPER_VALUE[name];
+    let j = i + 1;
+    while (j < words.length) {
+      const v = words[j].value;
+      if (v === '--') { j++; break; }
+      if (!v.startsWith('-') || v === '-') break;
+      if (v.includes('=') && v.startsWith('--')) { j++; continue; }
+      if (takes && takes.test(v)) { j += 2; continue; }
+      // An unknown option: also try it as taking a value, a bounded number
+      // of times; the path that reads it as a flag always continues.
+      if (budget.n-- > 0) out.push(...commandStarts(words, j + 2, budget));
+      j++;
+    }
+    i = j + (WRAPPER_POSITIONAL[name] || 0);
+  }
+}
+
+// The git commands a segment runs, each from its git word, after any
+// wrappers, their options and assignments.
+function gitCommandTexts(seg) {
+  const words = rawWords(seg);
+  return [...new Set(commandStarts(words))]
+    .filter((k) => k < words.length && /(?:^|\/)git$/i.test(words[k].value))
+    .map((k) => seg.slice(words[k].start));
+}
+
+function gitOutputs(cmd) {
+  const out = [];
+  for (const seg of unquotedSegments(cmd.replace(/\\\r?\n/g, ' '))) for (const rest of gitCommandTexts(seg.trim())) {
+    const git = gitHead(rest);
+    if (!git || GIT_NO_OUTPUT.test(git.sub)) continue;
+    let dir = '';
+    for (const d of git.dirs) dir = joinDir(dir, d.value);
+    const shortO = /^(?:format-patch|archive)$/i.test(git.sub);
+    const words = shellWords(rest.slice(git.end));
+    // Both the path as typed and its normalised form, in the -C folder.
+    const at = (v) => { out.push(v); const n = joinDir(dir, v); if (n) out.push(n); };
+    // After a cd the rewritten command reads dir/create, so match the last part.
+    if (/^bundle$/i.test(git.sub) && /(?:^|\/)create$/.test(words[0] || '')) {
+      // The file is the first operand after the options. A separate
+      // --version value may stand before it, so the next operand counts too.
+      let separate = false;
+      for (let i = 1; i < words.length; i++) {
+        const w = words[i];
+        if (w === '--version') { separate = true; continue; }
+        if (w.startsWith('-') && w !== '-' && w !== '--') continue;
+        if (w === '--') { if (words[i + 1] !== undefined) at(words[i + 1]); break; }
+        at(w);
+        if (!separate) break;
+        separate = false;
+      }
+    }
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i];
+      if (w === '--') break;
+      if (GIT_TEXT_VALUE.test(w)) { i++; continue; }
+      let v;
+      const long = w.match(/^--(output|output-d[a-z-]*)(?:=(.*))?$/);
+      if (long) v = long[2] !== undefined ? long[2] : words[++i];
+      else if (shortO && /^-o/.test(w)) v = w.length > 2 ? w.slice(2) : words[++i];
+      if (v === undefined) continue;
+      at(v);
+    }
+  }
+  return out;
+}
+
+// The protected-path rule a git output option writes, if any.
+function gitWrite(cmd, threshold, tokens) {
+  if (!/git/i.test(cmd)) return null;
+  const outputs = gitOutputs(cmd);
+  for (const t of tokens) {
+    if (LEVELS[t.level] <= threshold && outputs.some((v) => t.regex.test(' ' + v))) return t;
   }
   return null;
 }
@@ -1086,13 +1198,22 @@ function prefixWords(seg, dir) {
   const wrap = seg.match(WRAPPERS)[0];
   const rest = seg.slice(wrap.length);
   const git = gitHead(rest);
-  const head = git ? rest.slice(0, git.end) : (rest.match(/^\S*/) || [''])[0];
+  const first = (rest.match(/^\S*/) || [''])[0];
   // unzip and tar write members into the folder the shell is in, so the
   // rewritten command names it as their destination too.
-  const base = path.posix.basename(head);
   const quoted = /[^\w.\/~-]/.test(dir) ? `"${dir}"` : dir;
-  const into = /^(?:unzip|(?:bsd)?tar)$/.test(base) ? ` ${CD_MARK}${quoted}` : '';
-  return wrap + head + prefixArgs(rest.slice(head.length), dir) + into;
+  const into = /^(?:unzip|(?:bsd)?tar)$/.test(path.posix.basename(first)) ? ` ${CD_MARK}${quoted}` : '';
+  const plain = prefixArgsBoth(wrap + first, rest.slice(first.length), dir, into);
+  if (!git) return plain;
+  const withHead = prefixArgsBoth(wrap + rest.slice(0, git.end), rest.slice(git.end), dir);
+  // git named by a path keeps the plain reading too, so nothing the
+  // narrower reading misses goes unchecked.
+  return gitByPath(rest) ? `${plain} ; ${withHead}` : withHead;
+}
+
+function gitByPath(text) {
+  const first = rawWords(text)[0];
+  return !!first && !/^git$/i.test(first.value);
 }
 
 // git -C <dir> works like a cd for its own paths: drop the -C options and
@@ -1113,15 +1234,27 @@ function rewriteGitDir(seg, dir) {
     kept.push(rest.slice(words[i].start, words[i].end));
   }
   const args = rest.slice(git.end);
-  return wrap + kept.join(' ') + (eff && eff !== '.' ? prefixArgs(args, eff) : args);
+  return eff && eff !== '.' ? prefixArgsBoth(wrap + kept.join(' '), args, eff) : wrap + kept.join(' ') + args;
 }
-function prefixArgs(seg, dir) {
+const PREFIX_WORD = /(^|[\s>]|(?<=\s--?[\w-]+=)|(?<=\s-[a-zA-Z]*[dC]))(["']?)((?:\.{1,2}\/|[A-Za-z0-9_]|\.[\w-])[\w.\/-]*)/g;
+const PREFIX_WORD_O = /(^|[\s>]|(?<=\s--?[\w-]+=)|(?<=\s-o)|(?<=\s-[a-zA-Z]*[dC]))(["']?)((?:\.{1,2}\/|[A-Za-z0-9_]|\.[\w-])[\w.\/-]*)/g;
+
+// -oNAME is an output file for git format-patch, git archive and many other
+// tools, but a cluster of flags for unzip (-od). Both readings are checked.
+function prefixArgsBoth(head, seg, dir, tail = '') {
+  const read = head + prefixArgs(seg, dir) + tail;
+  if (!/\s-o[^\s]/.test(seg)) return read;
+  return `${read} ; ${head}${prefixArgs(seg, dir, true)}${tail}`;
+}
+
+function prefixArgs(seg, dir, attachedO = false) {
   const base = dir.replace(/\/$/, '');
   // A folder with spaces is quoted, so the rewritten word stays one word.
   const open = /[^\w.\/~-]/.test(base) ? '"' : '';
-  // Quoted words, ./ or ../ paths and an attached -d or -C folder are
-  // relative too.
-  return seg.replace(/(^|[\s>]|(?<=\s-[a-zA-Z]*[dC]))(["']?)((?:\.{1,2}\/|[A-Za-z0-9_]|\.[\w-])[\w.\/-]*)/g, (m, pre, quote, word) =>
+  // Quoted words, ./ or ../ paths, --option=value values and an attached
+  // -d or -C folder are relative too.
+  const re = attachedO ? PREFIX_WORD_O : PREFIX_WORD;
+  return seg.replace(re, (m, pre, quote, word) =>
     quote ? `${pre}${quote}${base}/${word}` : `${pre}${open}${base}/${word}${open}`);
 }
 
@@ -1185,6 +1318,10 @@ function withCdTargets(cmd) {
         if (r !== seg) changed = true;
         parts.push(r);
       }
+      if (gitByPath(seg.slice(seg.match(WRAPPERS)[0].length))) {
+        if (dirs.includes('')) parts.push(seg);
+        for (const d of dirs) if (d !== '') { changed = true; parts.push(prefixWords(seg, d)); }
+      }
       continue;
     }
     if (dirs.includes('')) parts.push(seg);
@@ -1240,6 +1377,10 @@ function checkCommandText(rawCmd, safetyLevel, cwd, dirMoves = true) {
   const archived = archiveWrite(cmd, threshold, [...BASH_TOKENS, ...registeredHookTokens(cwd)]);
   if (archived) {
     return { blocked: true, id: archived.id, level: archived.level, reason: `extracting an archive member onto protected config: ${archived.reason}` };
+  }
+  const gitOut = gitWrite(cmd, threshold, [...BASH_TOKENS, ...registeredHookTokens(cwd)]);
+  if (gitOut) {
+    return { blocked: true, id: gitOut.id, level: gitOut.level, reason: `git output option writes protected config: ${gitOut.reason}` };
   }
   const dirChange = claudeDirChange(cmd, cwd, dirMoves);
   if (dirChange === true) {
