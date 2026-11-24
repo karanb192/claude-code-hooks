@@ -761,15 +761,15 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   const threshold = LEVELS[safetyLevel] || 2;
   const texts = shellViews(cmd).map(v => v.text);
   const views = texts.map(maskTemplates);
-  for (const p of BASH_PATTERNS) {
-    if (LEVELS[p.level] <= threshold && views.some(v => p.regex.test(v))) {
-      return { blocked: true, pattern: p };
-    }
-  }
+  const rule = BASH_PATTERNS.find(p => LEVELS[p.level] <= threshold && views.some(v => p.regex.test(v)));
   const quotedGlobs = literalGlobs(texts[0]);
   let hit = null;
   texts.forEach((text, i) => { hit = stronger(hit, secretFileAccess(text, safetyLevel, i ? quotedGlobs : null)); });
-  return hit ? { blocked: true, pattern: hit } : { blocked: false, pattern: null };
+  if (!rule) return hit ? { blocked: true, pattern: hit } : { blocked: false, pattern: null };
+  // The rule keeps its id, but a more severe file in the same command sets the level, so an ask
+  // configured for one level never softens the denial another level calls for.
+  if (hit && LEVELS[hit.level] < LEVELS[rule.level]) return { blocked: true, pattern: { ...rule, level: hit.level, reason: `${rule.reason}; ${hit.reason}` } };
+  return { blocked: true, pattern: rule };
 }
 
 // The more severe of two hits; the earlier one on a tie.
@@ -795,10 +795,12 @@ const FILE_READERS = new Set(['cat', 'tac', 'nl', 'head', 'tail', 'less', 'more'
 // The first operand is a pattern, script or filter unless a flag supplies one.
 const PATTERN_FIRST = /^(?:grep|egrep|fgrep|zgrep|rg|ag|ack|sed|awk|gawk|mawk|nawk|jq|yq|gojq)$/;
 const PATTERN_FLAG = /^(?:-[ef]|--(?:regexp|file|expression|from-file)\b)/;
-// grep's -e and sed's -e take the pattern or script as their value; it names no file.
-const PATTERN_VALUE = /^(?:grep|egrep|fgrep|zgrep|rg|sed)$/;
-const PATTERN_VALUE_OPT = /^(?:-[A-Za-z]*e|--(?:regexp|expression))$/;
-const PATTERN_VALUE_LONG = /^--(?:regexp|expression)=/;
+// -e and -f read as getopt does: the value is the rest of the word, or the next word when the letter
+// ends the word. -e's value is the pattern or script and names no file; -f's value is a file that is
+// read. sed's -i takes only an attached suffix, so it ends the word.
+const CLUSTER_VALUES = { grep: 'ef', egrep: 'ef', fgrep: 'ef', zgrep: 'ef', rg: 'ef', sed: 'ef' };
+const PATTERN_LONG = /^--(?:regexp|expression)$/;
+const FILE_LONG = /^--file$/;
 const FILE_COPIERS = new Set(['cp', 'mv', 'rm', 'ln', 'unlink', 'install', 'truncate', 'shred']);
 const FILE_SENDERS = new Set(['scp', 'rsync', 'sftp']);
 // Options whose next word is a value (an identity file is used, not sent).
@@ -930,12 +932,28 @@ function commandFileAccess(cmd, ctx) {
   const kind = FILE_READERS.has(name) ? 'read' : name === 'tee' ? 'write' : FILE_COPIERS.has(name) ? 'copy' : FILE_SENDERS.has(name) ? 'send' : null;
   if (!kind) return best;
   let skipPattern = PATTERN_FIRST.test(name) && !ops.some(o => PATTERN_FLAG.test(o.value));
+  const cluster = Object.hasOwn(CLUSTER_VALUES, name) ? CLUSTER_VALUES[name] : null;
+  let options = true;
   for (let j = 0; j < ops.length; j++) {
     const v = ops[j].value;
-    if (/^-./.test(v)) {
-      if (PATTERN_VALUE.test(name) && PATTERN_VALUE_OPT.test(v)) { j++; skipPattern = false; }
-      else if (PATTERN_VALUE.test(name) && PATTERN_VALUE_LONG.test(v)) skipPattern = false;
-      else if (OPTION_VALUE[name] && OPTION_VALUE[name].test(v)) j++;
+    if (options && v === '--') { options = false; continue; }
+    if (options && /^-./.test(v)) {
+      const long = /^(--[\w-]+)(?:=([\s\S]*))?$/.exec(v);
+      if (cluster && long && (PATTERN_LONG.test(long[1]) || FILE_LONG.test(long[1]))) {
+        const value = long[2] !== undefined ? long[2] : ops[++j]?.value;
+        skipPattern = false;
+        if (FILE_LONG.test(long[1])) take(kind, secretPath(value, long[2] !== undefined ? null : ops[j], ctx));
+      } else if (cluster && !long) {
+        for (let c = 1; c < v.length; c++) {
+          if (name === 'sed' && v[c] === 'i') break;
+          if (!cluster.includes(v[c])) continue;
+          const attached = c + 1 < v.length;
+          const value = attached ? v.slice(c + 1) : ops[++j]?.value;
+          if (v[c] === 'e' || v[c] === 'f') skipPattern = false;
+          if (v[c] === 'f') take(kind, secretPath(value, attached ? null : ops[j], ctx));
+          break;
+        }
+      } else if (OPTION_VALUE[name] && OPTION_VALUE[name].test(v)) j++;
       else if (kind === 'read' && v.includes('=')) take(kind, secretPath(v.slice(v.indexOf('=') + 1), null, ctx));
       continue;
     }

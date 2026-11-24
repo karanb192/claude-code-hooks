@@ -10,6 +10,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
 const standalone = require('../protect-secrets.js');
 const bundled = require('../../guard-pack/lib/protect-secrets.js');
@@ -141,6 +142,16 @@ const REFUSED = [
   // An unquoted glob, or one in a program run by sh -c, still expands.
   ["glob-unquoted", "cat '.e*' .e*", 'high'],
   ["glob-in-program", "cat '.e*'; sh -c 'cat .e*'", 'high'],
+  // A value attached to -e or -f ends the cluster, so the next word is still a file.
+  ["grep-fe", "grep -fe .envrc", 'high'],
+  ["grep-fpe", "grep -fpe .envrc", 'high'],
+  ["grep-exe", "grep -exe .envrc", 'high'],
+  ["grep-f-attached", "grep -f.npmrc README.md", 'high'],
+  ["rg-fe", "rg -fe .envrc", 'high'],
+  ["sed-ne", "sed -ne p .envrc", 'high'],
+  ["sed-ie", "sed -ie s/a/b/ .npmrc", 'high'],
+  // After --, -e is the pattern and the next word a file.
+  ["grep-dashdash", "grep -- -e .envrc", 'high'],
 ];
 
 const ALLOWED = [
@@ -176,6 +187,9 @@ const LEVEL = [
   ['cat .npmrc .envrc', 'critical'],
   ['cat .envrc .npmrc', 'critical'],
   ['cat .npmrc; cat .envrc', 'critical'],
+  // An earlier rule's id is kept, but a more severe file in the command sets the level.
+  ['cat .netrc .envrc', 'critical'],
+  ['cat .envrc .netrc', 'critical'],
 ];
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {
@@ -207,3 +221,18 @@ for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', 
     }
   });
 }
+
+// With high-level matches set to ask, a command that also reads a critical file is still denied.
+describe('protect-secrets hook: ask for high never softens a critical file', () => {
+  for (const command of ['cat .netrc .envrc', 'cat .envrc .netrc', 'cat .npmrc .envrc']) {
+    it(JSON.stringify(command), () => {
+      const env = { PATH: process.env.PATH, HOME: process.env.HOME, HOOK_ASK_HIGH: 'true' };
+      const r = spawnSync(process.execPath, [path.join(__dirname, '..', 'protect-secrets.js')], {
+        input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, session_id: 't', cwd: __dirname }),
+        env, encoding: 'utf8', timeout: 20000,
+      });
+      const out = JSON.parse(r.stdout.trim() || '{}');
+      assert.strictEqual(out.hookSpecificOutput && out.hookSpecificOutput.permissionDecision, 'deny', r.stdout);
+    });
+  }
+});
