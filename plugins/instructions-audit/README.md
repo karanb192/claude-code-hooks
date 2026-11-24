@@ -6,7 +6,9 @@ The hook scans instruction files for invisible Unicode smuggling (zero width cha
 
 `InstructionsLoaded` has no decision control on current Claude Code builds (verified live: exit code ignored, even the universal `continue: false` ignored), so detection and enforcement are split. A finding writes a per-session lockdown flag (and still emits `continue: false` for builds that honor it); the same script registered on `UserPromptSubmit` and `PreToolUse` then blocks every prompt and denies every tool call for that session, so the poisoned instructions are never acted on. This is the win of the plugin: one install wires all three arms instead of three manual `settings.json` registrations.
 
-Claude Code fires `InstructionsLoaded` for the files it reads at session start before a plugin's hooks are registered, so as a plugin the hook never sees those loads. The first `UserPromptSubmit` or `PreToolUse` of each session therefore audits the start-up files itself and locks before the model acts: the managed-policy `CLAUDE.md`, `~/.claude/CLAUDE.md` and `~/.claude/rules/`, and in the working directory and every parent `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, `AGENTS.md` and `.claude/rules/`, plus their `@` imports up to five hops. This runs once per session, whether the hook is installed as a plugin or through `settings.json`; files that load later (a nested `CLAUDE.md`, a path-matched rule) are audited by `InstructionsLoaded` as they load.
+Claude Code fires `InstructionsLoaded` for the files it reads at session start before a plugin's hooks are registered, so as a plugin the hook never sees those loads. The first `UserPromptSubmit` or `PreToolUse` of each session therefore audits the start-up files itself and locks before the model acts: the managed-policy `CLAUDE.md`, `CLAUDE.md` and `rules/` in the Claude config directory (`~/.claude`, or `CLAUDE_CONFIG_DIR` when set), and in the working directory and every parent `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, `AGENTS.md` and `.claude/rules/`, plus their `@` imports up to five hops. A rule with a `paths:` list in its frontmatter loads only when Claude works on a matching file, so it is left to its `InstructionsLoaded` event. This runs once per session, whether the hook is installed as a plugin or through `settings.json`; files that load later (a nested `CLAUDE.md`, a path-matched rule) are audited by `InstructionsLoaded` as they load.
+
+This fallback reads the files as they are on disk at the first prompt or tool call. If a file changed between Claude Code loading it and that call, the hook audits the new bytes, not the ones already in context. An `InstructionsLoaded` hook registered through `settings.json` receives the loaded content itself, so register it there too if that window matters to you.
 
 ## Install
 
@@ -25,7 +27,7 @@ Restart Claude Code, done. (Or from a shell: `claude plugin install instructions
 | UserPromptSubmit | sync (must decide before the prompt) | On the first prompt or tool call of a session, audits the start-up instruction files and locks on a finding. If the session is locked, blocks the prompt (`decision: "block"`) with a notice naming the poisoned file, the first rule that fired, and the flag file to delete. Unlocked sessions pass untouched. |
 | PreToolUse (no matcher: every tool call is checked) | sync (must decide before the tool runs) | Same start-up audit (for a session that begins with a tool call) and the same lock check; a locked session gets `permissionDecision: "deny"` on every tool call. Unlocked sessions pass untouched. |
 
-The start-up scan is bounded: at most 200 files, 2 MB per file and 16 MB in all, `@` imports up to five hops, `.claude/rules/` six directories deep. A start-up set past those limits blocks the prompt or tool call with a `[guard-error]` notice instead of passing unaudited; `HOOK_FAIL_OPEN=true` lets calls through when the audit cannot run.
+The start-up scan is bounded: at most 200 files, 2 MB per file and 16 MB in all, 64 `@` imports per file followed up to five hops, and `.claude/rules/` six directories deep. A start-up set past any of those limits, or a file or rules folder that exists but cannot be read, blocks the prompt or tool call with a `[guard-error]` notice instead of passing unaudited, and the session is not recorded as audited. `HOOK_FAIL_OPEN=true` lets calls through when the audit cannot run. A lock that cannot be saved also blocks the call, and a lock file that exists but cannot be read still locks the session.
 
 The report lists up to 12 findings and counts the rest. The lock notice tells you how to recover: fix or quarantine the file and start a fresh session, or delete the named flag file if the findings are false positives.
 
@@ -47,7 +49,8 @@ All optional, set via environment variables (in the hook command, or exported wh
 |----------|---------|---------|
 | `HOOK_AUDIT_LEVEL` | `high` | Safety level: `critical`, `high`, or `strict`. Invalid values fall back to `high`, so a typo can never silently disable the audit. |
 | `HOOK_AUDIT_WARN_ONLY` | unset (lock) | Literal string `true` surfaces the findings report without locking the session. |
-| `HOOK_FAIL_OPEN` | unset (block) | Literal string `true` lets prompts and tool calls through when the start-up files cannot be audited (past the limits above). |
+| `HOOK_FAIL_OPEN` | unset (block) | Literal string `true` lets prompts and tool calls through when the start-up files cannot be audited (past the limits above, or unreadable). |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code's own setting; the start-up audit reads user instructions and rules from it. |
 
 ## Precision notes
 

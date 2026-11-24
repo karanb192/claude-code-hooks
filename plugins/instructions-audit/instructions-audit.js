@@ -276,6 +276,9 @@ function scanDirectives(content, threshold, findings) {
 // and deny everything for that session until a human clears it.
 
 const HOME = process.env.HOME || process.env.USERPROFILE || require('os').homedir();
+// User instructions and rules live in Claude Code's config dir, which
+// CLAUDE_CONFIG_DIR moves; lock state and logs stay under ~/.claude.
+const CLAUDE_HOME = path.resolve(process.env.CLAUDE_CONFIG_DIR || path.join(HOME, '.claude'));
 const STATE_DIR = path.join(HOME, '.claude', 'hooks-state', 'instructions-audit');
 
 function flagPath(sessionId) {
@@ -287,12 +290,25 @@ function auditedPath(sessionId) {
   return flagPath(sessionId).replace(/\.json$/, '.audited');
 }
 
-// The session's start-up files have been audited (or it is locked already),
-// so deleting a lock flag clears it instead of re-auditing and relocking.
+// A temp file renamed into place: a reader sees the whole file or none.
+function writeAtomic(file, text) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, text);
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch {}
+    throw e;
+  }
+}
+
+// Recorded only after the start-up audit came back clean or its lock was
+// saved, so deleting a lock flag clears it instead of re-auditing and
+// relocking. A marker that fails to save only means the audit runs again.
 function markAudited(sessionId) {
   try {
-    fs.mkdirSync(STATE_DIR, { recursive: true });
-    fs.writeFileSync(auditedPath(sessionId), new Date().toISOString());
+    writeAtomic(auditedPath(sessionId), new Date().toISOString());
     // Flags and markers for long-gone sessions are inert; sweep anything over 7 days old.
     for (const f of fs.readdirSync(STATE_DIR)) {
       const p = path.join(STATE_DIR, f);
@@ -301,16 +317,26 @@ function markAudited(sessionId) {
   } catch {}
 }
 
+// Throws when the lock cannot be saved: the caller must not treat the
+// session as audited.
 function writeFlag(sessionId, info) {
-  try {
-    fs.mkdirSync(STATE_DIR, { recursive: true });
-    fs.writeFileSync(flagPath(sessionId), JSON.stringify({ ts: new Date().toISOString(), ...info }));
-  } catch {}
+  writeAtomic(flagPath(sessionId), JSON.stringify({ ts: new Date().toISOString(), ...info }));
   markAudited(sessionId);
 }
 
+// No file means no lock. A lock that exists but cannot be read or parsed
+// still locks the session.
 function readFlag(sessionId) {
-  try { return JSON.parse(fs.readFileSync(flagPath(sessionId), 'utf8')); } catch { return null; }
+  let text;
+  try { text = fs.readFileSync(flagPath(sessionId), 'utf8'); } catch (e) {
+    if (e.code === 'ENOENT') return null;
+    return { file: '(unreadable lock flag)', count: '?', first: e.code || 'read error' };
+  }
+  try {
+    const flag = JSON.parse(text);
+    if (flag && typeof flag === 'object') return flag;
+  } catch {}
+  return { file: '(malformed lock flag)', count: '?', first: 'malformed' };
 }
 
 // ─── start-up instruction files ─────────────────────────────────────────────
@@ -318,8 +344,9 @@ function readFlag(sessionId) {
 // hooks are registered, so InstructionsLoaded never reaches this script for
 // them when it is installed as a plugin. The first UserPromptSubmit or
 // PreToolUse of each session therefore finds and audits those files itself,
-// then records that the session was audited. The scan is bounded; a start-up
-// set it cannot finish reading blocks the call (fail closed).
+// then records that the session was audited. Every limit and every read error
+// on a file that exists throws, so the caller blocks the call (fail closed)
+// instead of recording a partial audit as clean.
 
 const MAX_FILES = 200;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -333,62 +360,93 @@ const MANAGED_FILES = {
   linux: ['/etc/claude-code/CLAUDE.md'],
   win32: ['C:\\Program Files\\ClaudeCode\\CLAUDE.md'],
 };
+const ABSENT = new Set(['ENOENT', 'ENOTDIR', 'ENAMETOOLONG']);
 
 // @path imports outside code fences and inline code, the way Claude Code
 // expands them: relative to the importing file, or ~/ for the home directory.
+// A fence closes only on the same character, at least as long, with nothing
+// after it, so a shorter fence inside a longer example stays inside it.
 function importsOf(content) {
   const out = [];
-  let fenced = false;
+  let fence = null;
   for (const line of content.split('\n')) {
-    if (/^\s*(?:```|~~~)/.test(line)) { fenced = !fenced; continue; }
-    if (fenced) continue;
+    const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      if (m && m[1][0] === fence[0] && m[1].length >= fence.length && !m[2].trim()) fence = null;
+      continue;
+    }
+    if (m && !(m[1][0] === '`' && m[2].includes('`'))) { fence = m[1]; continue; }
     const text = line.replace(/`[^`]*`/g, ' ');
-    for (const m of text.matchAll(/(?:^|\s)@((?:~\/|\.{1,2}\/|\/)?[^\s`'"()<>[\]]+)/g)) {
-      out.push(m[1].replace(/[.,;:!?]+$/, ''));
-      if (out.length >= MAX_IMPORTS_PER_FILE) return out;
+    for (const i of text.matchAll(/(?:^|\s)@((?:~\/|\.{1,2}\/|\/)?[^\s`'"()<>[\]]+)/g)) {
+      if (out.length >= MAX_IMPORTS_PER_FILE) throw new Error(`more than ${MAX_IMPORTS_PER_FILE} @ imports in one instruction file`);
+      out.push(i[1].replace(/[.,;:!?]+$/, ''));
     }
   }
   return out;
 }
 
-function startupFiles(cwd, home, platform = process.platform) {
-  const seen = new Set();
+// A rule with a paths: list in its frontmatter loads only when Claude works on
+// a matching file, so InstructionsLoaded audits it then, not at start-up.
+function pathScoped(content) {
+  const m = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/.exec(content);
+  return !!m && /^paths\s*:/m.test(m[1]);
+}
+
+function startupFiles(cwd, home = HOME, platform = process.platform, configDir = CLAUDE_HOME) {
+  // Each file is read once; a file reached again by a shorter import chain
+  // has its imports expanded again from that depth.
+  const cache = new Map();
   const files = [];
   let total = 0;
-  const add = (file, depth = 0) => {
+  const add = (file, depth = 0, rule = false) => {
     let real;
     let st;
-    try { real = fs.realpathSync(file); st = fs.statSync(real); } catch { return; }
-    // Only regular files: a FIFO or device would hang the hook.
-    if (!st.isFile() || seen.has(real)) return;
-    seen.add(real);
-    if (files.length >= MAX_FILES) throw new Error(`more than ${MAX_FILES} start-up instruction files`);
-    if (st.size > MAX_FILE_BYTES) throw new Error(`${file} is larger than ${MAX_FILE_BYTES} bytes`);
-    total += st.size;
-    if (total > MAX_TOTAL_BYTES) throw new Error(`start-up instruction files exceed ${MAX_TOTAL_BYTES} bytes`);
-    let content;
-    // Unreadable: Claude Code cannot load it either.
-    try { content = fs.readFileSync(real, 'utf8'); } catch { return; }
-    files.push({ file, content });
+    try { real = fs.realpathSync(file); st = fs.statSync(real); } catch (e) {
+      if (ABSENT.has(e.code)) return;
+      throw new Error(`cannot read ${file} (${e.code || e.message})`);
+    }
+    if (st.isDirectory()) return;
+    // A FIFO or device would hang the hook; Claude Code cannot load one as text either.
+    if (!st.isFile()) throw new Error(`${file} is not a regular file`);
+    let entry = cache.get(real);
+    if (entry && entry.depth <= depth) return;
+    if (!entry) {
+      if (files.length >= MAX_FILES) throw new Error(`more than ${MAX_FILES} start-up instruction files`);
+      if (st.size > MAX_FILE_BYTES) throw new Error(`${file} is larger than ${MAX_FILE_BYTES} bytes`);
+      total += st.size;
+      if (total > MAX_TOTAL_BYTES) throw new Error(`start-up instruction files exceed ${MAX_TOTAL_BYTES} bytes`);
+      let content;
+      try { content = fs.readFileSync(real, 'utf8'); } catch (e) { throw new Error(`cannot read ${file} (${e.code || e.message})`); }
+      if (rule && pathScoped(content)) return;
+      entry = { content, depth };
+      cache.set(real, entry);
+      files.push({ file, content });
+    }
+    entry.depth = depth;
     if (depth >= MAX_IMPORT_DEPTH) return;
-    for (const imp of importsOf(content)) {
+    for (const imp of importsOf(entry.content)) {
       const target = imp.startsWith('~/') ? path.join(home, imp.slice(2)) : imp;
       for (const dir of new Set([path.dirname(file), path.dirname(real)])) add(path.resolve(dir, target), depth + 1);
     }
   };
   const rules = (dir, depth = 0) => {
     let entries;
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) {
+      if (ABSENT.has(e.code)) return;
+      throw new Error(`cannot read ${dir} (${e.code || e.message})`);
+    }
     entries.sort((a, b) => (a.name < b.name ? -1 : 1));
     for (const e of entries) {
       const p = path.join(dir, e.name);
-      if (e.isDirectory()) { if (depth < MAX_RULE_DEPTH) rules(p, depth + 1); }
-      else if (e.name.endsWith('.md')) add(p);
+      if (e.isDirectory()) {
+        if (depth >= MAX_RULE_DEPTH) throw new Error(`${p} is more than ${MAX_RULE_DEPTH} directories deep in a rules folder`);
+        rules(p, depth + 1);
+      } else if (e.name.endsWith('.md')) add(p, 0, true);
     }
   };
   for (const f of MANAGED_FILES[platform] || []) add(f);
-  add(path.join(home, '.claude', 'CLAUDE.md'));
-  rules(path.join(home, '.claude', 'rules'));
+  add(path.join(configDir, 'CLAUDE.md'));
+  rules(path.join(configDir, 'rules'));
   // The project files in the working directory and every parent up to, but
   // not including, the filesystem root.
   for (let d = path.resolve(cwd); path.dirname(d) !== d; d = path.dirname(d)) {
@@ -399,14 +457,15 @@ function startupFiles(cwd, home, platform = process.platform) {
 }
 
 // Audit the start-up files once per session. Returns the lock flag on a
-// finding (and writes it), or null. Throws when the files cannot be read in
-// full, so the caller can fail closed.
-function auditStartup(data, home = HOME) {
+// finding (and saves it), or null. Throws when the files cannot be read in
+// full or the lock cannot be saved, so the caller can fail closed; the
+// audited marker is written only on success.
+function auditStartup(data, home = HOME, configDir = CLAUDE_HOME) {
   const level = LEVELS[process.env.HOOK_AUDIT_LEVEL] ? process.env.HOOK_AUDIT_LEVEL : SAFETY_LEVEL;
   const warnOnly = envBool('HOOK_AUDIT_WARN_ONLY', false);
   let hit = null;
   let flagged = 0;
-  for (const { file, content } of startupFiles(data.cwd || process.cwd(), home)) {
+  for (const { file, content } of startupFiles(data.cwd || process.cwd(), home, process.platform, configDir)) {
     const findings = auditContent(content, level);
     if (!findings.length) continue;
     flagged++;
@@ -509,7 +568,12 @@ async function main() {
       const top = findings[0];
       // The lockdown flag is the enforcement that actually works today; the
       // universal continue:false is emitted too for builds that honor it.
-      writeFlag(session_id, { file: label, count: findings.length, first: `${top.id} line ${top.line}` });
+      try {
+        writeFlag(session_id, { file: label, count: findings.length, first: `${top.id} line ${top.line}` });
+      } catch (e) {
+        // No marker either, so the first prompt or tool call audits the start-up files again.
+        log({ level: 'ERROR', error: `lock not saved: ${e.message}`, session_id, cwd });
+      }
       out.continue = false;
       out.stopReason = `${EMOJIS[top.level]} instructions-audit locked the session: ${findings.length} suspicious pattern(s) in ${label} (first: [${top.id}] line ${top.line})`;
     }
@@ -526,7 +590,7 @@ if (require.main === module) {
   module.exports = {
     TEXT_PATTERNS, LEVELS, SAFETY_LEVEL, NEGATION_CONTEXT,
     auditContent, formatFindings, sanitizeExcerpt, codepointLabel, flagPath,
-    importsOf, startupFiles, auditStartup, auditedPath,
-    MAX_FILES, MAX_FILE_BYTES, MAX_IMPORT_DEPTH,
+    importsOf, startupFiles, auditStartup, auditedPath, readFlag, writeFlag, pathScoped,
+    MAX_FILES, MAX_FILE_BYTES, MAX_IMPORT_DEPTH, MAX_IMPORTS_PER_FILE, MAX_RULE_DEPTH,
   };
 }

@@ -17,7 +17,7 @@ const os = require('node:os');
 const {
   TEXT_PATTERNS, LEVELS, SAFETY_LEVEL, NEGATION_CONTEXT,
   auditContent, formatFindings, sanitizeExcerpt, codepointLabel,
-  importsOf, startupFiles, MAX_FILES, MAX_FILE_BYTES,
+  importsOf, startupFiles, MAX_FILES, MAX_FILE_BYTES, MAX_IMPORTS_PER_FILE, MAX_RULE_DEPTH,
 } = require('../instructions-audit.js');
 
 const SCRIPT_PATH = path.join(__dirname, '../instructions-audit.js');
@@ -69,6 +69,7 @@ function runHook(input, env = {}) {
     if (!('HOOK_AUDIT_LEVEL' in env)) delete childEnv.HOOK_AUDIT_LEVEL;
     if (!('HOOK_AUDIT_WARN_ONLY' in env)) delete childEnv.HOOK_AUDIT_WARN_ONLY;
     if (!('HOOK_FAIL_OPEN' in env)) delete childEnv.HOOK_FAIL_OPEN;
+    if (!('CLAUDE_CONFIG_DIR' in env)) delete childEnv.CLAUDE_CONFIG_DIR;
     const child = spawn('node', [SCRIPT_PATH], { env: childEnv });
     let stdout = '';
     let stderr = '';
@@ -554,19 +555,22 @@ function project(files) {
   return root;
 }
 
+// The config dir follows the test home, never the developer's real ~/.claude.
+const scan = (cwd, home = TEST_HOME) => startupFiles(cwd, home, process.platform, path.join(home, '.claude'));
+
 const prompt = (session, cwd) => ({ hook_event_name: 'UserPromptSubmit', session_id: session, prompt: 'List the files in this folder.', cwd });
 const tool = (session, cwd) => ({ hook_event_name: 'PreToolUse', session_id: session, tool_name: 'Bash', tool_input: { command: 'ls' }, cwd });
 
 describe('Unit: start-up file discovery', () => {
   it('finds the project files in the working directory and its parents', () => {
     const root = project({ 'CLAUDE.md': '# top\n', 'app/CLAUDE.local.md': '# local\n', 'app/.claude/CLAUDE.md': '# dot\n', 'app/AGENTS.md': '# agents\n' });
-    const names = startupFiles(path.join(root, 'app'), TEST_HOME).map((f) => path.relative(root, f.file));
+    const names = scan(path.join(root, 'app'), TEST_HOME).map((f) => path.relative(root, f.file));
     for (const n of ['CLAUDE.md', 'app/CLAUDE.local.md', 'app/.claude/CLAUDE.md', 'app/AGENTS.md']) assert.ok(names.includes(n), `${n} in ${names}`);
   });
   it('reads .claude/rules recursively and the user files under HOME', () => {
     const root = project({ '.claude/rules/a.md': 'a\n', '.claude/rules/sub/b.md': 'b\n', '.claude/rules/c.txt': 'c\n' });
     const home = project({ '.claude/CLAUDE.md': 'user\n', '.claude/rules/u.md': 'u\n' });
-    const names = startupFiles(root, home).map((f) => f.file);
+    const names = scan(root, home).map((f) => f.file);
     for (const f of [path.join(root, '.claude/rules/a.md'), path.join(root, '.claude/rules/sub/b.md'), path.join(home, '.claude/CLAUDE.md'), path.join(home, '.claude/rules/u.md')])
       assert.ok(names.includes(f), f);
     assert.ok(!names.some((f) => f.endsWith('c.txt')));
@@ -574,7 +578,7 @@ describe('Unit: start-up file discovery', () => {
   it('follows @imports relative to the file and from ~/, but not inside code', () => {
     const home = project({ 'notes/extra.md': EXFIL });
     const root = project({ 'CLAUDE.md': 'See @docs/rules.md and @~/notes/extra.md.\n```\n@docs/fenced.md\n```\nUse `@docs/inline.md` here.\n', 'docs/rules.md': '# r\n', 'docs/fenced.md': '# f\n', 'docs/inline.md': '# i\n' });
-    const names = startupFiles(root, home).map((f) => f.file);
+    const names = scan(root, home).map((f) => f.file);
     assert.ok(names.includes(path.join(root, 'docs/rules.md')));
     assert.ok(names.includes(path.join(home, 'notes/extra.md')));
     assert.ok(!names.includes(path.join(root, 'docs/fenced.md')));
@@ -584,17 +588,17 @@ describe('Unit: start-up file discovery', () => {
   it('stops @imports after five hops and reads each file once', () => {
     const files = { 'CLAUDE.md': '@d1.md\n@CLAUDE.md\n' };
     for (let i = 1; i <= 7; i++) files[`d${i}.md`] = `@d${i + 1}.md\n`;
-    const names = startupFiles(project(files), TEST_HOME).map((f) => path.basename(f.file));
+    const names = scan(project(files), TEST_HOME).map((f) => path.basename(f.file));
     assert.deepStrictEqual(names.filter((n) => n === 'CLAUDE.md').length, 1);
     assert.ok(names.includes('d5.md') && !names.includes('d6.md'), names.join(','));
   });
   it('throws when the start-up set exceeds its limits', () => {
     const many = {};
     for (let i = 0; i <= MAX_FILES; i++) many[`.claude/rules/r${i}.md`] = 'x\n';
-    assert.throws(() => startupFiles(project(many), TEST_HOME), /more than/);
+    assert.throws(() => scan(project(many), TEST_HOME), /more than/);
     const big = project({});
     fs.writeFileSync(path.join(big, 'CLAUDE.md'), Buffer.alloc(MAX_FILE_BYTES + 1, 'a'));
-    assert.throws(() => startupFiles(big, TEST_HOME), /larger than/);
+    assert.throws(() => scan(big, TEST_HOME), /larger than/);
   });
 });
 
@@ -671,6 +675,118 @@ describe('Integration: start-up files audited on the first prompt or tool call',
     assert.strictEqual(b.output.hookSpecificOutput.permissionDecision, 'deny');
     const c = await runHook(prompt('startup-limit-open', root), { HOOK_FAIL_OPEN: 'true' });
     assert.deepStrictEqual(c.output, {});
+  });
+});
+
+describe('Start-up audit: a session is recorded as audited only after a full audit', () => {
+  const stateDir = path.join(TEST_HOME, '.claude', 'hooks-state', 'instructions-audit');
+  const audited = (id) => fs.existsSync(path.join(stateDir, `${id}.audited`));
+  const posix = process.platform !== 'win32' && process.getuid && process.getuid() !== 0;
+
+  it('a lock that cannot be saved blocks every call and leaves no audited marker', { skip: !posix }, async () => {
+    const root = project({ 'CLAUDE.md': EXFIL });
+    const id = 'startup-lockfail';
+    fs.mkdirSync(path.join(stateDir, `${id}.json`), { recursive: true }); // a directory where the lock file goes
+    try {
+      const a = await runHook(prompt(id, root));
+      assert.strictEqual(a.output.decision, 'block');
+      assert.ok(!audited(id));
+      const b = await runHook(tool(id, root));
+      assert.strictEqual(b.output.hookSpecificOutput.permissionDecision, 'deny');
+    } finally {
+      fs.rmSync(path.join(stateDir, `${id}.json`), { recursive: true, force: true });
+    }
+  });
+
+  it('a malformed lock still locks the session', async () => {
+    const id = 'startup-malformed';
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, `${id}.json`), '{not json');
+    const { output } = await runHook(tool(id, project({})));
+    assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+    assert.ok(output.hookSpecificOutput.permissionDecisionReason.includes('malformed lock flag'));
+  });
+
+  it('an unreadable start-up file fails closed and records nothing', { skip: !posix }, async () => {
+    const root = project({ 'CLAUDE.md': '# fine\n' });
+    fs.chmodSync(path.join(root, 'CLAUDE.md'), 0o000);
+    try {
+      const a = await runHook(prompt('startup-unreadable', root));
+      assert.strictEqual(a.output.decision, 'block');
+      assert.ok(a.output.reason.includes('[guard-error]'));
+      assert.ok(!audited('startup-unreadable'));
+    } finally {
+      fs.chmodSync(path.join(root, 'CLAUDE.md'), 0o644);
+    }
+  });
+
+  it('an unreadable rules folder fails closed', { skip: !posix }, async () => {
+    const root = project({ '.claude/rules/a.md': '# a\n' });
+    fs.chmodSync(path.join(root, '.claude/rules'), 0o000);
+    try {
+      const { output } = await runHook(tool('startup-rulesdir', root));
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.ok(!audited('startup-rulesdir'));
+    } finally {
+      fs.chmodSync(path.join(root, '.claude/rules'), 0o755);
+    }
+  });
+
+  it('one import past the per-file limit fails closed', async () => {
+    const lines = [];
+    for (let i = 0; i <= MAX_IMPORTS_PER_FILE; i++) lines.push(`@docs/n${i}.md`);
+    assert.throws(() => importsOf(lines.join('\n')), /@ imports/);
+    const root = project({ 'CLAUDE.md': lines.join('\n') + '\n' });
+    const { output } = await runHook(prompt('startup-imports', root));
+    assert.strictEqual(output.decision, 'block');
+    assert.ok(!audited('startup-imports'));
+  });
+
+  it('a rules folder one level too deep fails closed', async () => {
+    const deep = ['.claude/rules', ...Array.from({ length: MAX_RULE_DEPTH + 1 }, (_, i) => `d${i}`), 'x.md'].join('/');
+    const root = project({ [deep]: '# x\n' });
+    assert.throws(() => scan(root), /directories deep/);
+    const { output } = await runHook(prompt('startup-rulesdeep', root));
+    assert.strictEqual(output.decision, 'block');
+  });
+});
+
+describe('Start-up audit: traversal and scope', () => {
+  it('a file reached again by a shorter import chain has its imports expanded from there', () => {
+    // CLAUDE.md -> a1 -> a2 -> a3 -> a4 -> shared (hop 5); CLAUDE.md -> shared (hop 1) -> child (hop 2).
+    const root = project({
+      'CLAUDE.md': '@a1.md\n@shared.md\n', 'a1.md': '@a2.md\n', 'a2.md': '@a3.md\n', 'a3.md': '@a4.md\n', 'a4.md': '@shared.md\n',
+      'shared.md': '@child.md\n', 'child.md': EXFIL,
+    });
+    const names = scan(root).map((f) => path.basename(f.file));
+    assert.ok(names.includes('child.md'), names.join(','));
+  });
+  it('one root does not suppress another root\'s imports', () => {
+    const home = project({ '.claude/CLAUDE.md': '@~/deep/l1.md\n', 'deep/l1.md': '@l2.md\n', 'deep/l2.md': '@l3.md\n', 'deep/l3.md': '@l4.md\n', 'deep/l4.md': '@shared.md\n' });
+    fs.writeFileSync(path.join(home, 'deep/shared.md'), '@child.md\n');
+    fs.writeFileSync(path.join(home, 'deep/child.md'), EXFIL);
+    const root = project({ 'CLAUDE.md': `@${path.join(home, 'deep/shared.md')}\n` });
+    assert.ok(scan(root, home).some((f) => f.file.endsWith('child.md')));
+  });
+  it('reads user instructions and rules from CLAUDE_CONFIG_DIR when it is set', async () => {
+    const config = project({ 'CLAUDE.md': EXFIL });
+    const { output } = await runHook(prompt('startup-configdir', project({})), { CLAUDE_CONFIG_DIR: config });
+    assert.strictEqual(output.decision, 'block');
+    assert.ok(output.reason.includes(path.join(config, 'CLAUDE.md')));
+    const rules = project({ 'rules/r.md': EXFIL });
+    assert.ok(startupFiles(project({}), TEST_HOME, process.platform, rules).some((f) => f.file.endsWith('r.md')));
+  });
+  it('a rule scoped with paths: is left to its InstructionsLoaded event', async () => {
+    const root = project({ '.claude/rules/ts.md': '---\npaths:\n  - "src/**/*.ts"\n---\n' + EXFIL });
+    assert.ok(!scan(root).some((f) => f.file.endsWith('ts.md')));
+    assert.deepStrictEqual((await runHook(prompt('startup-scoped', root))).output, {});
+    const unscoped = project({ '.claude/rules/all.md': '---\ndescription: everywhere\n---\n' + EXFIL });
+    assert.strictEqual((await runHook(prompt('startup-unscoped', unscoped))).output.decision, 'block');
+  });
+  it('a shorter fence inside a longer one does not close it', () => {
+    assert.deepStrictEqual(importsOf('````md\n```\n@inside.md\n```\n````\n@after.md\n'), ['after.md']);
+    assert.deepStrictEqual(importsOf('~~~\n```\n~~~\n@after.md\n'), ['after.md']);
+    assert.deepStrictEqual(importsOf('```js\ncode\n```\n@after.md\n'), ['after.md']);
   });
 });
 
