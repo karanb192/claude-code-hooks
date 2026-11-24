@@ -101,16 +101,16 @@ const PATTERNS = [
   // A bare --force-with-lease never matches the (?=\s|...) after --force, so it needs no exception.
   { level: 'high', id: 'git-force-main', segment: true, regex: new RegExp(GIT + 'push\\b(?=[^;&|\\n]*' + FORCE_FLAG + ')(?=[^;&|\\n]*' + MAIN_REF + ')|' + GIT + 'push\\b[^;&|\\n]*\\s["\']?\\+(?:[^\\s:]*:)?(?:refs\\/heads\\/)?(?:main|master)(?=$|[\\s;&|"\'])'), reason: 'force push to main/master' },
   { level: 'high', id: 'git-reset-hard', regex: new RegExp(GIT + 'reset\\b[^;&|\\n]*\\s--h(?:a(?:rd?)?)?(?![\\w-])'),     reason: 'git reset --hard loses uncommitted work' },
-  { level: 'high', id: 'git-clean-f',    regex: new RegExp(GIT + 'clean\\s+(-\\w*f|-f)|' + GIT + 'clean\\b[^;&|\\n]*\\s["\']?(?:--f(?:o(?:r(?:ce?)?)?)?(?![\\w-])|-[A-Za-df-z]*f)'), confirm: (t) => cleanForces(t), reason: 'git clean -f deletes untracked files' },
+  { level: 'high', id: 'git-clean-f',    regex: new RegExp(GIT + 'clean\\s+(-\\w*f|-f)|' + GIT + 'clean\\b(?:[^;&|\\n<>]|[<>]&?|&>)*\\s["\']?(?:--f(?:o(?:r(?:ce?)?)?)?(?![\\w-])|-[A-Za-df-z]*f)'), confirm: (t) => cleanForces(t), reason: 'git clean -f deletes untracked files' },
   // 777 with a leading 0 or a special bit (0777, 1777), or rwx for everyone spelled symbolically (a+rwx), as the mode.
   { level: 'high', id: 'chmod-777',      regex: new RegExp('\\bchmod\\b.+\\b777\\b|' + CHMOD + '["\']?(?:0*[1-7]?777|(?:a|ugo|uog|gou|guo|ogu|oug)[+=](?=[rwxXst]*r)(?=[rwxXst]*w)(?=[rwxXst]*x)[rwxXst]+)["\']?(?=\\s|$|[;&|)<>])'), reason: 'chmod 777 is a security risk' },
   // docker volume rm|remove|prune after global options, compose down -v, system prune --volumes.
   { level: 'high', id: 'docker-vol-rm',  regex: new RegExp(DOCKER + '(?:volume\\s+(?:rm|remove|prune)\\b|system\\s+prune\\b[^;&|\\n]*\\s--volumes(?![\\w-]))|' + COMPOSE + 'down(?![\\w-])(?=[^;&|\\n]*\\s(?:-[A-Za-z]*v[A-Za-z]*|--volumes)(?![\\w-]))'), reason: 'docker volume deletion loses data' },
 
   // STRICT - Cautionary, context-dependent
-  // A +ref refspec force-pushes that ref like --force does; the value of -o or
-  // --push-option (-o +build) is not a refspec.
-  { level: 'strict', id: 'git-force-any',    segment: true, regex: new RegExp(GIT + 'push\\b(?=[^;&|\\n]*' + FORCE_FLAG + ')|' + GIT + 'push\\b[^;&|\\n]*\\s(?<!\\s(?:-[A-Za-z0-9]*o|--push-option)\\s)["\']?\\+[^\\s;&|]'), reason: 'force push (use --force-with-lease)' },
+  // A +ref refspec force-pushes that ref like --force does; pushForces reads
+  // the push options so the value of -o or --push-option (-o +build) is not a refspec.
+  { level: 'strict', id: 'git-force-any',    segment: true, regex: new RegExp(GIT + 'push\\b(?=[^;&|\\n]*' + FORCE_FLAG + ')|' + GIT + 'push\\b[^;&|\\n]*\\s["\']?\\+[^\\s;&|]'), confirm: (t) => pushForces(t), reason: 'force push (use --force-with-lease)' },
   { level: 'strict', id: 'git-checkout-dot', regex: new RegExp(GIT + 'checkout\\s+\\.'),                                     reason: 'git checkout . discards changes' },
   { level: 'strict', id: 'sudo-rm',          regex: /\bsudo\s+rm\b|\bsudo\b[^;&|\n]*\brm\b/, confirm: (t) => /\bsudo\s+rm\b/.test(t) || sudoRunsRm(t), reason: 'sudo rm has elevated privileges' },
   { level: 'strict', id: 'docker-prune',     regex: /\bdocker\s+(system|image|container|builder|buildx|network)\s+prune/,      reason: 'docker prune removes unused images, containers, networks or build cache' },
@@ -730,15 +730,39 @@ function sudoRunsRm(cmd) {
   return false;
 }
 
+// The arguments after <sub> of each git command the shell reader finds, with
+// redirects and their targets set apart; each list's .early counts the
+// arguments before the first redirect. null, so the caller refuses, when the
+// reader is not sure of the line or finds fewer such commands than the text names.
+function gitArgs(cmd, sub, textRegex) {
+  const read = readShell(cmd);
+  if (!read.sure) return null;
+  const lists = [];
+  for (const f of read.frames) {
+    for (const c of f.cmds) {
+      const words = argv(c).map((w) => w.value);
+      const g = words.findIndex((w) => base(w) === 'git');
+      const s = g < 0 ? -1 : words.indexOf(sub, g + 1);
+      if (s < 0) continue;
+      const redirect = c.words.findIndex((w) => w.op && w.op !== '(' && w.op !== ')');
+      const list = words.slice(s + 1);
+      list.early = redirect < 0 ? list.length : Math.max(0, c.words.slice(0, redirect).filter((w) => !w.op && !w.target).length - s - 1);
+      lists.push(list);
+    }
+  }
+  return lists.length < (cmd.match(textRegex) || []).length ? null : lists;
+}
+
 // git clean deletes only with a force flag and no dry run. The value of -e or
 // --exclude is a pattern (-e -foo), not a flag. A force flag in the first word
-// after clean (-f, -nf, -fn) counts on its own, as it always has.
+// after clean (-f, -nf, -fn, -efoo) counts on its own, as it always has, and a
+// force flag after a redirect counts too; a dry run after a redirect is not read.
 const GIT_CLEAN = new RegExp(GIT + 'clean\\b', 'g');
 const GIT_CLEAN_FIRST = new RegExp(GIT + 'clean\\s+(-\\w*f|-f)');
 function cleanForces(cmd) {
   if (GIT_CLEAN_FIRST.test(cmd)) return true;
-  for (const m of cmd.matchAll(GIT_CLEAN)) {
-    const words = shellWords(firstCommand(cmd.slice(m.index + m[0].length).split('|')[0]));
+  const lists = gitArgs(cmd, 'clean', GIT_CLEAN);
+  return !lists || lists.some((words) => {
     let force = false;
     let dry = false;
     for (let k = 0; k < words.length; k++) {
@@ -749,19 +773,40 @@ function cleanForces(cmd) {
         const name = w.slice(neg ? 5 : 2);
         if (!neg && /^e(?:x(?:c(?:l(?:u(?:de?)?)?)?)?)?$/.test(name)) k++;
         else if (/^f(?:o(?:r(?:ce?)?)?)?$/.test(name)) force = !neg;
-        else if (/^d(?:r(?:y(?:-(?:r(?:un?)?)?)?)?)?$/.test(name)) dry = !neg;
+        else if (/^d(?:r(?:y(?:-(?:r(?:un?)?)?)?)?)?$/.test(name)) dry = (!neg && k < words.early) || (neg ? false : dry);
         continue;
       }
       if (!w.startsWith('-')) continue;
       for (let j = 1; j < w.length; j++) {
         if (w[j] === 'e') { if (j === w.length - 1) k++; break; }
         if (w[j] === 'f') force = true;
-        if (w[j] === 'n') dry = true;
+        if (w[j] === 'n' && k < words.early) dry = true;
       }
     }
-    if (force && !dry) return true;
-  }
-  return false;
+    return force && !dry;
+  });
+}
+
+// A force flag, or a +ref refspec once each option has taken exactly its own
+// value: -o and --push-option take one word (-o +build), an attached value
+// (-ofoo, -oo) takes none, so -oo +topic and -o -o +x still push +refs.
+const GIT_PUSH = new RegExp(GIT + 'push\\b', 'g');
+const PUSH_FORCE_FLAG = new RegExp(GIT + 'push\\b(?=[^;&|\\n]*' + FORCE_FLAG + ')');
+const PUSH_VALUE = new Set(['-o', '--push-option']);
+function pushForces(cmd) {
+  if (PUSH_FORCE_FLAG.test(maskQuotedSeparators(cmd))) return true;
+  const lists = gitArgs(cmd, 'push', GIT_PUSH);
+  return !lists || lists.some((words) => {
+    for (let k = 0; k < words.length; k++) {
+      const w = words[k];
+      if (w === '--') return words.slice(k + 1).some((x) => x.startsWith('+'));
+      if (PUSH_VALUE.has(w)) { k++; continue; }
+      if (w.startsWith('--')) continue;
+      if (/^-./.test(w)) { if (w.indexOf('o') === w.length - 1) k++; continue; }
+      if (w.startsWith('+')) return true;
+    }
+    return false;
+  });
 }
 
 function checkCommand(cmd, safetyLevel = SAFETY_LEVEL) {

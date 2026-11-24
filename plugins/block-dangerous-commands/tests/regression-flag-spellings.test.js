@@ -85,3 +85,13 @@ describe('sudo named by its path (strict)', () => {
     for (const c of ['/usr/bin/sudo rm -rf build', '/usr/bin/sudo -n rm x']) shouldBlock(c, 'sudo-rm', 'strict');
   });
 });
+
+describe('git clean with a redirect between its operands', () => {
+  it('still sees a force flag after a redirect', () => {
+    for (const c of ['git clean 2>/dev/null -f', 'git clean -d >log -f', 'git clean 2>&1 -f']) shouldBlock(c, 'git-clean-f');
+  });
+  it('still refuses these dry runs, which main or the earlier reading refused', () => {
+    for (const c of ['git clean -efoo', 'git clean -f --dry-run', 'git clean --force 2>/dev/null -n']) shouldBlock(c, 'git-clean-f');
+  });
+  it('still allows a dry run before any redirect', () => shouldAllow('git clean -n 2>/dev/null -f'));
+});

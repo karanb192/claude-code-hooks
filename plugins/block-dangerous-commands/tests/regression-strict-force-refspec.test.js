@@ -41,3 +41,11 @@ describe('force push by a +ref refspec at strict', () => {
   });
   it('still blocks a +ref after a push option', () => shouldBlock('git push -o +build origin +topic', 'git-force-any', 'strict'));
 });
+
+describe('each push option takes exactly its own value', () => {
+  it('still blocks a +ref after an option whose value is attached or already taken', () => {
+    for (const c of ['git push -oo +topic origin', 'git push -o -o +x origin', 'git push --repo +t'])
+      shouldBlock(c, 'git-force-any', 'strict');
+  });
+  it('allows the separate value of -o', () => shouldAllow('git push -ofoo -o +x', 'strict'));
+});
