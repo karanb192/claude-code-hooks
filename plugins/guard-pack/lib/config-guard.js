@@ -235,6 +235,15 @@ function log(data) {
   } catch {}
 }
 
+// What the log keeps of a refused call: the guard, the rule and, for Bash,
+// the command name alone. No argument text is logged, so a token or
+// password typed into the command never reaches the log file.
+function commandName(command) {
+  if (typeof command !== 'string') return undefined;
+  const first = command.trim().split(/\s+/)[0] || '';
+  return /^[\w./-]{1,32}$/.test(first) ? path.posix.basename(first) : undefined;
+}
+
 // True when the command redirects output into a protected token:
 // "> path", ">> path", "2> path", ">| path" (with optional quoting/prefix).
 function redirectsInto(cmd, tokenRegex) {
@@ -961,8 +970,8 @@ async function main() {
     if (result.blocked) {
       const shouldAsk = ASK[result.level] === true;
       const decision = shouldAsk ? 'ask' : 'deny';
-      const target = tool_input?.file_path || tool_input?.command?.slice(0, 100);
-      log({ level: shouldAsk ? 'ASK' : 'BLOCKED', id: result.id, priority: result.level, decision, tool: tool_name, target, session_id, cwd, permission_mode });
+      const command = tool_name === 'Bash' ? commandName(tool_input?.command) : undefined;
+      log({ level: shouldAsk ? 'ASK' : 'BLOCKED', guard: 'config-guard', id: result.id, priority: result.level, decision, tool: tool_name, command, session_id, cwd, permission_mode });
       return console.log(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -973,8 +982,10 @@ async function main() {
     }
     console.log('{}');
   } catch (e) {
-    log({ level: 'ERROR', error: e.message });
-    console.log(data !== null && typeof data === 'object' ? guardError(e) : '{}');
+    // A JSON parse error quotes the input it failed on, so log a fixed text.
+    const parsed = data !== null && typeof data === 'object';
+    log({ level: 'ERROR', error: parsed ? e.message : 'hook input is not valid JSON' });
+    console.log(parsed ? guardError(e) : '{}');
   }
 }
 
@@ -983,6 +994,6 @@ if (require.main === module) {
 } else {
   module.exports = {
     PROTECTED_PATHS, BASH_TOKENS, LEVELS, SAFETY_LEVEL, ASK,
-    checkTool, checkFilePath, checkBashCommand, stripTextHeredocs, registeredHookScripts,
+    checkTool, checkFilePath, checkBashCommand, stripTextHeredocs, registeredHookScripts, commandName,
   };
 }
