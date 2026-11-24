@@ -105,6 +105,9 @@ const REFUSED = [
   // The branch-aware rules read the branch the command reaches.
   { cmd: 'git checkout main && git commit -m x', id: 'commit-on-protected' },
   { cmd: `git -C ${OTHER} commit -m x`, id: 'commit-on-protected' },
+  // A quoted word with a space stays as typed for the patterns, but the file
+  // operand check reads the word as bash passes it.
+  { cmd: 'cat "my dir/.e"nv', id: 'read-secret-file' },
 ];
 
 const ALLOWED = [
@@ -134,9 +137,8 @@ const KNOWN_MISSED = [
   // but a neutral name moved there by the later call does not.
   { cmd: "cat > Makefile <<'EOF'\nclean:\n\trm -rf ~\nEOF" },
   { cmd: "mkdir -p d && cat > d/x <<'EOF'\nrm -rf ~\nEOF" },
-  // A loop variable is not resolved; a quoted word with a space stays as typed.
+  // A loop variable is not resolved.
   { cmd: 'for g in git; do $g push origin main; done' },
-  { cmd: 'cat "my dir/.e"nv' },
 ];
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'shell-rewrites-'));
