@@ -17,7 +17,7 @@ const os = require('node:os');
 const {
   TEXT_PATTERNS, LEVELS, SAFETY_LEVEL, NEGATION_CONTEXT,
   auditContent, formatFindings, sanitizeExcerpt, codepointLabel,
-  importsOf, startupFiles, MAX_FILES, MAX_FILE_BYTES, MAX_IMPORTS_PER_FILE, MAX_RULE_DEPTH,
+  importsOf, startupFiles, pathScoped, MAX_FILES, MAX_FILE_BYTES, MAX_IMPORTS_PER_FILE, MAX_RULE_DEPTH,
 } = require('../instructions-audit.js');
 
 const SCRIPT_PATH = path.join(__dirname, '../instructions-audit.js');
@@ -70,6 +70,8 @@ function runHook(input, env = {}) {
     if (!('HOOK_AUDIT_WARN_ONLY' in env)) delete childEnv.HOOK_AUDIT_WARN_ONLY;
     if (!('HOOK_FAIL_OPEN' in env)) delete childEnv.HOOK_FAIL_OPEN;
     if (!('CLAUDE_CONFIG_DIR' in env)) delete childEnv.CLAUDE_CONFIG_DIR;
+    // The fallback lock folder lives in the temp dir; keep it inside the test home.
+    if (!('TMPDIR' in env)) { childEnv.TMPDIR = path.join(TEST_HOME, 'tmp'); fs.mkdirSync(childEnv.TMPDIR, { recursive: true }); }
     const child = spawn('node', [SCRIPT_PATH], { env: childEnv });
     let stdout = '';
     let stderr = '';
@@ -683,7 +685,7 @@ describe('Start-up audit: a session is recorded as audited only after a full aud
   const audited = (id) => fs.existsSync(path.join(stateDir, `${id}.audited`));
   const posix = process.platform !== 'win32' && process.getuid && process.getuid() !== 0;
 
-  it('a lock that cannot be saved blocks every call and leaves no audited marker', { skip: !posix }, async () => {
+  it('an unreadable lock (a directory at the lock path) blocks every call and leaves no audited marker', { skip: !posix }, async () => {
     const root = project({ 'CLAUDE.md': EXFIL });
     const id = 'startup-lockfail';
     fs.mkdirSync(path.join(stateDir, `${id}.json`), { recursive: true }); // a directory where the lock file goes
@@ -787,6 +789,125 @@ describe('Start-up audit: traversal and scope', () => {
     assert.deepStrictEqual(importsOf('````md\n```\n@inside.md\n```\n````\n@after.md\n'), ['after.md']);
     assert.deepStrictEqual(importsOf('~~~\n```\n~~~\n@after.md\n'), ['after.md']);
     assert.deepStrictEqual(importsOf('```js\ncode\n```\n@after.md\n'), ['after.md']);
+  });
+});
+
+// Fails the lock publish inside the hook process: every rename onto a lock
+// file, and with FAKE_FS_FAIL=all every direct write to one as well.
+const FAIL_PRELOAD = path.join(TEST_HOME, 'fail-lock-writes.js');
+fs.writeFileSync(FAIL_PRELOAD, `
+const fs = require('fs');
+const hit = (p) => /\\.json$/.test(String(p)) && /instructions-audit/.test(String(p));
+const fail = (what) => { const e = new Error('injected ' + what + ' failure'); e.code = 'EIO'; return e; };
+const rename = fs.renameSync;
+fs.renameSync = function (a, b) { if (hit(b)) throw fail('rename'); return rename.apply(this, arguments); };
+if (process.env.FAKE_FS_FAIL === 'all') {
+  const write = fs.writeFileSync;
+  fs.writeFileSync = function (p) { if (hit(p)) throw fail('write'); return write.apply(this, arguments); };
+}
+`);
+const failing = (mode) => ({ NODE_OPTIONS: `--require ${FAIL_PRELOAD}`, FAKE_FS_FAIL: mode });
+
+describe('Start-up audit: a confirmed finding is never lost to a failed save', () => {
+  const stateDir = path.join(TEST_HOME, '.claude', 'hooks-state', 'instructions-audit');
+  const audited = (id) => fs.existsSync(path.join(stateDir, `${id}.audited`));
+
+  it('a failed atomic rename still saves the lock by a direct write, and the next call is blocked', async () => {
+    const root = project({ 'CLAUDE.md': EXFIL });
+    const id = 'startup-renamefail';
+    assert.ok(!fs.existsSync(path.join(stateDir, `${id}.json`)));
+    const a = await runHook(prompt(id, root), failing('rename'));
+    assert.strictEqual(a.output.decision, 'block');
+    assert.ok(fs.existsSync(path.join(stateDir, `${id}.json`)));
+    const b = await runHook(tool(id, project({})));
+    assert.strictEqual(b.output.hookSpecificOutput.permissionDecision, 'deny');
+  });
+
+  it('when no lock can be written the finding still blocks, even with HOOK_FAIL_OPEN=true, and no marker is left', async () => {
+    const root = project({ 'CLAUDE.md': EXFIL });
+    const id = 'startup-allfail';
+    for (const env of [failing('all'), { ...failing('all'), HOOK_FAIL_OPEN: 'true' }]) {
+      const { output } = await runHook(prompt(id, root), env);
+      assert.strictEqual(output.decision, 'block');
+      assert.ok(output.reason.includes('could not be saved'));
+      assert.ok(!audited(id));
+    }
+    const t = await runHook(tool(id, root), failing('all'));
+    assert.strictEqual(t.output.hookSpecificOutput.permissionDecision, 'deny');
+  });
+
+  it('a later InstructionsLoaded finding whose lock fails to publish atomically is still saved and enforced', async () => {
+    const id = 'late-renamefail';
+    const root = project({ 'CLAUDE.md': '# clean\n' });
+    assert.deepStrictEqual((await runHook(prompt(id, root))).output, {});
+    assert.ok(audited(id));
+    const il = await runHook(makePayload(EXFIL, { session_id: id, load_reason: 'nested_traversal', file_path: path.join(root, 'sub/CLAUDE.md') }), failing('rename'));
+    assert.ok(il.output.stopReason.includes('locked the session'));
+    const t = await runHook(tool(id, root));
+    assert.strictEqual(t.output.hookSpecificOutput.permissionDecision, 'deny');
+  });
+
+  it('a later InstructionsLoaded finding with no lock saved says so and drops the clean marker', async () => {
+    const id = 'late-allfail';
+    const root = project({ 'CLAUDE.md': '# clean\n' });
+    await runHook(prompt(id, root));
+    assert.ok(audited(id));
+    const il = await runHook(makePayload(EXFIL, { session_id: id, load_reason: 'nested_traversal', file_path: path.join(root, 'sub/CLAUDE.md') }), failing('all'));
+    assert.ok(il.output.stopReason.includes('could not save the session lock'));
+    assert.ok(il.output.systemMessage.includes('could not save the session lock'));
+    assert.ok(!audited(id));
+  });
+});
+
+describe('Start-up audit: the marker records the mode and level it ran under', () => {
+  it('a warn-only audit does not excuse an enforcing registration', async () => {
+    const root = project({ 'CLAUDE.md': EXFIL });
+    const id = 'mode-warn-then-enforce';
+    assert.deepStrictEqual((await runHook(prompt(id, root), { HOOK_AUDIT_WARN_ONLY: 'true' })).output, {});
+    const t = await runHook(tool(id, root));
+    assert.strictEqual(t.output.hookSpecificOutput.permissionDecision, 'deny');
+  });
+  it('an audit at a lower level does not excuse a stricter one', async () => {
+    const root = project({ 'CLAUDE.md': EXFIL }); // secret-exfil is a high-level rule
+    const id = 'mode-critical-then-high';
+    assert.deepStrictEqual((await runHook(prompt(id, root), { HOOK_AUDIT_LEVEL: 'critical' })).output, {});
+    assert.strictEqual((await runHook(tool(id, root))).output.hookSpecificOutput.permissionDecision, 'deny');
+  });
+  it('an enforcing audit covers a later warn-only or lower-level registration', async () => {
+    const root = project({ 'CLAUDE.md': '# clean\n' });
+    const id = 'mode-enforce-covers';
+    await runHook(prompt(id, root), { HOOK_AUDIT_LEVEL: 'strict' });
+    fs.writeFileSync(path.join(root, 'CLAUDE.md'), EXFIL);
+    assert.deepStrictEqual((await runHook(tool(id, root), { HOOK_AUDIT_WARN_ONLY: 'true' })).output, {});
+    assert.deepStrictEqual((await runHook(tool(id, root))).output, {});
+  });
+});
+
+describe('Start-up audit: aliases, scope, limits and line endings', () => {
+  it('two symlinks to one file expand its relative imports from each link\'s folder', { skip: process.platform === 'win32' }, () => {
+    const root = project({ 'shared/real.md': '@sibling.md\n', 'a/sibling.md': '# fine\n', 'b/sibling.md': EXFIL, 'CLAUDE.md': '@a/link.md\n@b/link.md\n' });
+    fs.symlinkSync(path.join(root, 'shared/real.md'), path.join(root, 'a/link.md'));
+    fs.symlinkSync(path.join(root, 'shared/real.md'), path.join(root, 'b/link.md'));
+    const found = scan(root).map((f) => path.relative(root, f.file));
+    assert.ok(found.includes('a/sibling.md') && found.includes(path.join('b', 'sibling.md')), found.join(','));
+  });
+  it('only a non-empty paths list scopes a rule, with the key quoted or not', () => {
+    for (const fm of ['paths:\n  - "src/**"', '"paths": ["src/**"]', "'paths':\n  - src/**", 'paths: src/**/*.ts'])
+      assert.strictEqual(pathScoped(`---\n${fm}\n---\nbody\n`), true, fm);
+    for (const fm of ['paths: []', 'paths:', 'paths: ""', 'description: x', 'paths:\n  -'])
+      assert.strictEqual(pathScoped(`---\n${fm}\n---\nbody\n`), false, fm);
+  });
+  it('a scoped rule does not count toward the start-up limits, wherever it sorts', () => {
+    for (const name of ['0-scoped.md', 'zz-scoped.md']) {
+      const files = { [`.claude/rules/${name}`]: '---\npaths: ["src/**"]\n---\n' + EXFIL };
+      for (let i = 0; i < MAX_FILES; i++) files[`.claude/rules/r${String(i).padStart(3, '0')}.md`] = '# rule\n';
+      const found = scan(project(files));
+      assert.strictEqual(found.length, MAX_FILES, name);
+    }
+  });
+  it('strips a carriage return before matching a fence', () => {
+    assert.deepStrictEqual(importsOf('```\r\n@inside.md\r\n```\r\n@after.md\r\n'), ['after.md']);
+    assert.deepStrictEqual(importsOf('~~~~\r\n~~~\r\n@inside.md\r\n~~~~\r\n'), []);
   });
 });
 

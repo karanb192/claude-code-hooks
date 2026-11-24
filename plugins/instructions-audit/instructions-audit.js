@@ -281,18 +281,32 @@ const HOME = process.env.HOME || process.env.USERPROFILE || require('os').homedi
 const CLAUDE_HOME = path.resolve(process.env.CLAUDE_CONFIG_DIR || path.join(HOME, '.claude'));
 const STATE_DIR = path.join(HOME, '.claude', 'hooks-state', 'instructions-audit');
 
+// Where the lock goes when ~/.claude/hooks-state cannot be written: a
+// per-user folder in the temp dir. The blocking hooks read both.
+const FALLBACK_DIR = path.join(require('os').tmpdir(), `claude-instructions-audit-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`);
+const safeId = (sessionId) => String(sessionId || 'unknown-session').replace(/[^A-Za-z0-9._-]/g, '_');
+
 function flagPath(sessionId) {
-  const safe = String(sessionId || 'unknown-session').replace(/[^A-Za-z0-9._-]/g, '_');
-  return path.join(STATE_DIR, `${safe}.json`);
+  return path.join(STATE_DIR, `${safeId(sessionId)}.json`);
 }
 
+const flagPaths = (sessionId) => [flagPath(sessionId), path.join(FALLBACK_DIR, `${safeId(sessionId)}.json`)];
+
 function auditedPath(sessionId) {
-  return flagPath(sessionId).replace(/\.json$/, '.audited');
+  return path.join(STATE_DIR, `${safeId(sessionId)}.audited`);
+}
+
+// The mode and level this registration enforces.
+function auditMode() {
+  return {
+    enforce: !envBool('HOOK_AUDIT_WARN_ONLY', false),
+    level: LEVELS[process.env.HOOK_AUDIT_LEVEL] ? process.env.HOOK_AUDIT_LEVEL : SAFETY_LEVEL,
+  };
 }
 
 // A temp file renamed into place: a reader sees the whole file or none.
 function writeAtomic(file, text) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   try {
     fs.writeFileSync(tmp, text);
@@ -304,11 +318,12 @@ function writeAtomic(file, text) {
 }
 
 // Recorded only after the start-up audit came back clean or its lock was
-// saved, so deleting a lock flag clears it instead of re-auditing and
-// relocking. A marker that fails to save only means the audit runs again.
-function markAudited(sessionId) {
+// saved, with the mode and level it ran under, so deleting a lock flag clears
+// it instead of re-auditing and relocking, and a stricter registration audits
+// again. A marker that fails to save only means the audit runs again.
+function markAudited(sessionId, mode = auditMode()) {
   try {
-    writeAtomic(auditedPath(sessionId), new Date().toISOString());
+    writeAtomic(auditedPath(sessionId), JSON.stringify({ ts: new Date().toISOString(), enforce: mode.enforce, level: mode.level }));
     // Flags and markers for long-gone sessions are inert; sweep anything over 7 days old.
     for (const f of fs.readdirSync(STATE_DIR)) {
       const p = path.join(STATE_DIR, f);
@@ -317,26 +332,50 @@ function markAudited(sessionId) {
   } catch {}
 }
 
-// Throws when the lock cannot be saved: the caller must not treat the
-// session as audited.
-function writeFlag(sessionId, info) {
-  writeAtomic(flagPath(sessionId), JSON.stringify({ ts: new Date().toISOString(), ...info }));
-  markAudited(sessionId);
+// The recorded audit covers this registration: it enforced (or this one only
+// warns) at the same or a stricter level.
+function auditCovers(sessionId, mode = auditMode()) {
+  try {
+    const m = JSON.parse(fs.readFileSync(auditedPath(sessionId), 'utf8'));
+    return (m.enforce === true || !mode.enforce) && (LEVELS[m.level] || 0) >= LEVELS[mode.level];
+  } catch {
+    return false;
+  }
+}
+
+// Saves the lock and returns where. Tries an atomic write in the state dir,
+// then in the fallback dir, then a direct write to either: a partial file
+// still reads as a lock. Throws only when nothing could be written.
+function writeFlag(sessionId, info, mode = auditMode()) {
+  const text = JSON.stringify({ ts: new Date().toISOString(), ...info });
+  let saved = null;
+  for (const f of flagPaths(sessionId)) {
+    try { writeAtomic(f, text); saved = f; break; } catch {}
+  }
+  for (const f of saved ? [] : flagPaths(sessionId)) {
+    try { fs.mkdirSync(path.dirname(f), { recursive: true, mode: 0o700 }); fs.writeFileSync(f, text); saved = f; break; } catch {}
+  }
+  if (!saved) throw new Error('the session lock could not be written');
+  markAudited(sessionId, mode);
+  return saved;
 }
 
 // No file means no lock. A lock that exists but cannot be read or parsed
 // still locks the session.
 function readFlag(sessionId) {
-  let text;
-  try { text = fs.readFileSync(flagPath(sessionId), 'utf8'); } catch (e) {
-    if (e.code === 'ENOENT') return null;
-    return { file: '(unreadable lock flag)', count: '?', first: e.code || 'read error' };
+  for (const f of flagPaths(sessionId)) {
+    let text;
+    try { text = fs.readFileSync(f, 'utf8'); } catch (e) {
+      if (e.code === 'ENOENT' || e.code === 'ENOTDIR') continue;
+      return { file: '(unreadable lock flag)', count: '?', first: e.code || 'read error', path: f };
+    }
+    try {
+      const flag = JSON.parse(text);
+      if (flag && typeof flag === 'object') return { ...flag, path: f };
+    } catch {}
+    return { file: '(malformed lock flag)', count: '?', first: 'malformed', path: f };
   }
-  try {
-    const flag = JSON.parse(text);
-    if (flag && typeof flag === 'object') return flag;
-  } catch {}
-  return { file: '(malformed lock flag)', count: '?', first: 'malformed' };
+  return null;
 }
 
 // ─── start-up instruction files ─────────────────────────────────────────────
@@ -351,6 +390,9 @@ function readFlag(sessionId) {
 const MAX_FILES = 200;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 16 * 1024 * 1024;
+// Reads made to find and classify files, scoped rules included.
+const MAX_READS = 1000;
+const MAX_READ_BYTES = 64 * 1024 * 1024;
 const MAX_IMPORT_DEPTH = 5;
 const MAX_IMPORTS_PER_FILE = 64;
 const MAX_RULE_DEPTH = 6;
@@ -369,7 +411,8 @@ const ABSENT = new Set(['ENOENT', 'ENOTDIR', 'ENAMETOOLONG']);
 function importsOf(content) {
   const out = [];
   let fence = null;
-  for (const line of content.split('\n')) {
+  for (const raw of content.split('\n')) {
+    const line = raw.replace(/\r$/, '');
     const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
     if (fence) {
       if (m && m[1][0] === fence[0] && m[1].length >= fence.length && !m[2].trim()) fence = null;
@@ -385,18 +428,38 @@ function importsOf(content) {
   return out;
 }
 
-// A rule with a paths: list in its frontmatter loads only when Claude works on
-// a matching file, so InstructionsLoaded audits it then, not at start-up.
+// A rule with a non-empty paths: list in its frontmatter loads only when
+// Claude works on a matching file, so InstructionsLoaded audits it then, not
+// at start-up. An empty list, or none, makes it an ordinary start-up rule.
 function pathScoped(content) {
-  const m = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/.exec(content);
-  return !!m && /^paths\s*:/m.test(m[1]);
+  const m = /^﻿?---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(content);
+  if (!m) return false;
+  const lines = m[1].split(/\r?\n/);
+  const empty = /^(?:\[\s*\]|""|''|null|~)?$/;
+  for (let i = 0; i < lines.length; i++) {
+    const k = /^(["']?)paths\1[ \t]*:[ \t]*(.*?)[ \t]*(?:#.*)?$/.exec(lines[i]);
+    if (!k) continue;
+    if (k[2]) return !empty.test(k[2]) && !/^\[\s*(?:""|''|,|\s)*\]$/.test(k[2]);
+    for (let j = i + 1; j < lines.length && /^(?:[ \t]|-)/.test(lines[j]); j++) {
+      const item = /^[ \t]*-[ \t]*(.*?)[ \t]*(?:#.*)?$/.exec(lines[j]);
+      if (item && !empty.test(item[1])) return true;
+    }
+    return false;
+  }
+  return false;
 }
 
 function startupFiles(cwd, home = HOME, platform = process.platform, configDir = CLAUDE_HOME) {
-  // Each file is read once; a file reached again by a shorter import chain
-  // has its imports expanded again from that depth.
-  const cache = new Map();
+  // File contents are read once per real path. A path-scoped rule is read to
+  // classify it but not admitted, so it counts only against the discovery
+  // budget. Import expansion is tracked per alias directory, since two
+  // symlinks to one file resolve relative imports in different places, and
+  // a file reached again by a shorter chain is expanded again from there.
+  const entries = new Map();
+  const expanded = new Map();
   const files = [];
+  let reads = 0;
+  let readBytes = 0;
   let total = 0;
   const add = (file, depth = 0, rule = false) => {
     let real;
@@ -408,21 +471,28 @@ function startupFiles(cwd, home = HOME, platform = process.platform, configDir =
     if (st.isDirectory()) return;
     // A FIFO or device would hang the hook; Claude Code cannot load one as text either.
     if (!st.isFile()) throw new Error(`${file} is not a regular file`);
-    let entry = cache.get(real);
-    if (entry && entry.depth <= depth) return;
+    let entry = entries.get(real);
     if (!entry) {
-      if (files.length >= MAX_FILES) throw new Error(`more than ${MAX_FILES} start-up instruction files`);
       if (st.size > MAX_FILE_BYTES) throw new Error(`${file} is larger than ${MAX_FILE_BYTES} bytes`);
-      total += st.size;
-      if (total > MAX_TOTAL_BYTES) throw new Error(`start-up instruction files exceed ${MAX_TOTAL_BYTES} bytes`);
+      if (++reads > MAX_READS) throw new Error(`more than ${MAX_READS} instruction files to classify`);
+      readBytes += st.size;
+      if (readBytes > MAX_READ_BYTES) throw new Error(`instruction files to classify exceed ${MAX_READ_BYTES} bytes`);
       let content;
       try { content = fs.readFileSync(real, 'utf8'); } catch (e) { throw new Error(`cannot read ${file} (${e.code || e.message})`); }
-      if (rule && pathScoped(content)) return;
-      entry = { content, depth };
-      cache.set(real, entry);
-      files.push({ file, content });
+      entry = { content, admitted: false };
+      entries.set(real, entry);
     }
-    entry.depth = depth;
+    if (rule && !entry.admitted && pathScoped(entry.content)) return;
+    if (!entry.admitted) {
+      if (files.length >= MAX_FILES) throw new Error(`more than ${MAX_FILES} start-up instruction files`);
+      total += Buffer.byteLength(entry.content);
+      if (total > MAX_TOTAL_BYTES) throw new Error(`start-up instruction files exceed ${MAX_TOTAL_BYTES} bytes`);
+      entry.admitted = true;
+      files.push({ file, content: entry.content });
+    }
+    const key = `${path.dirname(file)}\0${real}`;
+    if (expanded.has(key) && expanded.get(key) <= depth) return;
+    expanded.set(key, depth);
     if (depth >= MAX_IMPORT_DEPTH) return;
     for (const imp of importsOf(entry.content)) {
       const target = imp.startsWith('~/') ? path.join(home, imp.slice(2)) : imp;
@@ -430,13 +500,13 @@ function startupFiles(cwd, home = HOME, platform = process.platform, configDir =
     }
   };
   const rules = (dir, depth = 0) => {
-    let entries;
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) {
+    let list;
+    try { list = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) {
       if (ABSENT.has(e.code)) return;
       throw new Error(`cannot read ${dir} (${e.code || e.message})`);
     }
-    entries.sort((a, b) => (a.name < b.name ? -1 : 1));
-    for (const e of entries) {
+    list.sort((a, b) => (a.name < b.name ? -1 : 1));
+    for (const e of list) {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) {
         if (depth >= MAX_RULE_DEPTH) throw new Error(`${p} is more than ${MAX_RULE_DEPTH} directories deep in a rules folder`);
@@ -456,21 +526,19 @@ function startupFiles(cwd, home = HOME, platform = process.platform, configDir =
   return files;
 }
 
-// Audit the start-up files once per session. Returns the lock flag on a
-// finding (and saves it), or null. Throws when the files cannot be read in
-// full or the lock cannot be saved, so the caller can fail closed; the
-// audited marker is written only on success.
-function auditStartup(data, home = HOME, configDir = CLAUDE_HOME) {
-  const level = LEVELS[process.env.HOOK_AUDIT_LEVEL] ? process.env.HOOK_AUDIT_LEVEL : SAFETY_LEVEL;
-  const warnOnly = envBool('HOOK_AUDIT_WARN_ONLY', false);
+// Audit the start-up files once per session. Returns the lock on a finding
+// (with unsaved: true when it could not be written; the finding still
+// blocks), or null. Throws only when the files cannot be read in full, so the
+// caller can fail closed; the audited marker is written only on success.
+function auditStartup(data, mode = auditMode(), home = HOME, configDir = CLAUDE_HOME) {
   let hit = null;
   let flagged = 0;
   for (const { file, content } of startupFiles(data.cwd || process.cwd(), home, process.platform, configDir)) {
-    const findings = auditContent(content, level);
+    const findings = auditContent(content, mode.level);
     if (!findings.length) continue;
     flagged++;
     log({
-      level: warnOnly ? 'WARNED' : 'HALTED', file, load_reason: 'session_start (audited at first prompt or tool call)',
+      level: mode.enforce ? 'HALTED' : 'WARNED', file, load_reason: 'session_start (audited at first prompt or tool call)',
       session_id: data.session_id, cwd: data.cwd,
       findings: findings.map((f) => ({ id: f.id, priority: f.level, line: f.line })),
     });
@@ -478,9 +546,17 @@ function auditStartup(data, home = HOME, configDir = CLAUDE_HOME) {
     if (!hit) hit = { file, count: findings.length, first: `${findings[0].id} line ${findings[0].line}` };
   }
   if (hit && flagged > 1) hit.others = flagged - 1;
-  if (hit && !warnOnly) writeFlag(data.session_id, hit);
-  else if (data.session_id) markAudited(data.session_id);
-  return hit && !warnOnly ? hit : null;
+  if (hit && mode.enforce) {
+    try {
+      hit.path = writeFlag(data.session_id, hit, mode);
+    } catch (e) {
+      log({ level: 'ERROR', error: `lock not saved: ${e.message}`, session_id: data.session_id, cwd: data.cwd });
+      hit.unsaved = true;
+    }
+    return hit;
+  }
+  if (data.session_id) markAudited(data.session_id, mode);
+  return null;
 }
 
 function auditContent(content, safetyLevel = SAFETY_LEVEL) {
@@ -516,10 +592,11 @@ async function main() {
 
     // Enforcement arm: on the blocking events, honor an existing lockdown.
     if (hook_event_name === 'UserPromptSubmit' || hook_event_name === 'PreToolUse') {
+      const mode = auditMode();
       let flag = readFlag(session_id);
-      if (!flag && !(session_id && fs.existsSync(auditedPath(session_id)))) {
+      if (!flag && !(session_id && auditCovers(session_id, mode))) {
         try {
-          flag = auditStartup(data);
+          flag = auditStartup(data, mode);
         } catch (e) {
           log({ level: 'ERROR', error: e.message, session_id, cwd });
           if (process.env.HOOK_FAIL_OPEN === 'true') return console.log('{}');
@@ -530,10 +607,14 @@ async function main() {
       }
       if (!flag) return console.log('{}');
       const others = flag.others ? ` and ${flag.others} other file(s)` : '';
+      // A confirmed finding blocks even when its lock could not be saved;
+      // HOOK_FAIL_OPEN covers audits that could not run, not findings.
+      const recover = flag.unsaved
+        ? 'The session lock could not be saved, so the next prompt or tool call audits the start-up files again.'
+        : `If the findings are false positives, delete ${flag.path || flagPath(session_id)} to clear the lock.`;
       const notice =
         `🚨 instructions-audit locked this session: ${flag.count} suspicious pattern(s) in ${flag.file}${others} ` +
-        `(first: [${flag.first}]). Fix or quarantine the file and start a fresh session; ` +
-        `if the findings are false positives, delete ${flagPath(session_id)} to clear the lock.`;
+        `(first: [${flag.first}]). Fix or quarantine the file and start a fresh session. ${recover}`;
       if (hook_event_name === 'UserPromptSubmit') {
         return console.log(JSON.stringify({ decision: 'block', reason: notice }));
       }
@@ -550,8 +631,9 @@ async function main() {
     }
     if (typeof content !== 'string') return console.log('{}');
 
-    const level = LEVELS[process.env.HOOK_AUDIT_LEVEL] ? process.env.HOOK_AUDIT_LEVEL : SAFETY_LEVEL;
-    const warnOnly = envBool('HOOK_AUDIT_WARN_ONLY', false);
+    const mode = auditMode();
+    const level = mode.level;
+    const warnOnly = !mode.enforce;
     const findings = auditContent(content, level);
     if (findings.length === 0) return console.log('{}');
 
@@ -568,14 +650,20 @@ async function main() {
       const top = findings[0];
       // The lockdown flag is the enforcement that actually works today; the
       // universal continue:false is emitted too for builds that honor it.
+      let saved = true;
       try {
-        writeFlag(session_id, { file: label, count: findings.length, first: `${top.id} line ${top.line}` });
+        writeFlag(session_id, { file: label, count: findings.length, first: `${top.id} line ${top.line}` }, mode);
       } catch (e) {
-        // No marker either, so the first prompt or tool call audits the start-up files again.
+        saved = false;
         log({ level: 'ERROR', error: `lock not saved: ${e.message}`, session_id, cwd });
+        // A clean start-up marker must not stand for a session with a finding.
+        try { fs.unlinkSync(auditedPath(session_id)); } catch {}
       }
       out.continue = false;
-      out.stopReason = `${EMOJIS[top.level]} instructions-audit locked the session: ${findings.length} suspicious pattern(s) in ${label} (first: [${top.id}] line ${top.line})`;
+      out.stopReason = saved
+        ? `${EMOJIS[top.level]} instructions-audit locked the session: ${findings.length} suspicious pattern(s) in ${label} (first: [${top.id}] line ${top.line})`
+        : `${EMOJIS[top.level]} instructions-audit found ${findings.length} suspicious pattern(s) in ${label} (first: [${top.id}] line ${top.line}) but could not save the session lock, so later prompts and tool calls are not blocked for this file. Stop and inspect it.`;
+      if (!saved) out.systemMessage += `\n${out.stopReason}`;
     }
     console.log(JSON.stringify(out));
   } catch (e) {
