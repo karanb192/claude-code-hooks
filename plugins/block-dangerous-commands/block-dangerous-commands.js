@@ -75,9 +75,10 @@ const SUBST = '(?:\\$\\(|`)\\s*';
 const DOCKER_VALUE = '(?:-[cHl]|--(?:context|host|config|log-level|tlscacert|tlscert|tlskey))';
 const DOCKER = '\\bdocker(?:\\s+(?:' + DOCKER_VALUE + '(?:=|\\s+)\\S+|--(?!(?:context|host|config|log-level|tlscacert|tlscert|tlskey)(?:[=\\s]|$))[\\w-]+|-(?![cHl](?:[=\\s]|$))[A-Za-z][\\w-]*))*\\s+';
 // docker compose with its own options before the subcommand, so down is the
-// subcommand and not a service name (docker compose run down ls -v).
+// subcommand and not a service name (docker compose run down ls -v). docker's
+// own global options may come before compose (docker --context prod compose).
 const COMPOSE_VALUE = '(?:file|project-name|project-directory|env-file|profile|ansi|progress|parallel|context|host|log-level|tlscacert|tlscert|tlskey)';
-const COMPOSE = '\\bdocker(?:-compose|\\s+compose)(?:\\s+(?:(?:-[fpcH]|--' + COMPOSE_VALUE + ')(?:=|\\s+)\\S+|--(?!' + COMPOSE_VALUE + '(?:[=\\s]|$))[\\w-]+(?:=\\S*)?|-(?![fpcH](?:[=\\s]|$))[A-Za-z]\\S*))*\\s+';
+const COMPOSE = '(?:\\bdocker-compose|' + DOCKER + 'compose)(?:\\s+(?:(?:-[fpcH]|--' + COMPOSE_VALUE + ')(?:=|\\s+)\\S+|--(?!' + COMPOSE_VALUE + '(?:[=\\s]|$))[\\w-]+(?:=\\S*)?|-(?![fpcH](?:[=\\s]|$))[A-Za-z]\\S*))*\\s+';
 // chmod with its own options before the mode, so a file named 0777 is not the mode.
 const CHMOD = '\\bchmod(?:\\s+(?:-[RfvchHLP]+|--(?:recursive|verbose|changes|silent|quiet|dereference|no-dereference|preserve-root|no-preserve-root)?)(?=\\s))*\\s+';
 // -f alone or in a short-flag cluster (-fu, -uf, -vf). -o takes the rest of

@@ -59,3 +59,14 @@ describe('docker volume deletion in other forms', () => {
     }
   });
 });
+
+describe('compose down with volumes after docker global options', () => {
+  it('blocks docker global options before compose', () => {
+    for (const c of ['docker --context prod compose down -v', 'docker --context=prod compose down --volumes', 'docker -H ssh://h compose down -v', 'docker -c prod compose -p app down -v', 'docker --log-level debug compose down -v', 'sudo docker --context prod compose down -v'])
+      shouldBlock(c, 'docker-vol-rm');
+  });
+  it('allows compose commands that keep volumes after docker global options', () => {
+    for (const c of ['docker --context prod compose down', 'docker --context prod compose up -d', 'docker --context prod compose run --rm down ls -v', 'docker --context prod compose logs -f', 'docker --context prod ps'])
+      shouldAllow(c);
+  });
+});
