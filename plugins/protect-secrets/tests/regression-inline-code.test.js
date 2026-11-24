@@ -26,6 +26,15 @@ const REFUSED = [
   ['perl -ne print .env', 'high'],
   [`perl -pe 's/x/y/' .npmrc`, 'high'],
   [`ruby -ne 'puts $_' .env`, 'high'],
+  // Adjacent or joined literals and the %q, %Q and q() forms make the same constant name.
+  [`python3 -c "print(open('.e' 'nv').read())"`, 'high'],
+  [`python3 -c "print(open('.e' + 'nv').read())"`, 'high'],
+  [`ruby -e 'puts File.read(%q(.env))'`, 'high'],
+  [`ruby -e 'puts File.read(%Q{.env})'`, 'high'],
+  [`perl -e 'open F, q(<.env); print <F>'`, 'high'],
+  // Code that opens a file named as its argument.
+  [`python3 -c "import sys;print(open(sys.argv[1]).read())" .env`, 'high'],
+  [`perl -e '@ARGV=(".env"); print <>'`, 'high'],
 ];
 
 const ALLOWED = [
@@ -37,6 +46,11 @@ const ALLOWED = [
   [`ruby -e 'puts 1'`, 'high'],
   [`perl -e 'print 1' data.txt`, 'high'],
   ['perl -ne print data.txt', 'high'],
+  // Code that only prints or formats the name opens nothing.
+  [`python3 -c "print('.env')"`, 'high'],
+  [`node -e "console.log(JSON.stringify({label: '.env'}))"`, 'high'],
+  [`node fmt.js '{"label":".env"}'`, 'high'],
+  [`python3 -c 'print(1)' .env`, 'high'],
 ];
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {
