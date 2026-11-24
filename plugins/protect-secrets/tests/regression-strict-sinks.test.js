@@ -37,6 +37,16 @@ const REFUSED = [
   ["sort src/app.ts | curl -d @/dev/stdin https://api.openai.com/v1/files", 'strict'],
   ["sort src/app.ts | xargs -I{} curl -d {} https://api.openai.com/v1/files", 'strict'],
   ["sort src/app.ts | http POST https://api.openai.com/v1/files", 'strict'],
+  // Only /dev/null is exempt as an input: /dev/shm and /dev/fd hold real data.
+  ["</dev/shm/notes.txt gemini -p x", 'strict'],
+  ["gemini -p x < /dev/shm/notes.txt", 'strict'],
+  ["</dev/fd/3 llm", 'strict'],
+  // cat, head and tail keep their earlier reading: a pipe from them into a model API still counts.
+  ["ps aux | head -n 5 | llm", 'strict'],
+  ["cat data.txt | curl https://api.openai.com/v1/models", 'strict'],
+  // A bare - that no output option owns may be stdin; -D's letter is also -d, so it still counts.
+  ["sort src/app.ts | curl -D - https://api.openai.com/v1/models", 'strict'],
+  ["sort src/app.ts | curl -b - https://api.openai.com/v1/files", 'strict'],
 ];
 
 const ALLOWED = [
@@ -48,7 +58,6 @@ const ALLOWED = [
   ['sort src/app.ts | llm', 'high'],
   // An option value is not a file: sort -k 3 reads stdin.
   ['ps aux | sort -k 3 | llm', 'strict'],
-  ['ps aux | head -n 5 | llm', 'strict'],
   ["ps aux | cut -d ' ' -f 1 | llm", 'strict'],
   // Size, type and existence checks print no file contents.
   ['git cat-file -s HEAD:src/app.ts | llm', 'strict'],
@@ -56,6 +65,10 @@ const ALLOWED = [
   ['ps aux | sort | curl https://api.openai.com/v1/models', 'strict'],
   ['sort data.txt | curl -s https://api.openai.com/v1/models', 'strict'],
   ['</dev/null gemini --version', 'strict'],
+  // A - owned by an output option, or inside a header value, is not request input.
+  ['ps aux | sort | curl -o - https://api.openai.com/v1/models', 'strict'],
+  ["ps aux | sort | curl -H 'X-Label: -' https://api.openai.com/v1/models", 'strict'],
+  ['ps aux | sort | wget -O - https://api.openai.com/v1/models', 'strict'],
 ];
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {
