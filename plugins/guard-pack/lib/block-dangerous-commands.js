@@ -701,7 +701,8 @@ function firstCommand(stage) {
     if (ch === '\\' && q !== "'") { i++; continue; }
     if (q) { if (ch === q) q = ''; continue; }
     if (ch === '"' || ch === "'") q = ch;
-    else if (/[;&<>()\n]/.test(ch)) return stage.slice(0, i);
+    else if (/[<>]/.test(ch)) return stage.slice(0, i).replace(/(^|\s)\d+$/, '$1');
+    else if (/[;&()\n]/.test(ch)) return stage.slice(0, i);
   }
   return stage;
 }
@@ -754,6 +755,51 @@ function stageCommands(stage) {
   return out;
 }
 
+// Interpreters that run a program read on stdin when they get no script and
+// no code option (python3, perl, node, curl ... | python3 -). Per interpreter:
+// short options that carry the program (code), ones that only print or check
+// and exit (exit; perl -c is not one, since it runs BEGIN blocks), ones that
+// take a value in the rest of their word or the next word (value), ones that
+// take only the rest of their word (attached), and long options of each kind.
+const INTERPRETERS = [
+  [/^(?:python|pypy)(?:\d+(?:\.\d+)*)?$/, { code: 'cm', exit: 'hV', value: 'WX', attached: '', longCode: ['help', 'version'], longValue: ['check-hash-based-pycs'] }],
+  [/^(?:node|nodejs)$/, { code: 'ep', exit: 'hvc', value: 'rC', attached: '', longCode: ['eval', 'print', 'help', 'version', 'check'], longValue: ['require', 'import', 'loader', 'experimental-loader', 'input-type', 'conditions', 'env-file', 'title'] }],
+  [/^perl(?:\d+(?:\.\d+)*)?$/, { code: 'eE', exit: 'hvV', value: '', attached: 'IMmxlC0idD', longCode: ['help', 'version'], longValue: [] }],
+  [/^ruby(?:\d+(?:\.\d+)*)?$/, { code: 'e', exit: 'hvc', value: 'rICE', attached: 'xF0KTW', longCode: ['help', 'version'], longValue: [] }],
+  [/^irb$/, { code: '', exit: 'v', value: 'rI', attached: '', longCode: ['help', 'version'], longValue: [] }],
+  [/^php(?:\d+(?:\.\d+)*)?(?:-cli)?$/, { code: 'rRBEFf', exit: 'hvilms', value: 'cdzt', attached: '', longCode: ['help', 'version'], longValue: [] }],
+  [/^(?:lua(?:\d+(?:\.\d+)*)?|luajit)$/, { code: 'e', exit: 'v', value: 'lj', attached: 'O', longCode: [], longValue: [] }],
+  [/^tclsh(?:\d+(?:\.\d+)*)?$/, { code: '', exit: '', value: '', attached: '', longCode: [], longValue: [], word: ['-encoding'] }],
+  [/^osascript$/, { code: 'e', exit: '', value: 'ls', attached: '', longCode: [], longValue: [] }],
+];
+
+// The interpreter's own words: true when it gets neither a script nor a code
+// or exit option, or names stdin with -.
+function readsCodeFromStdin(spec, words) {
+  for (let k = 0; k < words.length; k++) {
+    const w = words[k];
+    if (w === '-') return true;
+    if (w === '--') return k + 1 >= words.length || words[k + 1] === '-';
+    if ((spec.word || []).includes(w)) { k++; continue; }
+    if (w.startsWith('--')) {
+      const name = w.slice(2).split('=')[0];
+      if (spec.longCode.includes(name)) return false;
+      if (spec.longValue.includes(name) && !w.includes('=')) k++;
+      continue;
+    }
+    if (w.startsWith('-')) {
+      for (let j = 1; j < w.length; j++) {
+        if (spec.code.includes(w[j]) || spec.exit.includes(w[j])) return false;
+        if (spec.attached.includes(w[j])) break;
+        if (spec.value.includes(w[j])) { if (j === w.length - 1) k++; break; }
+      }
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
 function pipesToShell(cmd) {
   const fetch = new RegExp(FETCH).exec(cmd);
   if (!fetch) return false;
@@ -769,6 +815,11 @@ function pipesToShell(cmd) {
       if (KEYWORDS.has(word) || /^[A-Za-z_]\w*\+?=/.test(word)) continue;
       const name = word.slice(word.lastIndexOf('/') + 1);
       if (PIPE_SHELL.test(name)) return true;
+      const interpreter = INTERPRETERS.find(([re]) => re.test(name));
+      if (interpreter) {
+        if (readsCodeFromStdin(interpreter[1], stack.slice().reverse())) return true;
+        break;
+      }
       const wrapper = Object.prototype.hasOwnProperty.call(WRAPPERS, name) ? WRAPPERS[name] : null;
       if (!wrapper) break;
       const [shortValue, longValue] = wrapper;
