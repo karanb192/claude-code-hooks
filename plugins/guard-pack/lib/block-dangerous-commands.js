@@ -896,18 +896,43 @@ function onlyOptions(words) {
   return true;
 }
 const CODE_FLAG = /^-[A-Za-z]*c[A-Za-z]*$/;
-// A curl or wget inside <(...), $(...) or backticks whose output the command
-// around it runs as code: a shell, source or . given it as the script (the
-// first word after any options), a shell
-// given it on stdin (< <(...), <<<) with no -c, a shell given it as the whole
-// text right after -c, or eval. The
-// line is read with the shell reader, so quotes and escapes in the program
+
+// The word a shell runs as its program after -c: the first word after the -c
+// option and any further options.
+function codeWord(words, from) {
+  let k = words.findIndex((w, j) => j > from && CODE_FLAG.test(w.value));
+  if (k < 0) return null;
+  for (k++; k < words.length && /^[-+]./.test(words[k].value); k++) {
+    if (/^[-+][oO]$/.test(words[k].value)) k++;
+  }
+  return words[k] || null;
+}
+
+// A curl or wget whose output the command around it runs as code, in
+// <(...), $(...) or backticks, directly or inside another substitution:
+// - a shell, source or . given it as the script (the first word after any options);
+// - a shell given it on stdin (< <(...), <<<) with no -c;
+// - a shell given it anywhere in its -c text, unquoted or in double quotes: the
+//   outer shell expands it first, so the shell parses the downloaded text;
+// - eval given it in any argument.
+// The text of a -c program or of eval is read again the same way, so a single
+// quoted program that itself runs a download (bash -c 'eval "$(curl ...)"') is
+// caught too, while one that only prints it (bash -c 'echo $(curl ...)') is not.
+// The line is read with the shell reader, so quotes and escapes in a program
 // name do not hide it, and the program is found past wrappers such as sudo.
-function downloadRunsAsCode(cmd) {
+function downloadRunsAsCode(cmd, depth = 0) {
   const read = readShell(cmd);
+  // A frame carries a download when it runs curl or wget or holds a frame that
+  // does. A frame is created before the frames inside it, so one pass from the
+  // last frame to the first settles it.
+  const carries = new Set();
+  for (let i = read.frames.length - 1; i >= 0; i--) {
+    const f = read.frames[i];
+    if (!carries.has(f) && f.cmds.some((c) => { const w = programWord(argv(c)); return w && !w.dynamic && DOWNLOADER.test(base(w.value)); })) carries.add(f);
+    if (carries.has(f) && f.parent) carries.add(f.parent.cmd.frame);
+  }
   for (const f of read.frames) {
-    if ((f.kind !== 'proc' && f.kind !== 'subst') || !f.parent) continue;
-    if (!f.cmds.some((c) => { const w = programWord(argv(c)); return w && !w.dynamic && DOWNLOADER.test(base(w.value)); })) continue;
+    if ((f.kind !== 'proc' && f.kind !== 'subst') || !f.parent || !carries.has(f)) continue;
     const { cmd: outer, word } = f.parent;
     const words = argv(outer);
     const program = programWord(words);
@@ -927,8 +952,21 @@ function downloadRunsAsCode(cmd) {
       if (at > from && !dashC && onlyOptions(before)) return true;
     } else if (shell) {
       if (word.target === '<<<') { if (!dashC) return true; continue; }
-      const whole = word.parts.every((x) => x === part || x === '');
-      if (whole && at > from && before.length && CODE_FLAG.test(before[before.length - 1].value)) return true;
+      if (dashC && word === codeWord(words, from)) return true;
+    }
+  }
+  if (depth >= 3) return false;
+  for (const f of read.frames) {
+    for (const c of f.cmds) {
+      const words = argv(c);
+      const program = programWord(words);
+      if (!program || program.dynamic) continue;
+      const name = base(program.value);
+      const from = words.indexOf(program);
+      let text = null;
+      if (name === 'eval') text = words.slice(from + 1).map((w) => w.value).join(' ');
+      else if (PIPE_SHELL.test(name)) { const w = codeWord(words, from); text = w && w.value; }
+      if (text && /(?:curl|wget)\b/.test(text) && downloadRunsAsCode(text, depth + 1)) return true;
     }
   }
   return false;

