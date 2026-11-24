@@ -109,7 +109,7 @@ const PATTERNS = [
 
   // HIGH - Significant risk, data loss, security
   // The regex finds a fetch piped somewhere; pipesToShell walks the stages.
-  { level: 'high', id: 'curl-pipe-sh',   regex: new RegExp(FETCH + '.*\\|'), confirm: (t) => pipesToShell(t) || pipesToInterpreter(t),                    reason: 'piping URL to shell (RCE risk)' },
+  { level: 'high', id: 'curl-pipe-sh',   regex: new RegExp(FETCH + '.*\\|'), confirm: (t, line) => pipesToShell(t) || pipesToInterpreter(t) || pipesToInterpreter(line),                    reason: 'piping URL to shell (RCE risk)' },
   // Shell flags may come first (bash -x <(curl ...), bash -lc "$(curl ...)"); the
   // download may arrive as a file, on stdin (< <(...), <<< "$(...)") or as -c
   // text, in $(...) or backticks.
@@ -764,17 +764,17 @@ function stageCommands(stage) {
 // node's long options that take a separate value (node --max-http-header-size 16384 app.js).
 const NODE_VALUE = ['require', 'import', 'loader', 'experimental-loader', 'input-type', 'conditions', 'env-file', 'env-file-if-exists', 'title',
   'max-http-header-size', 'max-old-space-size', 'max-semi-space-size', 'stack-size', 'stack-trace-limit', 'inspect-port', 'debug-port',
-  'icu-data-dir', 'openssl-config', 'tls-cipher-list', 'tls-keylog', 'tls-min-v1.0', 'diagnostic-dir', 'report-dir', 'report-directory',
+  'icu-data-dir', 'openssl-config', 'tls-cipher-list', 'tls-keylog', 'diagnostic-dir', 'report-dir', 'report-directory',
   'report-filename', 'report-signal', 'heapsnapshot-signal', 'heapsnapshot-near-heap-limit', 'secure-heap', 'secure-heap-min',
   'unhandled-rejections', 'dns-result-order', 'disable-proto', 'disable-warning', 'redirect-warnings', 'trace-event-categories',
   'trace-event-file-pattern', 'cpu-prof-dir', 'cpu-prof-name', 'cpu-prof-interval', 'heap-prof-dir', 'heap-prof-name', 'heap-prof-interval',
   'policy-integrity', 'experimental-policy', 'experimental-sea-config', 'experimental-default-type', 'watch-path', 'test-name-pattern',
   'test-skip-pattern', 'test-reporter', 'test-reporter-destination', 'test-shard', 'test-timeout', 'test-concurrency',
   'test-coverage-include', 'test-coverage-exclude', 'test-coverage-branches', 'test-coverage-functions', 'test-coverage-lines',
-  'snapshot-blob', 'localstorage-file', 'run', 'use-largepages', 'network-family-autoselection-attempt-timeout', 'experimental-config-file'];
+  'snapshot-blob', 'localstorage-file', 'use-largepages', 'network-family-autoselection-attempt-timeout', 'experimental-config-file'];
 const INTERPRETERS = [
   [/^(?:python|pypy)(?:\d+(?:\.\d+)*)?$/, { code: 'cm', exit: 'hV', value: 'WX', attached: '', longCode: ['help', 'help-all', 'help-env', 'help-xoptions', 'version'], longValue: ['check-hash-based-pycs'] }],
-  [/^(?:node|nodejs)$/, { code: 'ep', exit: 'hvc', value: 'rC', attached: '', longCode: ['eval', 'print', 'help', 'version', 'check', 'v8-options'], longValue: NODE_VALUE }],
+  [/^(?:node|nodejs)$/, { code: 'ep', exit: 'hvc', value: 'rC', attached: '', longCode: ['eval', 'print', 'run', 'help', 'version', 'check', 'v8-options'], longValue: NODE_VALUE }],
   [/^perl(?:\d+(?:\.\d+)*)?$/, { code: 'eE', exit: 'hvV', value: 'I', attached: 'MmxlC0idD', longCode: ['help', 'version'], longValue: [] }],
   [/^ruby(?:\d+(?:\.\d+)*)?$/, { code: 'e', exit: 'hvc', value: 'rICE', attached: 'xF0KTW', longCode: ['help', 'version'], longValue: [] }],
   [/^irb$/, { code: '', exit: 'v', value: 'rI', attached: '', longCode: ['help', 'version'], longValue: [] }],
@@ -785,12 +785,14 @@ const INTERPRETERS = [
 ];
 
 // The interpreter's own words: true when it gets neither a script nor a code
-// or exit option, or names stdin with -.
+// or exit option, or names stdin as its script (-, /dev/stdin, /dev/fd/0,
+// /proc/self/fd/0).
+const STDIN_NAME = /^(?:-|\/dev\/stdin|\/dev\/fd\/0|\/proc\/[^/]+\/fd\/0)$/;
 function readsCodeFromStdin(spec, words) {
   for (let k = 0; k < words.length; k++) {
     const w = words[k];
-    if (w === '-') return true;
-    if (w === '--') return k + 1 >= words.length || words[k + 1] === '-';
+    if (STDIN_NAME.test(w)) return true;
+    if (w === '--') return k + 1 >= words.length || STDIN_NAME.test(words[k + 1]);
     if ((spec.word || []).includes(w)) { k++; continue; }
     if (w.startsWith('--')) {
       const name = w.slice(2).split('=')[0];
@@ -881,21 +883,45 @@ function redirectFd(src, word) {
   return m ? m[1] : null;
 }
 
+// A literal path that names a regular file: not -, not under /dev or /proc
+// (/dev/stdout, /dev/fd/1, /proc/self/fd/1), and not built from an expansion.
+const regularPath = (v) => !!v && v !== '-' && !/^\/(?:dev|proc)\//.test(v) && !/[$`]/.test(v);
+
+// Programs that only print or search the words they get, so curl among their
+// arguments (printf curl, grep wget log) is a name, not a download.
+const PRINTERS = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'cat', 'head', 'tail', 'wc', 'ls', 'which', 'test', '[', 'true', 'false', 'man']);
+
 // A curl or wget whose stdout is piped into an interpreter that reads its
 // program from stdin. The line is read with the shell reader: the pipeline
-// starts at a command whose program is curl or wget and runs only through its
-// own | stages, a stage whose stdin comes from a file or heredoc
+// starts at a top-level command whose program is curl or wget and runs only
+// through its own | stages, a stage whose stdin is a regular file
 // (python3 < local.py) does not read the download, and a redirect between
-// options and the script (python3 2>/dev/null x.py) is set apart. A line the
-// reader is not sure of, or a stage that opens a compound command ((...), { },
-// if, while, until, for, select, case), is walked as text instead.
+// options and the script (python3 2>/dev/null x.py) is set apart. The line is
+// walked as text instead, as before, when the reader is not sure of it, when a
+// stage opens a compound command ((...), { }, if, while, until, for, select,
+// case), or when curl or wget appears anywhere else: inside a group or a
+// substitution, behind env -S or xargs, or after any program but a printer.
+// The rule asks this of each view and of the line as typed, since a rendered
+// view drops a redirect's descriptor number (3< reads as <).
 const PIPE_OP = /^\|&?$/;
 const FETCHER = /^(?:curl|wget)$/;
 function pipesToInterpreter(src) {
   const read = readShell(src);
-  if (!read.sure) return fetchStages(src).some((command) => runsFromStdin(stageProgram(command)));
+  const asText = () => fetchStages(src).some((command) => runsFromStdin(stageProgram(command)));
+  if (!read.sure) return asText();
+  const mention = /(?:curl|wget)\b/;
+  for (const f of read.frames) {
+    for (const c of f.cmds) {
+      const words = argv(c);
+      if (!words.some((w) => mention.test(w.value) || mention.test(src.slice(w.start, w.end)))) continue;
+      const p = programWord(words);
+      const name = p && !p.dynamic ? base(p.value) : null;
+      const producer = name && FETCHER.test(name) && f.kind === 'top' && !c.group;
+      if (!producer && !(name && PRINTERS.has(name))) return asText();
+    }
+  }
   const stage = (c) => {
-    if (c.words.some((w) => w.target && /^(?:<|<<|<<-|<<<|<>)$/.test(w.target) && ['', '0'].includes(redirectFd(src, w)))) return false;
+    if (c.words.some((w) => w.target && /^(?:<|<>)$/.test(w.target) && ['', '0'].includes(redirectFd(src, w)) && !w.dynamic && regularPath(w.value))) return false;
     return runsFromStdin(stageProgram(argv(c).map((w) => src.slice(w.start, w.end)).join(' ')));
   };
   const compound = (c) => { const w = c.words[0]; return !!w && (w.op === '(' || (!w.op && !w.spans.length && OPENERS.has(w.value))); };
@@ -1149,7 +1175,7 @@ function checkCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   const quoted = /["'\\]/.test(cmd);
   const blanked = quotedGlobsBlanked(cmd);
   const globViews = blanked === cmd ? null : shellViews(blanked);
-  const hit = (p, regex, vs) => vs.some((v) => regex.test(p.segment ? v.masked : v.text) && (!p.confirm || p.confirm(v.text)));
+  const hit = (p, regex, vs) => vs.some((v) => regex.test(p.segment ? v.masked : v.text) && (!p.confirm || p.confirm(v.text, cmd)));
   for (const p of PATTERNS) {
     if (LEVELS[p.level] > threshold) continue;
     const full = quoted && p.quoted ? p.quoted : p.regex;
