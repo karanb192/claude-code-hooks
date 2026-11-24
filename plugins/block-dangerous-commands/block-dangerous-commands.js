@@ -71,14 +71,24 @@ const SHELL_FLAGS = '(?:\\s+[-+][abd-zA-Z]+)*';
 const SUBST = '(?:\\$\\(|`)\\s*';
 // docker with global options before the subcommand (docker --context prod volume rm).
 // An option that takes a value never matches the plain-flag branch, so a long
-// option run stays linear.
+// option run stays linear. A value is one shell word: quoted parts and escapes
+// are part of it (--config "/my dir"), a short option may carry it attached
+// (-Htcp://h), and any long option may carry =value (--debug=true). A quote
+// that never closes runs to the next space, as a plain word does.
+const SHELL_WORD = '(?:[^\\s"\'\\\\]|\\\\[\\s\\S]|"[^"]*"|\'[^\']*\'|"(?![^"]*")\\S*|\'(?![^\']*\')\\S*)+';
 const DOCKER_VALUE = '(?:-[cHl]|--(?:context|host|config|log-level|tlscacert|tlscert|tlskey))';
-const DOCKER = '\\bdocker(?:\\s+(?:' + DOCKER_VALUE + '(?:=|\\s+)\\S+|--(?!(?:context|host|config|log-level|tlscacert|tlscert|tlskey)(?:[=\\s]|$))[\\w-]+|-(?![cHl](?:[=\\s]|$))[A-Za-z][\\w-]*))*\\s+';
+const DOCKER = '\\bdocker(?:\\s+(?:' + DOCKER_VALUE + '(?:=|\\s+)' + SHELL_WORD + '|--(?!(?:context|host|config|log-level|tlscacert|tlscert|tlskey)(?:[=\\s]|$))[\\w-]+(?:=' + SHELL_WORD + ')?|-(?![cHl](?:[=\\s]|$))[A-Za-z](?:' + SHELL_WORD + ')?))*\\s+';
 // docker compose with its own options before the subcommand, so down is the
 // subcommand and not a service name (docker compose run down ls -v). docker's
 // own global options may come before compose (docker --context prod compose).
 const COMPOSE_VALUE = '(?:file|project-name|project-directory|env-file|profile|ansi|progress|parallel|context|host|log-level|tlscacert|tlscert|tlskey)';
-const COMPOSE = '(?:\\bdocker-compose|' + DOCKER + 'compose)(?:\\s+(?:(?:-[fpcH]|--' + COMPOSE_VALUE + ')(?:=|\\s+)\\S+|--(?!' + COMPOSE_VALUE + '(?:[=\\s]|$))[\\w-]+(?:=\\S*)?|-(?![fpcH](?:[=\\s]|$))[A-Za-z]\\S*))*\\s+';
+const COMPOSE = '(?:\\bdocker-compose|' + DOCKER + 'compose)(?:\\s+(?:(?:-[fpcH]|--' + COMPOSE_VALUE + ')(?:=|\\s+)' + SHELL_WORD + '|--(?!' + COMPOSE_VALUE + '(?:[=\\s]|$))[\\w-]+(?:=' + SHELL_WORD + ')?|-(?![fpcH](?:[=\\s]|$))[A-Za-z](?:' + SHELL_WORD + ')?))*\\s+';
+// The same fragments with each value read as a plain run of non-spaces, kept
+// beside the shell-word reading so a line either one refuses stays refused.
+const DOCKER_PLAIN = '\\bdocker(?:\\s+(?:' + DOCKER_VALUE + '(?:=|\\s+)\\S+|--(?!(?:context|host|config|log-level|tlscacert|tlscert|tlskey)(?:[=\\s]|$))[\\w-]+|-(?![cHl](?:[=\\s]|$))[A-Za-z][\\w-]*))*\\s+';
+const COMPOSE_PLAIN = '(?:\\bdocker-compose|' + DOCKER_PLAIN + 'compose)(?:\\s+(?:(?:-[fpcH]|--' + COMPOSE_VALUE + ')(?:=|\\s+)\\S+|--(?!' + COMPOSE_VALUE + '(?:[=\\s]|$))[\\w-]+(?:=\\S*)?|-(?![fpcH](?:[=\\s]|$))[A-Za-z]\\S*))*\\s+';
+// docker volume rm|remove|prune, system prune --volumes, or compose down with -v.
+const volumeRemoval = (docker, compose) => docker + '(?:volume\\s+(?:rm|remove|prune)\\b|system\\s+prune\\b[^;&|\\n]*\\s--volumes(?![\\w-]))|' + compose + 'down(?![\\w-])(?=[^;&|\\n]*\\s(?:-[A-Za-z]*v[A-Za-z]*|--volumes)(?![\\w-]))';
 // chmod with its own options before the mode, so a file named 0777 is not the mode.
 const CHMOD = '\\bchmod(?:\\s+(?:-[RfvchHLP]+|--(?:recursive|verbose|changes|silent|quiet|dereference|no-dereference|preserve-root|no-preserve-root)?)(?=\\s))*\\s+';
 // -f alone or in a short-flag cluster (-fu, -uf, -vf). -o takes the rest of
@@ -123,7 +133,7 @@ const PATTERNS = [
   // 777 with a leading 0 or a special bit (0777, 1777), or rwx for everyone spelled symbolically (a+rwx), as the mode.
   { level: 'high', id: 'chmod-777',      regex: new RegExp('\\bchmod\\b.+\\b777\\b|' + CHMOD + '["\']?(?:0*[1-7]?777|(?:a|ugo|uog|gou|guo|ogu|oug)[+=](?=[rwxXst]*r)(?=[rwxXst]*w)(?=[rwxXst]*x)[rwxXst]+)["\']?(?=\\s|$|[;&|)<>])'), reason: 'chmod 777 is a security risk' },
   // docker volume rm|remove|prune after global options, compose down -v, system prune --volumes.
-  { level: 'high', id: 'docker-vol-rm',  regex: new RegExp(DOCKER + '(?:volume\\s+(?:rm|remove|prune)\\b|system\\s+prune\\b[^;&|\\n]*\\s--volumes(?![\\w-]))|' + COMPOSE + 'down(?![\\w-])(?=[^;&|\\n]*\\s(?:-[A-Za-z]*v[A-Za-z]*|--volumes)(?![\\w-]))'), reason: 'docker volume deletion loses data' },
+  { level: 'high', id: 'docker-vol-rm',  regex: new RegExp(volumeRemoval(DOCKER, COMPOSE) + '|' + volumeRemoval(DOCKER_PLAIN, COMPOSE_PLAIN)), reason: 'docker volume deletion loses data' },
 
   // STRICT - Cautionary, context-dependent
   // A +ref refspec force-pushes that ref like --force does; pushForces reads

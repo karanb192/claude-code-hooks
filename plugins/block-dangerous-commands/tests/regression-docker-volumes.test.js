@@ -70,3 +70,16 @@ describe('compose down with volumes after docker global options', () => {
       shouldAllow(c);
   });
 });
+
+describe('docker global option values in every shell spelling', () => {
+  it('blocks a quoted, attached or =value global option before compose down -v or volume rm', () => {
+    for (const c of ['docker --config "/my dir" compose down -v', 'docker --config="/my dir" compose down --volumes', 'docker --config my\\ dir compose down -v', 'docker -Htcp://h compose down -v', 'docker --debug=true compose down -v', 'docker --debug=true volume rm data', 'docker -l=debug system prune --volumes', 'docker compose -f "my file.yml" down -v'])
+      shouldBlock(c, 'docker-vol-rm');
+  });
+  it('still blocks a compose preview or help with volumes, as main does', () => {
+    for (const c of ['docker --context prod compose --dry-run down -v', 'docker --context prod compose down --volumes --help']) shouldBlock(c, 'docker-vol-rm');
+  });
+  it('allows the same global options before commands that keep volumes', () => {
+    for (const c of ['docker --config "/my dir" compose up -d', 'docker -Htcp://h ps', 'docker --debug=true compose run --rm down ls -v', 'docker --context prod compose down']) shouldAllow(c);
+  });
+});
