@@ -47,3 +47,13 @@ describe('mkfs with options before the device', () => {
     shouldAllow('mkfs.ext4 -F disk.img; ls /dev/sda');
   });
 });
+
+describe('mkfs dry runs', () => {
+  it('allows the dry-run flag of the selected program', () => {
+    for (const c of ['mkfs.ext4 -n /dev/sdb1', 'mkfs.xfs -N /dev/sdb1', 'mkfs -t xfs -N /dev/sdb', 'mkfs.ext4 -Fn /dev/sdb1']) shouldAllow(c);
+  });
+  it('still blocks -n where it takes a value, and a device right after mkfs', () => {
+    for (const c of ['mkfs.fat -n LABEL /dev/sdb1', 'mkfs.xfs -n size=64k /dev/sdb1', 'mkfs.ext4 -N 1000 /dev/sdb1', 'mkfs.ext4 /dev/sdb1 -n', 'mkfs.ext4 -n /dev/sdb1; mkfs.ext4 /dev/sdc'])
+      shouldBlock(c, 'mkfs');
+  });
+});

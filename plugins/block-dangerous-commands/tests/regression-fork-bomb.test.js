@@ -36,3 +36,14 @@ describe('fork bomb with any function name', () => {
     shouldAllow('build(){ make | tee log & }; build');
   });
 });
+
+describe('quoted text inside a function body', () => {
+  it('allows a function that only prints its own name in a pipe', () => {
+    shouldAllow("build(){ echo ' build | build &'; }; build");
+    shouldAllow('build(){ echo " build | build &"; }; build');
+  });
+  it('still blocks a real self-pipe next to quoted text', () => {
+    shouldBlock("f(){ echo 'hi'; f|f& }; f", 'fork-bomb');
+    shouldBlock('bomb(){ bomb|bomb& }; bomb "x"', 'fork-bomb');
+  });
+});
