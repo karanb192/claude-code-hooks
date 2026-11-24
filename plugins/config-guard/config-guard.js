@@ -139,9 +139,10 @@ const BASH_TOKENS = [
 const DELETE_VERB    = /(\brm\b|\bunlink\b|\bshred\b|\btrash\b|\bgit\s+rm\b|\bfind\b[^|;&]*\s-delete\b)/i;
 const MOVE_COPY_VERB = /\b(mv|cp|rsync|install|ln|ditto)\b/i;
 // Tools that take the file to write as an argument: downloaders with an
-// output flag, sponge, touch (creating counts) and archive extraction. patch
-// and tar -C depend on their mode, so patchWrites and tarWrites judge them.
-const WRITE_VERB     = /\b(tee|truncate|dd|sponge|touch)\b|\bcurl\b[^|;&]*\s(?:-[a-zA-Z]*o|--output(?:-dir)?)\b|\bwget\b[^|;&]*\s(?:-[a-zA-Z]*[OP]|--output-document|--directory-prefix)|\bunzip\b[^|;&]*\s-[a-zA-Z]*[dxC]\b/i;
+// output flag, sponge and touch (creating counts). patch, tar and unzip
+// depend on their mode and members, so patchWrites, tarWrites and
+// unzipWrites judge them.
+const WRITE_VERB     = /\b(tee|truncate|dd|sponge|touch)\b|\bcurl\b[^|;&]*\s(?:-[a-zA-Z]*o|--output(?:-dir)?)\b|\bwget\b[^|;&]*\s(?:-[a-zA-Z]*[OP]|--output-document|--directory-prefix)/i;
 // Short flags cluster (-Ei, -ni), GNU spells it --in-place, ruby takes -pi
 // like perl, and GNU awk is often installed as plain awk. BSD sed's -I is
 // in-place too, so sed stays case-insensitive.
@@ -351,6 +352,89 @@ function tarOutputs(args) {
   return { archive, side };
 }
 
+// The member names a tar extraction writes, given on its command line.
+// Options that take a value skip it (attached or as the next word); with
+// -O or --to-stdout nothing is written. A long option not known to take a
+// value is treated as a flag, so its next word counts as a member.
+const TAR_VALUE = 'bCfFgHIKLNTVX';
+const TAR_LONG_VALUE = /^--(?:file|directory|files-from|exclude|exclude-from|transform|xform|owner|group|mode|mtime|newer|newer-mtime|after-date|listed-incremental|index-file|volno-file|label|rsh-command|use-compress-program|to-command|info-script|new-volume-script|starting-file|tape-length|blocking-factor|record-size|format|quoting-style|strip-components|suffix|level|sparse-version|pax-option|owner-map|group-map|warning|checkpoint-action|occurrence)$/;
+function tarMembers(args) {
+  const words = shellWords(args);
+  const members = [];
+  let options = true;
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (!options || w === '-' || !w.startsWith('-')) {
+      if (options && i === 0 && /^[a-zA-Z]+$/.test(w)) {
+        if (w.includes('O')) return [];
+        for (const c of w) if (TAR_VALUE.includes(c)) i++;
+        continue;
+      }
+      members.push(w);
+      continue;
+    }
+    if (w === '--') { options = false; continue; }
+    if (w.startsWith('--')) {
+      if (/^--to-(?:stdout|command)\b/.test(w)) return [];
+      if (TAR_LONG_VALUE.test(w)) i++;
+      continue;
+    }
+    for (let k = 1; k < w.length; k++) {
+      if (w[k] === 'O') return [];
+      if (TAR_VALUE.includes(w[k])) { if (k === w.length - 1) i++; break; }
+    }
+  }
+  return members;
+}
+
+// The members an unzip call extracts: the words after the archive name, up
+// to -x. -l, -t, -v, -z, -Z, -p and -c list, test or print without writing.
+function unzipMembers(args) {
+  const words = shellWords(args);
+  const members = [];
+  let archive = false, excluding = false;
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (w.startsWith('-') && w !== '-') {
+      excluding = false;
+      for (let k = 1; k < w.length; k++) {
+        const c = w[k];
+        if ('ltvzZpc'.includes(c)) return [];
+        if (c === 'x') { excluding = true; break; }
+        if ('dPOI'.includes(c)) { if (k === w.length - 1) i++; break; }
+      }
+      continue;
+    }
+    if (excluding) continue;
+    if (!archive) { archive = true; continue; }
+    members.push(w);
+  }
+  return members;
+}
+
+function unzipWrites(cmd, tokenRegex) {
+  for (const seg of cmd.split(/[|;&]/)) {
+    const m = /\bunzip\b/i.exec(seg);
+    if (m && /\s-[a-zA-Z]*[dxC]\b/i.test(seg.slice(m.index + m[0].length))) return true;
+  }
+  for (const seg of unquotedSegments(cmd.replace(/\\\r?\n/g, ' '))) {
+    const m = /(?<![\w.])unzip\b([\s\S]*)/i.exec(seg);
+    if (m && unzipMembers(m[1]).some((v) => tokenRegex.test(' ' + v))) return true;
+  }
+  return false;
+}
+
+// An archive extraction that names a .claude folder as a member.
+function extractsClaudeDir(cmd) {
+  for (const seg of unquotedSegments(cmd.replace(/\\\r?\n/g, ' '))) {
+    const tar = TAR_RUN.exec(seg);
+    if (tar && TAR_EXTRACT.test(tar[1]) && tarMembers(tar[1]).some((v) => CLAUDE_DIR_OPERAND.test(' ' + v))) return true;
+    const zip = /(?<![\w.])unzip\b([\s\S]*)/i.exec(seg);
+    if (zip && unzipMembers(zip[1]).some((v) => CLAUDE_DIR_OPERAND.test(' ' + v))) return true;
+  }
+  return false;
+}
+
 function tarWrites(cmd, tokenRegex) {
   for (const seg of cmd.split(/[|;&]/)) {
     const m = /\b(?:tar|bsdtar)\b/i.exec(seg);
@@ -366,6 +450,7 @@ function tarWrites(cmd, tokenRegex) {
     const { archive, side } = tarOutputs(args);
     if (/\s--rem/.test(args) || named(side)) return true;
     if (!extracts && TAR_ARCHIVING.test(args) && named(archive)) return true;
+    if (extracts && named(tarMembers(args))) return true;
   }
   return false;
 }
@@ -902,8 +987,11 @@ function checkCommandText(rawCmd, safetyLevel, cwd, dirMoves = true) {
       return { blocked: true, id: t.id, level: t.level, reason: `deleting protected config: ${t.reason}` };
     if (MOVE_COPY_VERB.test(cmd))
       return { blocked: true, id: t.id, level: t.level, reason: `moving/copying/linking a protected config path: ${t.reason}` };
-    if (WRITE_VERB.test(cmd) || patchWrites(cmd) || tarWrites(cmd, t.regex))
+    if (WRITE_VERB.test(cmd) || patchWrites(cmd) || tarWrites(cmd, t.regex) || unzipWrites(cmd, t.regex))
       return { blocked: true, id: t.id, level: t.level, reason: `writing to protected config: ${t.reason}` };
+  }
+  if (extractsClaudeDir(cmd)) {
+    return { blocked: true, id: 'claude-dir', level: 'critical', reason: 'extracting a .claude folder from an archive overwrites its settings and hooks' };
   }
   const dirChange = claudeDirChange(cmd, cwd, dirMoves);
   if (dirChange === true) {
