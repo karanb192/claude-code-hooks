@@ -65,19 +65,39 @@ const MAIN_REF = '(?:[\\s:"\']|refs\\/heads\\/)(?:main|master)(?=$|[\\s;&|)<>"\'
 // scanned once, not once per position.
 const SHELL = '(?<![^\\s|;&()<>"\'`$])(?:[^\\s|;&()<>"\'`$]*\\/)?(?:ba|z|da|k)?sh(?![\\w.-])';
 const FETCH = '(?:[^\\s|;&(]*\\/)?(?:curl|wget)\\b';
+const FETCH_NAME = /(?:curl|wget)\b/;
 // Shell options before -c or a script argument; never a word with c in it, so
 // a run of them stays linear before the -c check.
 const SHELL_FLAGS = '(?:\\s+[-+][abd-zA-Z]+)*';
 const SUBST = '(?:\\$\\(|`)\\s*';
 // docker with global options before the subcommand (docker --context prod volume rm).
 // An option that takes a value never matches the plain-flag branch, so a long
-// option run stays linear.
+// option run stays linear. A value is one shell word: quoted parts and escapes
+// are part of it (--config "/my dir"), a short option may carry it attached
+// (-Htcp://h), and any long option may carry =value (--debug=true). A double
+// quoted part may hold escaped quotes ("/my \"x dir"), and a quote that never
+// closes runs to the next space, as a plain word does. In a short cluster the
+// first option that takes a value takes the rest of the word (-papp) or, at the
+// end of the cluster, the next word (-Dc prod).
+const SHELL_WORD = '(?:[^\\s"\'\\\\]|\\\\[\\s\\S]|"(?:[^"\\\\]|\\\\[\\s\\S])*"|\'[^\']*\'|"(?![^"]*")\\S*|\'(?![^\']*\')\\S*)+';
 const DOCKER_VALUE = '(?:-[cHl]|--(?:context|host|config|log-level|tlscacert|tlscert|tlskey))';
-const DOCKER = '\\bdocker(?:\\s+(?:' + DOCKER_VALUE + '(?:=|\\s+)\\S+|--(?!(?:context|host|config|log-level|tlscacert|tlscert|tlskey)(?:[=\\s]|$))[\\w-]+|-(?![cHl](?:[=\\s]|$))[A-Za-z][\\w-]*))*\\s+';
+const DOCKER = '\\bdocker(?:\\s+(?:--(?:context|host|config|log-level|tlscacert|tlscert|tlskey)(?:=|\\s+)' + SHELL_WORD + '|-[A-GI-Za-bd-km-z]*[cHl](?:=|\\s+)' + SHELL_WORD + '|--(?!(?:context|host|config|log-level|tlscacert|tlscert|tlskey)(?:[=\\s]|$))[\\w-]+(?:=' + SHELL_WORD + ')?|-(?![A-GI-Za-bd-km-z]*[cHl](?:[=\\s]|$))[A-Za-z](?:' + SHELL_WORD + ')?))*\\s+';
 // docker compose with its own options before the subcommand, so down is the
-// subcommand and not a service name (docker compose run down ls -v).
+// subcommand and not a service name (docker compose run down ls -v). docker's
+// own global options may come before compose (docker --context prod compose).
 const COMPOSE_VALUE = '(?:file|project-name|project-directory|env-file|profile|ansi|progress|parallel|context|host|log-level|tlscacert|tlscert|tlskey)';
-const COMPOSE = '\\bdocker(?:-compose|\\s+compose)(?:\\s+(?:(?:-[fpcH]|--' + COMPOSE_VALUE + ')(?:=|\\s+)\\S+|--(?!' + COMPOSE_VALUE + '(?:[=\\s]|$))[\\w-]+(?:=\\S*)?|-(?![fpcH](?:[=\\s]|$))[A-Za-z]\\S*))*\\s+';
+const COMPOSE = '(?:\\bdocker-compose|' + DOCKER + 'compose)(?:\\s+(?:--' + COMPOSE_VALUE + '(?:=|\\s+)' + SHELL_WORD + '|-[A-GI-Za-bd-eg-oq-z]*[fpcH](?:=|\\s+)' + SHELL_WORD + '|--(?!' + COMPOSE_VALUE + '(?:[=\\s]|$))[\\w-]+(?:=' + SHELL_WORD + ')?|-(?![A-GI-Za-bd-eg-oq-z]*[fpcH](?:[=\\s]|$))[A-Za-z](?:' + SHELL_WORD + ')?))*\\s+';
+// The same fragments without short clusters that take a value, and with each
+// value read as a plain run of non-spaces: docker-vol-rm matches any of the three
+// readings, so a line an earlier reading refused stays refused.
+const DOCKER_FLAT = '\\bdocker(?:\\s+(?:' + DOCKER_VALUE + '(?:=|\\s+)' + SHELL_WORD + '|--(?!(?:context|host|config|log-level|tlscacert|tlscert|tlskey)(?:[=\\s]|$))[\\w-]+(?:=' + SHELL_WORD + ')?|-(?![cHl](?:[=\\s]|$))[A-Za-z](?:' + SHELL_WORD + ')?))*\\s+';
+const COMPOSE_FLAT = '(?:\\bdocker-compose|' + DOCKER_FLAT + 'compose)(?:\\s+(?:(?:-[fpcH]|--' + COMPOSE_VALUE + ')(?:=|\\s+)' + SHELL_WORD + '|--(?!' + COMPOSE_VALUE + '(?:[=\\s]|$))[\\w-]+(?:=' + SHELL_WORD + ')?|-(?![fpcH](?:[=\\s]|$))[A-Za-z](?:' + SHELL_WORD + ')?))*\\s+';
+// The same fragments with each value read as a plain run of non-spaces, kept
+// beside the shell-word reading so a line either one refuses stays refused.
+const DOCKER_PLAIN = '\\bdocker(?:\\s+(?:' + DOCKER_VALUE + '(?:=|\\s+)\\S+|--(?!(?:context|host|config|log-level|tlscacert|tlscert|tlskey)(?:[=\\s]|$))[\\w-]+|-(?![cHl](?:[=\\s]|$))[A-Za-z][\\w-]*))*\\s+';
+const COMPOSE_PLAIN = '(?:\\bdocker-compose|' + DOCKER_PLAIN + 'compose)(?:\\s+(?:(?:-[fpcH]|--' + COMPOSE_VALUE + ')(?:=|\\s+)\\S+|--(?!' + COMPOSE_VALUE + '(?:[=\\s]|$))[\\w-]+(?:=\\S*)?|-(?![fpcH](?:[=\\s]|$))[A-Za-z]\\S*))*\\s+';
+// docker volume rm|remove|prune, system prune --volumes, or compose down with -v.
+const volumeRemoval = (docker, compose) => docker + '(?:volume\\s+(?:rm|remove|prune)\\b|system\\s+prune\\b[^;&|\\n]*\\s--volumes(?![\\w-]))|' + compose + 'down(?![\\w-])(?=[^;&|\\n]*\\s(?:-[A-Za-z]*v[A-Za-z]*|--volumes)(?![\\w-]))';
 // chmod with its own options before the mode, so a file named 0777 is not the mode.
 const CHMOD = '\\bchmod(?:\\s+(?:-[RfvchHLP]+|--(?:recursive|verbose|changes|silent|quiet|dereference|no-dereference|preserve-root|no-preserve-root)?)(?=\\s))*\\s+';
 // -f alone or in a short-flag cluster (-fu, -uf, -vf). -o takes the rest of
@@ -86,18 +106,27 @@ const CHMOD = '\\bchmod(?:\\s+(?:-[RfvchHLP]+|--(?:recursive|verbose|changes|sil
 const DISK = '\\/dev\\/(?:sd[a-z]|nvme|hd[a-z]|x?vd[a-z]|r?disk\\d|mmcblk\\d|disk\\/|mapper\\/)';
 const FORCE_FLAG = '\\s["\']?(?:--force|-[A-Za-np-z0-9]*f[A-Za-z0-9]*)["\']?(?=\\s|$|[;&|)<>"\'])';
 
+const SUBST_SH = new RegExp('(?:' + SHELL + SHELL_FLAGS + '|(?<![\\w.\\/-])source|(?:^|[;&|(]\\s*)\\.)\\s+(?:<\\s*)?<\\(\\s*' + FETCH + '|' + SHELL + SHELL_FLAGS + '\\s+<<<\\s*["\']?' + SUBST + FETCH + '|(?:' + SHELL + SHELL_FLAGS + '\\s+-[A-Za-z]*c[A-Za-z]*|(?<![\\w.\\/-])eval)\\s+["\']?' + SUBST + FETCH);
+
 const PATTERNS = [
   // CRITICAL - Catastrophic, unrecoverable
   // A trailing /. or /.. (~/., /Users/alice/..) still names the home directory or above;
-  // a /* (~/*) or a doubled slash (~//) still deletes everything in it.
-  { level: 'critical', id: 'rm-home',          regex: /\brm\s+(?:-.+\s)?["']?~(\/(\.{1,2}|\*+)?)*["']?(\s|$|[;&|)<>])/,             reason: 'rm targeting home directory' },
-  { level: 'critical', id: 'rm-home-var',      regex: /\brm\s+(?:-.+\s)?["']?\$(HOME|\{HOME\})(\/(\.{1,2}|\*+)?)*["']?(\s|$|[;&|)<>])/, reason: 'rm targeting $HOME' },
-  { level: 'critical', id: 'rm-home-trailing', regex: /\brm\s.*\s["']?(~|\$(HOME|\{HOME\}))(\/(\.{1,2}|\*+)?)*["']?(\s*$|[;&|)<>])/, reason: 'rm with trailing ~/ or $HOME' },
-  { level: 'critical', id: 'rm-home-abs',      regex: /\brm\s+(?:-.+\s)?["']?\/(home|Users)(\/[^\/\s"';&|]+)?(\/(\.{1,2}|\*+)?)*["']?(\s|$|[;&|)<>])/, reason: 'rm targeting a home directory by absolute path' },
+  // a /* (~/*) or a doubled slash (~//) still deletes everything in it, and a dot glob
+  // made only of wildcards (~/.*, ~/.???*, ~/.[!.]*) deletes its hidden entries.
+  { level: 'critical', id: 'rm-home',          regex: /\brm\s+(?:-.+\s|(?:[^\s;&|#][^\s;&|]*[ \t]+)+)?["']?~(\/(\.{1,2}|\*+|\.(?:\?|\*|\[(?:\[:[a-z]+:\]|[^\]\s\/])*\])+)?)*["']?(\s|$|[;&|)<>])/,             reason: 'rm targeting home directory' },
+  { level: 'critical', id: 'rm-home-var',      regex: /\brm\s+(?:-.+\s|(?:[^\s;&|#][^\s;&|]*[ \t]+)+)?["']?\$(HOME|\{HOME\})(\/(\.{1,2}|\*+|\.(?:\?|\*|\[(?:\[:[a-z]+:\]|[^\]\s\/])*\])+)?)*["']?(\s|$|[;&|)<>])/, reason: 'rm targeting $HOME' },
+  { level: 'critical', id: 'rm-home-trailing', regex: /\brm\s.*\s["']?(~|\$(HOME|\{HOME\}))(\/(\.{1,2}|\*+|\.(?:\?|\*|\[(?:\[:[a-z]+:\]|[^\]\s\/])*\])+)?)*["']?(\s*$|[;&|)<>])/, reason: 'rm with trailing ~/ or $HOME' },
+  { level: 'critical', id: 'rm-home-abs',      regex: /\brm\s+(?:-.+\s|(?:[^\s;&|#][^\s;&|]*[ \t]+)+)?["']?\/(home|Users)(\/[^\/\s"';&|]+)?(\/(\.{1,2}|\*+|\.(?:\?|\*|\[(?:\[:[a-z]+:\]|[^\]\s\/])*\])+)?)*["']?(\s|$|[;&|)<>])/, reason: 'rm targeting a home directory by absolute path' },
   { level: 'critical', id: 'rm-root',          regex: /\brm\s+(?:-.+\s)?\/+(\*|\s|$|[;&|)<>])/,                               reason: 'rm targeting root filesystem' },
   { level: 'critical', id: 'rm-system',        regex: /\brm\s+(?:-.+\s)?\/(etc|usr|var|bin|sbin|lib|boot|dev|proc|sys)(\/|\s|$|[;&|)<>])/, reason: 'rm targeting system directory' },
   // Only a glob that matches every name: stars with at most one ? (*, **, ?*, *?). ??* skips one-letter names.
-  { level: 'critical', id: 'rm-cwd',           regex: /\brm\s+(?:-.+\s)?(\.\/?|(\.\/)?(?:\*+(?:\?\**)?|\?\*+))(\s|$|[;&|)<>])/,          reason: 'rm deleting current directory contents' },
+  // A dot glob made only of wildcards (.*, .??*, .???*, .[!.]*) matches every hidden entry,
+  // or nearly every one, and with a trailing / every hidden directory; one with a literal
+  // character after the dot (.*.swp, .cache*) does not. The home rules and this one read a target after
+  // other operands in the same command, with or without flags (rm a b .*). Those
+  // operands are whole words that do not start a comment (#), so a long run of
+  // spaces after rm is read once. Any run of ./ before the glob is the cwd too (././.*).
+  { level: 'critical', id: 'rm-cwd',           regex: /\brm\s+(?:-.+\s|(?:[^\s;&|#][^\s;&|]*[ \t]+)+)?((?:\.\/+)*\.\/?|(?:\.\/+)*(?:\*+(?:\?\**)?|\?\*+|\.(?:\?|\*|\[(?:\[:[a-z]+:\]|[^\]\s\/])*\])+\/?))(\s|$|[;&|)<>])/,          reason: 'rm deleting current directory contents' },
   { level: 'critical', id: 'rm-parent',        regex: /\brm\s+(?:-.+\s)?["']?([^\s"';&|]*\/)?\.\.(\/\.{1,2})*\/?(\*)?["']?(\s|$|[;&|)<>])/, reason: 'rm of a path ending in .. deletes a parent directory' },
   { level: 'critical', id: 'dd-disk',          regex: new RegExp('\\bdd\\b.+of=' + DISK),                                                     reason: 'dd writing to disk device' },
   { level: 'critical', id: 'mkfs',             regex: new RegExp('\\bmkfs(?:\\.\\w+)?\\b(?:[^;&|\\n<>]|[<>]&?|&>)*\\s' + DISK), confirm: mkfsWrites,          reason: 'mkfs formatting disk' },
@@ -108,12 +137,17 @@ const PATTERNS = [
   { level: 'critical', id: 'fork-bomb',        regex: /(?<![^\s;&|({])([^\s;&|(){}<>]+)\s*\(\)\s*\{(?:\\[\s\S]|[^{}'"\\#]|(?<![^\s;&|{(])(?=(#[^\n]*))\2|(?<=[^\s;&|{(])#|'[^']*'|"(?:\\[\s\S]|[^"\\])*")*(?<![^\s;&|{])\1\s*\|\s*\1\s*&|:\(\)\s*\{.*:\s*\|\s*:.*&/, reason: 'fork bomb detected' },
 
   // HIGH - Significant risk, data loss, security
-  // The regex finds a fetch piped somewhere; pipesToShell walks the stages.
-  { level: 'high', id: 'curl-pipe-sh',   regex: new RegExp(FETCH + '.*\\|'), confirm: pipesToShell,                    reason: 'piping URL to shell (RCE risk)' },
+  // The regex finds a fetch; fetchThenPipe finds a pipe after it on the same
+  // line and pipesToShell walks the stages. A path before curl never changes
+  // whether a line matches, so the rule starts at the name and stays linear.
+  { level: 'high', id: 'curl-pipe-sh',   regex: FETCH_NAME, confirm: (t) => fetchThenPipe(t) && pipesToShell(t), reason: 'piping URL to shell (RCE risk)' },
   // Shell flags may come first (bash -x <(curl ...), bash -lc "$(curl ...)"); the
   // download may arrive as a file, on stdin (< <(...), <<< "$(...)") or as -c
   // text, in $(...) or backticks.
-  { level: 'high', id: 'curl-subst-sh',  regex: new RegExp('(?:' + SHELL + SHELL_FLAGS + '|(?<![\\w.\\/-])source|(?:^|[;&|(]\\s*)\\.)\\s+(?:<\\s*)?<\\(\\s*' + FETCH + '|' + SHELL + SHELL_FLAGS + '\\s+<<<\\s*["\']?' + SUBST + FETCH + '|(?:' + SHELL + SHELL_FLAGS + '\\s+-[A-Za-z]*c[A-Za-z]*|(?<![\\w.\\/-])eval)\\s+["\']?' + SUBST + FETCH), reason: 'running a downloaded script through process or command substitution (RCE risk)' },
+  // The words are also read with the shell reader (downloadRunsAsCode), so a quoted or
+  // escaped program or downloader name ("bash" <(curl ...), \\bash <(cu''rl ...)) is the same
+  // program; the rule's prefilter is any substitution.
+  { level: 'high', id: 'curl-subst-sh',  regex: /\$\(|`|<\(/, confirm: (t) => SUBST_SH.test(t) || downloadRunsAsCode(t), reason: 'running a downloaded script through process or command substitution (RCE risk)' },
   // Flag and branch in either order, within one command segment; +main is a force refspec.
   // A bare --force-with-lease never matches the (?=\s|...) after --force, so it needs no exception.
   { level: 'high', id: 'git-force-main', segment: true, regex: new RegExp(GIT + 'push\\b(?=[^;&|\\n]*' + FORCE_FLAG + ')(?=[^;&|\\n]*' + MAIN_REF + ')|' + GIT + 'push\\b[^;&|\\n]*\\s["\']?\\+(?:[^\\s:]*:)?(?:refs\\/heads\\/)?(?:main|master)(?=$|[\\s;&|)<>"\'])'), reason: 'force push to main/master' },
@@ -122,7 +156,7 @@ const PATTERNS = [
   // 777 with a leading 0 or a special bit (0777, 1777), or rwx for everyone spelled symbolically (a+rwx), as the mode.
   { level: 'high', id: 'chmod-777',      regex: new RegExp('\\bchmod\\b.+\\b777\\b|' + CHMOD + '["\']?(?:0*[1-7]?777|(?:a|ugo|uog|gou|guo|ogu|oug)[+=](?=[rwxXst]*r)(?=[rwxXst]*w)(?=[rwxXst]*x)[rwxXst]+)["\']?(?=\\s|$|[;&|)<>])'), reason: 'chmod 777 is a security risk' },
   // docker volume rm|remove|prune after global options, compose down -v, system prune --volumes.
-  { level: 'high', id: 'docker-vol-rm',  regex: new RegExp(DOCKER + '(?:volume\\s+(?:rm|remove|prune)\\b|system\\s+prune\\b[^;&|\\n]*\\s--volumes(?![\\w-]))|' + COMPOSE + 'down(?![\\w-])(?=[^;&|\\n]*\\s(?:-[A-Za-z]*v[A-Za-z]*|--volumes)(?![\\w-]))'), reason: 'docker volume deletion loses data' },
+  { level: 'high', id: 'docker-vol-rm',  regex: new RegExp(volumeRemoval(DOCKER, COMPOSE) + '|' + volumeRemoval(DOCKER_FLAT, COMPOSE_FLAT) + '|' + volumeRemoval(DOCKER_PLAIN, COMPOSE_PLAIN)), reason: 'docker volume deletion loses data' },
 
   // STRICT - Cautionary, context-dependent
   // A +ref refspec force-pushes that ref like --force does; pushForces reads
@@ -139,8 +173,9 @@ const PATTERNS = [
 // rm -f '??*' and rm -rf "$HOME/*" each name one file. The rendered view drops
 // quotes, so a line with such a character is judged twice: the glob forms on a
 // copy with it blanked, and the forms without a glob on the views as read.
+const HOME_GLOBS = '|\\*+|\\.(?:\\?|\\*|\\[(?:\\[:[a-z]+:\\]|[^\\]\\s\\/])*\\])+)';
 for (const p of PATTERNS) {
-  if (p.regex.source.includes('|\\*+)')) p.plain = new RegExp(p.regex.source.replace('|\\*+)', ')'), p.regex.flags);
+  if (p.regex.source.includes(HOME_GLOBS)) p.plain = new RegExp(p.regex.source.replace(HOME_GLOBS, ')'), p.regex.flags);
 }
 PATTERNS.find((p) => p.id === 'rm-cwd').plain = /\brm\s+(?:-.+\s)?(\.\/?|\*|\.\/\*)(\s|$|[;&|)<>])/;
 
@@ -754,8 +789,17 @@ function stageCommands(stage) {
   return out;
 }
 
+// A fetch with a | after it on the same line. Each line is scanned once.
+function fetchThenPipe(cmd) {
+  for (const line of cmd.split(/[\n\r\u2028\u2029]/)) {
+    const m = FETCH_NAME.exec(line);
+    if (m && line.indexOf('|', m.index + m[0].length) >= 0) return true;
+  }
+  return false;
+}
+
 function pipesToShell(cmd) {
-  const fetch = new RegExp(FETCH).exec(cmd);
+  const fetch = FETCH_NAME.exec(cmd);
   if (!fetch) return false;
   for (const command of cmd.slice(fetch.index).split('|').slice(1).flatMap(stageCommands)) {
     // `bash; echo`, `bash>out`, `|& bash`, `(bash)`; a quoted `FOO="a;b"` does not end it.
@@ -880,13 +924,224 @@ function programWord(words) {
   return words[k];
 }
 
-// The line with each * or ? that an rm argument holds inside quotes or after a
+const DOWNLOADER = /^(?:curl|wget)$/;
+const SUBSTITUTION = /\$\(|`|<\(/;
+
+// How a shell (or source, .) is run, reading its options once: -o, -O,
+// --rcfile and --init-file take a value, a cluster with c makes the first
+// operand the program text, one with s reads commands from stdin, and -- or -
+// ends the options. The first operand is otherwise the script. rc holds the
+// --rcfile and --init-file values, files the shell also runs as code.
+function shellInvocation(words, from, shell) {
+  let dashC = false;
+  let dashS = false;
+  const rc = [];
+  let k = from + 1;
+  for (; k < words.length; k++) {
+    const w = words[k].value;
+    if (w === '--' || w === '-') { k++; break; }
+    if (!/^[-+]./.test(w)) break;
+    if (!shell) continue;
+    if (/^--(?:rcfile|init-file)$/.test(w)) { k++; if (words[k]) rc.push(words[k]); continue; }
+    if (/^[-+][A-Za-z]+$/.test(w)) {
+      if (w[0] === '-' && w.includes('c')) dashC = true;
+      if (w[0] === '-' && w.includes('s')) dashS = true;
+      if (/[oO]$/.test(w)) k++;
+    }
+  }
+  const operand = k < words.length ? words[k] : null;
+  return {
+    code: dashC ? operand : null,
+    script: !dashC && !dashS ? operand : null,
+    readsStdin: !dashC && (dashS || !operand),
+    rc,
+  };
+}
+
+// The file descriptor a redirect right before this word acts on ('' is the
+// default), read from the source text, since the reader keeps only the operator.
+function redirectFd(src, word) {
+  const m = /(\d*)(?:<<<|<<-|<<|&>>|&>|>>|>\||>&|<>|<&|<|>)\s*$/.exec(src.slice(Math.max(0, word.start - 64), word.start));
+  return m ? m[1] : null;
+}
+
+// A literal path that names a regular file: not -, not under /dev or /proc
+// (/dev/stdout, /dev/fd/1, /proc/self/fd/1), and not built from an expansion.
+const regularPath = (v) => !!v && v !== '-' && !/^\/(?:dev|proc)\//.test(v) && !/[$`]/.test(v);
+
+// stdout of this command goes to a regular file (> f, >> f, &> f). A copy of a
+// descriptor (>&1, >&2), a device and an expansion do not count, so the
+// download still counts as reaching the output.
+function stdoutRedirected(src, cmd) {
+  return cmd.words.some((w) => w.target && /^(?:>|>>|>\||&>|&>>)$/.test(w.target) && (w.target[0] === '&' || ['', '1'].includes(redirectFd(src, w))) && !w.dynamic && regularPath(w.value));
+}
+
+const CURL_SHORT_VALUE = 'AbcCdDeEFHKmPQrTuUwxXyYzt';
+// Whether curl or wget writes the download to stdout. wget saves to a file
+// unless -O names anything but a regular file. curl writes each URL to stdout
+// unless an -o naming a regular file or an -O claims it; a word whose role is
+// unclear counts as a URL, so the doubt falls on the side of stdout.
+function downloadToStdout(name, values) {
+  if (name === 'wget') {
+    for (let k = 0; k < values.length; k++) {
+      const w = values[k];
+      if (w === '--') break;
+      let v = null;
+      if (w.startsWith('--output-document')) v = w.includes('=') ? w.slice(w.indexOf('=') + 1) : values[k + 1];
+      else if (/^-[^-]/.test(w) && w.indexOf('O') > 0) v = w.indexOf('O') < w.length - 1 ? w.slice(w.indexOf('O') + 1) : values[k + 1];
+      if (v !== null && !regularPath(v)) return true;
+    }
+    return false;
+  }
+  let urls = 0;
+  let files = 0;
+  for (let k = 0; k < values.length; k++) {
+    const w = values[k];
+    if (w === '--') { urls += values.length - k - 1; break; }
+    if (w.startsWith('--')) {
+      const eq = w.indexOf('=');
+      const opt = eq < 0 ? w.slice(2) : w.slice(2, eq);
+      if (opt === 'config') return true;
+      if (opt === 'remote-name-all') return false;
+      if (opt === 'remote-name') files++;
+      else if (opt === 'output') { const v = eq < 0 ? values[++k] : w.slice(eq + 1); if (regularPath(v)) files++; }
+      else if (opt === 'url') { urls++; if (eq < 0) k++; }
+      continue;
+    }
+    if (/^-./.test(w)) {
+      for (let j = 1; j < w.length; j++) {
+        if (w[j] === 'K') return true;
+        if (w[j] === 'O') { files++; continue; }
+        if (w[j] === 'o') { const v = j < w.length - 1 ? w.slice(j + 1) : values[++k]; if (regularPath(v)) files++; break; }
+        if (CURL_SHORT_VALUE.includes(w[j])) { if (j === w.length - 1) k++; break; }
+      }
+      continue;
+    }
+    urls++;
+  }
+  return urls > files;
+}
+
+// A curl or wget whose output the command around it runs as code, in
+// <(...), $(...) or backticks, directly or inside another substitution:
+// - a shell, source or . given it as the script;
+// - a shell given it on stdin (fd 0 of < <(...) or <<<) with no script and no -c;
+// - a shell given it anywhere in its -c text, unquoted or in double quotes: the
+//   outer shell expands it first, so the shell parses the downloaded text;
+// - eval given it in any argument;
+// - a shell given it as a startup file: --rcfile or --init-file, or BASH_ENV=
+//   or ENV= on its command line.
+// A substitution carries the download only when the downloader's stdout
+// reaches its output (not with curl -o, wget without -O -, or > file).
+// The text of a -c program or of eval is read again the same way, so a single
+// quoted program that itself runs a download (bash -c 'eval "$(curl ...)"') is
+// caught too, while one that only prints it (bash -c 'echo $(curl ...)') is not.
+// The line is read with the shell reader, so quotes and escapes in a program
+// or downloader name do not hide it, and the program is found past wrappers.
+function downloadRunsAsCode(cmd, depth = 0) {
+  const read = readShell(cmd);
+  const emits = (c) => {
+    const words = argv(c);
+    const program = programWord(words);
+    if (!program || program.dynamic || !DOWNLOADER.test(base(program.value))) return false;
+    return downloadToStdout(base(program.value), words.slice(words.indexOf(program) + 1).map((w) => w.value)) && !stdoutRedirected(cmd, c);
+  };
+  // A frame is created before the frames inside it, so one pass from the last
+  // frame to the first settles which ones carry a download.
+  const redirected = new Map();
+  const quiet = (c) => { if (!redirected.has(c)) redirected.set(c, stdoutRedirected(cmd, c)); return redirected.get(c); };
+  const carries = new Set();
+  for (let i = read.frames.length - 1; i >= 0; i--) {
+    const f = read.frames[i];
+    if (!carries.has(f) && f.cmds.some(emits)) carries.add(f);
+    if (carries.has(f) && f.parent && !quiet(f.parent.cmd)) carries.add(f.parent.cmd.frame);
+  }
+  // Words right after a < operator (< <(...)): input, not arguments.
+  const inputs = new Set();
+  for (const f of read.frames) {
+    for (const c of f.cmds) c.words.forEach((w, k) => { if (k > 0 && c.words[k - 1].op === '<') inputs.add(w); });
+  }
+  // Each command around a substitution is read once, however many it holds.
+  const seen = new Map();
+  const outerOf = (outer) => {
+    if (seen.has(outer)) return seen.get(outer);
+    const words = argv(outer).filter((w) => !inputs.has(w));
+    const program = programWord(words);
+    let info = null;
+    if (program && !program.dynamic) {
+      const name = base(program.value);
+      const shell = PIPE_SHELL.test(name);
+      const from = words.indexOf(program);
+      const index = new Map(words.map((w, k) => [w, k]));
+      info = { name, shell, from, index, run: shell || name === 'source' || name === '.' ? shellInvocation(words, from, shell) : null };
+    }
+    seen.set(outer, info);
+    return info;
+  };
+  // <(...) as the value of BASH_ENV= or ENV= on a shell's command line: the
+  // shell runs that file as code before anything else.
+  // Per command, once: the words that are such a value, and whether the program
+  // left after taking out every such pair is a shell.
+  const startup = new Map();
+  const startupFile = (outer, word) => {
+    if (!startup.has(outer)) {
+      const values = new Set();
+      const pairs = new Set();
+      outer.words.forEach((w, k) => {
+        const prev = k > 0 ? outer.words[k - 1] : null;
+        if (prev && !prev.op && /^(?:BASH_ENV|ENV)=$/.test(prev.value) && prev.end === w.start && w.parts.some((x) => x.frame && x.open === '<(')) {
+          values.add(w);
+          pairs.add(w).add(prev);
+        }
+      });
+      const program = values.size ? programWord(argv(outer).filter((w) => !pairs.has(w) && !inputs.has(w))) : null;
+      // Only an assignment before the program reaches its environment; one after it is an argument.
+      for (const w of values) if (!program || w.start > program.start) values.delete(w);
+      startup.set(outer, { values, shell: !!program && !program.dynamic && PIPE_SHELL.test(base(program.value)) });
+    }
+    const info = startup.get(outer);
+    return info.shell && info.values.has(word);
+  };
+  for (const f of read.frames) {
+    if ((f.kind !== 'proc' && f.kind !== 'subst') || !f.parent || !carries.has(f)) continue;
+    const { cmd: outer, word } = f.parent;
+    if (f.kind === 'proc' && startupFile(outer, word)) return true;
+    const info = outerOf(outer);
+    if (!info) continue;
+    const { name, shell, from, index, run } = info;
+    if (name === 'eval') { if ((index.has(word) ? index.get(word) : -1) > from) return true; continue; }
+    if (!run) continue;
+    const part = word.parts.find((x) => x.frame === f);
+    const stdinFd = ['', '0'].includes(redirectFd(cmd, word));
+    if (part && part.open === '<(' && inputs.has(word)) { if (shell && run.readsStdin && stdinFd) return true; continue; }
+    if (word.target === '<<<') { if (shell && run.readsStdin && stdinFd) return true; continue; }
+    if (part && part.open === '<(' && (word === run.script || run.rc.includes(word))) return true;
+    if (shell && word === run.code) return true;
+  }
+  if (depth >= 3) return false;
+  for (const f of read.frames) {
+    for (const c of f.cmds) {
+      const words = argv(c);
+      const program = programWord(words);
+      if (!program || program.dynamic) continue;
+      const name = base(program.value);
+      const from = words.indexOf(program);
+      let text = null;
+      if (name === 'eval') text = words.slice(from + 1).map((w) => w.value).join(' ');
+      else if (PIPE_SHELL.test(name)) { const code = shellInvocation(words, from, true).code; text = code && code.value; }
+      if (text && SUBSTITUTION.test(text) && downloadRunsAsCode(text, depth + 1)) return true;
+    }
+  }
+  return false;
+}
+
+// The line with each * ? [ or ] that an rm argument holds inside quotes or after a
 // backslash replaced by _, for a command whose program is rm itself, so a file
 // named sh or eval is just a name. A shell or eval that runs text (sh -c
 // 'rm -rf ~/*'), an assigned value, which globs where it is expanded, and a
 // $(...) inside double quotes, whose words are read on their own, keep theirs.
 function quotedGlobsBlanked(cmd) {
-  if (!/[*?]/.test(cmd) || !/['"\\]/.test(cmd)) return cmd;
+  if (!/[*?[\]]/.test(cmd) || !/['"\\]/.test(cmd)) return cmd;
   const read = readShell(cmd);
   const at = [];
   for (const f of read.frames) {
@@ -902,7 +1157,7 @@ function quotedGlobsBlanked(cmd) {
           for (let i = s.start; i < s.end; i++) {
             while (j < nested.length && nested[j].to <= i) j++;
             if (j < nested.length && i >= nested[j].from) { i = nested[j].to - 1; continue; }
-            if (cmd[i] === '*' || cmd[i] === '?') at.push(i);
+            if (cmd[i] === '*' || cmd[i] === '?' || cmd[i] === '[' || cmd[i] === ']') at.push(i);
           }
         }
       }
