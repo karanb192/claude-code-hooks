@@ -254,8 +254,8 @@ const BASH_PATTERNS = [
   // HIGH - Environment exposure
   { level: 'high', id: 'env-dump',               regex: /\bprintenv\b|(?:^|[;&|(]\s*)(?:env|set|export|declare\s+-x)\s*(?:$|[;&|)])/, reason: 'Environment dump may expose secrets' },
   // The keyword anywhere in a letters-only name, or a whole-segment SECRET_VAR (S3_SECRET_KEY, DB_PASS, GH_PAT).
-  { level: 'high', id: 'echo-secret-var',        regex: new RegExp('\\becho\\b[^;|&]*(?:\\$\\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\\}?|' + SECRET_VAR + ')', 'i'), reason: 'Echoing secret variable' },
-  { level: 'high', id: 'printf-secret-var',      regex: new RegExp('\\bprintf\\b[^;|&]*(?:\\$\\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\\}?|' + SECRET_VAR + ')', 'i'), reason: 'Printing secret variable' },
+  { level: 'high', id: 'echo-secret-var',        regex: new RegExp('\\becho\\b[^;|&]*(?:\\$\\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\\}?|' + SECRET_VAR + ')', 'i'), spaced: true, reason: 'Echoing secret variable' },
+  { level: 'high', id: 'printf-secret-var',      regex: new RegExp('\\bprintf\\b[^;|&]*(?:\\$\\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\\}?|' + SECRET_VAR + ')', 'i'), spaced: true, reason: 'Printing secret variable' },
   { level: 'high', id: 'cat-secrets-file',       regex: /\b(cat|less|head|tail|more)\s+[^|;]*(credentials?|secrets?)\.(json|ya?ml|toml)/i, reason: 'Reading secrets file' },
   { level: 'high', id: 'cat-netrc',              regex: /\b(cat|less|head|tail|more)\s+[^|;]*\.netrc/i,                    reason: 'Reading .netrc credentials' },
   { level: 'high', id: 'source-env',             regex: /\bsource\s+[^|;]*\.env\b|(?:^|[;&|]\s*)\.\s+[^|;]*\.env\b|^\.\s+[^|;]*\.env\b/i, reason: 'Sourcing .env loads secrets' },
@@ -992,6 +992,27 @@ function stdinGrepMatch(p, texts) {
   return aside.flatMap(t => [maskTemplates(t), maskTemplates(maskSeparatorsApart(t))]).some(v => (!p.pre || p.pre.test(v)) && p.regex.test(v));
 }
 
+// The bash-split view writes a quoted ; | or & as _, so "$USER;TOKEN" reads as $USER_TOKEN although
+// the shell expands only $USER. spaced: the print rules must also match the command with each quoted
+// separator written as a space, which keeps the words apart.
+function spaceQuotedSeparators(cmd) {
+  let out = '';
+  let q = '';
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (ch === '\\' && q !== "'" && i + 1 < cmd.length) { out += ch + cmd[++i]; continue; }
+    if (q) { if (ch === q) q = ''; else if (/[;|&]/.test(ch)) { out += ' '; continue; } }
+    else if (ch === '"' || ch === "'") q = ch;
+    out += ch;
+  }
+  return out;
+}
+function spacedMatch(p, cmd) {
+  const spaced = spaceQuotedSeparators(cmd);
+  if (spaced === cmd) return true;
+  return shellViews(spaced).some(v => p.regex.test(maskTemplates(v.text)) || p.regex.test(maskTemplates(maskSeparatorsApart(v.text))));
+}
+
 function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   if (!cmd) return { blocked: false, pattern: null };
   cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
@@ -1005,7 +1026,8 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   const quoted = views.concat(read.map(v => maskTemplates(v.masked)));
   let rule = BASH_PATTERNS.find(p => LEVELS[p.level] <= threshold
     && ((p.quoted ? quoted : views).some(v => (!p.pre || p.pre.test(v)) && p.regex.test(v)) || (p.also && texts.some(t => p.also(t))))
-    && (!p.stdinGrep || stdinGrepMatch(p, texts)));
+    && (!p.stdinGrep || stdinGrepMatch(p, texts))
+    && (!p.spaced || spacedMatch(p, cmd)));
   // env-dump also reads each command in code, so a dump anywhere in the line counts.
   const dump = BASH_PATTERNS.find(p => p.id === 'env-dump');
   if (!rule && LEVELS[dump.level] <= threshold && texts.some(dumpsEnvironment)) rule = dump;
@@ -1049,6 +1071,8 @@ const CLUSTER_VALUES = { grep: 'ef', egrep: 'ef', fgrep: 'ef', zgrep: 'ef', rg: 
 const PATTERN_LONG = /^--(?:regexp|expression)$/;
 const FILE_LONG = /^--file$/;
 const FILE_COPIERS = new Set(['cp', 'mv', 'rm', 'ln', 'unlink', 'install', 'truncate', 'shred']);
+// Commands that write the files they are given, like tee.
+const FILE_WRITERS = new Set(['tee', 'sponge']);
 const FILE_SENDERS = new Set(['scp', 'rsync', 'sftp']);
 // Options whose next word is a value (an identity file is used, not sent).
 const OPTION_VALUE = { scp: /^-[iFoPclSJD]$/, sftp: /^-[iFoPclSJDBRs]$/, rsync: /^-[eT]$/, truncate: /^-[sr]$/ };
@@ -1153,6 +1177,438 @@ function uploadArgs(name, ops) {
   return out.map(u => ({ value: u.value && uploadedFile(u.value, u.kind), word: u.kind === 'T' ? u.word : null }));
 }
 
+// Code given to an interpreter on the command line (python -c, node -e, ruby -e, perl -e, php -r)
+// or in a heredoc opens a file by naming it in a string literal: open('.env'), File.read(".env").
+// Literals are read with the forms these languages use for a constant: quotes, Python's adjacent
+// literals and + joins ('.e' 'nv'), and Ruby's and Perl's %q(), %Q{}, q() and qq{}. A literal counts
+// only when the code can reach a file or another program; code that only prints or formats a string
+// such as print('.env') opens nothing. With such code, a protected file named as an argument counts.
+const INTERPRETER = /^(?:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|ruby|perl|php|lua[0-9.]*|luajit|Rscript|osascript|julia|pwsh|powershell)(?:\.exe)?$/i;
+// Bounded lengths keep the scan linear on a long run of unclosed openers.
+const CODE_QUOTED = /(['"`])((?:\\[\s\S]|(?!\1)[^\\\n]){0,512})\1|%[qQ]?([(\[{<])([^)\]}>]{0,512})[)\]}>]|\bq{1,2}([(\[{<])([^)\]}>]{0,512})[)\]}>]/g;
+const CODE_FILE_API = /\b(?:open\w*|read\w*|load\w*|Path|path\w*|File\w*|fs|require|import|__import__|IO|io|stream\w*|cat|copy\w*|move|exec\w*|system|subprocess|spawn\w*|popen\w*|eval|getattr|compile|os|sys|shutil|pathlib|glob\w*|fopen|file\w*|slurp|include\w*|source|dofile|loadfile|Deno|Bun|fetch|http\w*|url\w*|socket|send|write\w*|ARGV|ARGF|argv|STDIN|stdin|qx|Kernel|public_send|method|instance_eval|class_eval|binding|globals|vars|builtins|ctypes|mmap|codecs|pickle|marshal|dotenv|environ|getenv|ENV|curl|Get-Content|gc|type|do)\b|`|<\w*>|%x/;
+// PowerShell cmdlet and alias names are case-insensitive.
+const CODE_FILE_API_PWSH = /\b(?:get-content|set-content|add-content|out-file|copy-item|move-item|invoke-expression|iex|start-process|invoke-webrequest|iwr|invoke-restmethod|irm|import-module|select-string|gc|type|cat)\b|\[(?:system\.)?io\.file\]/i;
+function codeLiterals(code) {
+  const parts = [];
+  for (const m of code.matchAll(CODE_QUOTED)) parts.push({ v: m[2] ?? m[4] ?? m[6] ?? '', from: m.index, to: m.index + m[0].length });
+  const out = parts.map(p => p.v);
+  out.parts = parts.length;
+  // Adjacent literals, or literals joined by +, make one string.
+  for (let i = 0; i < parts.length; i++) {
+    let joined = parts[i].v;
+    for (let j = i + 1; j < parts.length && j < i + 16; j++) {
+      if (!/^\s*\+?\s*$/.test(code.slice(parts[j - 1].to, parts[j].from))) break;
+      joined += parts[j].v;
+      out.push(joined);
+    }
+  }
+  return out;
+}
+// A string the code evaluates (Python exec, eval, compile; JavaScript eval, Function, vm.runIn*;
+// Ruby eval and instance_eval; Perl eval; PHP eval) is code too, so the literals inside it count.
+const CODE_EVAL = /\b(?:exec|eval|compile|Function|runIn\w*Context|runInThisContext|instance_eval|class_eval|module_eval)\b/;
+function codeReads(code, take, ctx) {
+  if (!CODE_FILE_API.test(code) && !CODE_FILE_API_PWSH.test(code) && !CODE_EVAL.test(code)) return false;
+  const evaluates = CODE_EVAL.test(code);
+  const seen = new Set();
+  const check = (text, depth) => {
+    const lits = codeLiterals(text);
+    lits.forEach((lit, i) => {
+      if (seen.has(lit)) return;
+      seen.add(lit);
+      const v = lit.replace(/^[+<>]+\s*/, '').trim();
+      if (v && v.length < 512) take('read', secretPath(v, null, ctx));
+      // A single literal that can hold another literal is read again as code.
+      if (evaluates && depth < 2 && i < lits.parts && /['"`%q]/.test(lit)) check(lit.replace(/\\(['"`\\])/g, '$1'), depth + 1);
+    });
+  };
+  check(code, 0);
+  return true;
+}
+// The operations that open or run something named by the program's own arguments.
+const CODE_OPENS = /\b(?:open\w*|read\w*|load\w*|Path|File\w*|fs|IO|stream\w*|cat|copy\w*|move|exec\w*|system|subprocess|spawn\w*|popen\w*|eval|fopen|file\w*|slurp|include\w*|source|dofile|loadfile|ARGF|Get-Content|gc|type)\b|`|<\w*>|%x/i;
+
+// The words an interpreter runs as code: python -c, node -e/-p/--eval/--print, ruby -e, perl -e/-E
+// (also in a cluster such as -ne), php -r, lua, Rscript, osascript and julia -e, pwsh -c or -Command,
+// deno eval. Each interpreter's options that take a value consume it first (python -W once, -Wonce,
+// -X; perl -I, -M; node -r ...), so a letter inside a value is never read as a flag. pwsh parameters
+// are case-insensitive and may be abbreviated.
+const INTERP_OPTIONS = [
+  [/^(?:python|pypy)/, { code: 'c', value: 'WXQm' }],
+  [/^(?:node|nodejs|bun)$/, { code: 'ep', value: 'rC', long: /^--(?:require|import|loader|experimental-loader|conditions|input-type|title|env-file)$/ }],
+  [/^ruby$/, { code: 'e', value: 'IrCEFx' }],
+  [/^perl$/, { code: 'eE', value: 'IMmxil0CdD' }],
+  [/^php$/, { code: 'r', value: 'cdfzt' }],
+  [/^(?:lua|luajit)/, { code: 'e', value: 'l' }],
+  [/^osascript$/, { code: 'e', value: 'ls' }],
+  [/^julia$/, { code: 'eE', value: 'LJCpt' }],
+  [/./, { code: 'e', value: '' }],
+];
+// PowerShell takes paths as bare words: Get-Content .env, gc .env, (cat ~/.ssh/id_rsa). Every word
+// after a file cmdlet or alias in the same statement, other than a -Parameter, is checked as a path.
+const PWSH_FILE_CMDLET = /^(?:get-content|gc|cat|type|select-string|sls|copy-item|copy|cp|cpi|move-item|move|mv|mi|get-item|gi|set-content|sc|add-content|ac|out-file|import-csv|ipcsv|import-clixml|get-filehash|format-hex|fhx|remove-item|rm|del|erase|ri|invoke-item|ii|import-module|ipmo)$/i;
+function pwshBarewords(code, take, ctx) {
+  for (const statement of code.split(/[;|\n(){}]+/)) {
+    let after = false;
+    for (const token of statement.trim().split(/\s+/)) {
+      if (!token) continue;
+      if (!after) { if (PWSH_FILE_CMDLET.test(token)) after = true; continue; }
+      if (/^-[A-Za-z]/.test(token)) continue;
+      const v = token.replace(/^['"]|['"],?$/g, '');
+      if (v) take('read', secretPath(v, null, ctx));
+    }
+  }
+}
+
+function codeWords(name, ops) {
+  const code = new Set();
+  name = name.toLowerCase().replace(/\.exe$/, '');
+  if (name === 'powershell') name = 'pwsh';
+  const spec = INTERP_OPTIONS.find(([re]) => re.test(name))[1];
+  for (let j = 0; j < ops.length; j++) {
+    const v = ops[j].value;
+    if (name === 'deno') { if (v === 'eval' && ops[j + 1]) code.add(j + 1); continue; }
+    if (name === 'pwsh') {
+      if (/^-(?:c|com|comm|comma|comman|command)$/i.test(v)) { if (ops[j + 1]) code.add(++j); }
+      continue;
+    }
+    if (/^--(?:eval|print|expr)$/.test(v)) { if (ops[j + 1]) code.add(++j); continue; }
+    if (/^--(?:eval|print|expr)=/.test(v)) { code.add(j); continue; }
+    if (spec.long && spec.long.test(v)) { j++; continue; }
+    if (/^--/.test(v)) continue;
+    // A script name ends the interpreter's options; what follows is the script's argv.
+    if (!/^-[A-Za-z0-9]/.test(v)) { if (code.size || /^(?:python|pypy|node|nodejs|bun|ruby|perl|php)/.test(name)) break; continue; }
+    let stop = false;
+    for (let c = 1; c < v.length; c++) {
+      if (spec.stop && spec.stop.includes(v[c])) { stop = true; break; }
+      if (spec.code.includes(v[c])) { if (c + 1 < v.length) code.add(j); else if (ops[j + 1]) code.add(++j); break; }
+      if (spec.value.includes(v[c])) { if (c + 1 === v.length) j++; break; }
+    }
+    if (stop) break;
+    // python -c ends option parsing: what follows is the program's argv.
+    if (/^(?:python|pypy)/.test(name) && code.size) break;
+  }
+  return code;
+}
+
+// git prints a file's contents from its objects: show REV:path, cat-file -p or blob, blame, grep,
+// archive, and diff, show or log with a patch. Both REV:path and a path after the revision count.
+const GIT_GLOBAL_VALUE = /^(?:-C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env|--super-prefix|--list-cmds)$/;
+// A patch is printed by default for diff and show, and with -p for log. A later -s or --no-patch
+// turns it off and a later patch flag back on; --quiet prints nothing; a stat or name list alone
+// replaces the patch, but not next to a patch flag.
+const GIT_FORMAT = /^(?:--stat|--numstat|--shortstat|--name-only|--name-status|--summary|--raw|--dirstat|--compact-summary)(?:=|$)/;
+const GIT_PATCH = /^(?:-p|-u|--patch|-U\d*|--unified(?:=\d+)?|--word-diff(?:=\w+)?|--full-diff|--patch-with-stat|--patch-with-raw|--cc|-c)$/;
+// Options that take the next word as their value, so a search text or author is not read as a path.
+// Options whose value is optional or must follow = (--pretty, --format, --color-moved) take nothing.
+// log takes search and author text; diff and show take a pickaxe text, an order file and a filter;
+// grep takes its patterns and pattern files. A count or filter must look like one to be consumed.
+const GIT_LOG_VALUE = /^(?:-n|-S|-G|-O|--author|--committer|--grep|--max-count|--skip|--since|--until|--before|--after|--diff-filter)$/;
+const GIT_LOG_ATTACHED = /^-([nSGO])(.+)$/;
+const GIT_DIFF_VALUE = /^(?:-S|-G|-O|--diff-filter)$/;
+const GIT_DIFF_ATTACHED = /^-([SGO])(.+)$/;
+const GIT_GREP_VALUE = /^(?:-e|-f|--regexp|--file)$/;
+const GIT_GREP_ATTACHED = /^-([ef])(.+)$/;
+const gitValueFits = (flag, v) => (/^(?:-n|--max-count|--skip)$/.test(flag) ? /^\d+$/.test(v) : flag === '--diff-filter' ? /^[ACDMRTUXB*]+$/i.test(v) : true);
+function gitObjectPath(v) {
+  const m = /^(?:[^:]*:)([0-3]:)?(.+)$/.exec(v);
+  return m && !/^[a-z][\w+.-]*:\/\//i.test(v) ? m[2] : null;
+}
+function gitFileAccess(ops, take, ctx) {
+  let k = 0;
+  while (k < ops.length && /^-/.test(ops[k].value)) {
+    if (GIT_GLOBAL_VALUE.test(ops[k].value)) k++;
+    k++;
+  }
+  const sub = ops[k]?.value;
+  const args = ops.slice(k + 1);
+  const logLike = sub === 'log' || sub === 'whatchanged';
+  const valueOpt = sub === 'grep' ? GIT_GREP_VALUE : logLike ? GIT_LOG_VALUE : GIT_DIFF_VALUE;
+  const attachedOpt = sub === 'grep' ? GIT_GREP_ATTACHED : logLike ? GIT_LOG_ATTACHED : GIT_DIFF_ATTACHED;
+  const words = [];
+  const flags = [];
+  const values = [];
+  let options = true;
+  for (let i = 0; i < args.length; i++) {
+    const v = args[i].value;
+    if (options && v === '--') { options = false; continue; }
+    if (options && /^-./.test(v)) {
+      flags.push(v);
+      const attached = attachedOpt.exec(v);
+      if (attached) values.push({ flag: `-${attached[1]}`, word: { value: attached[2], spans: [], parts: [], start: 0, end: 0 }, attached: true });
+      else if (valueOpt.test(v) && args[i + 1] && gitValueFits(v, args[i + 1].value)) values.push({ flag: v, word: args[++i] });
+      continue;
+    }
+    words.push(args[i]);
+  }
+  const read = (v, w) => take('read', secretPath(v, w, ctx));
+  const objects = () => { for (const w of words) { const p = gitObjectPath(w.value); if (p) read(p, null); } };
+  const paths = (from) => { for (const w of words.slice(from)) if (!gitObjectPath(w.value)) read(w.value, w); };
+  // -O names an order file that git reads.
+  if (sub !== 'grep') for (const x of values) if (x.flag === '-O') { read(x.word.value, x.attached ? null : x.word); const p = gitObjectPath(x.word.value); if (p) read(p, null); }
+  let patchOn = null;
+  let format = false;
+  let quiet = false;
+  for (const f of flags) {
+    if (GIT_PATCH.test(f)) patchOn = true;
+    else if (f === '-s' || f === '--no-patch') patchOn = false;
+    else if (GIT_FORMAT.test(f)) format = true;
+    else if (f === '--quiet') quiet = true;
+  }
+  const patch = !quiet && patchOn === true;
+  const content = !quiet && (patchOn === true || (patchOn === null && !format));
+  if (sub === 'show') {
+    objects();
+    if (content) paths(0);
+  } else if (sub === 'cat-file') {
+    if (!flags.some(f => /^-[tse]$/.test(f) || /^--batch/.test(f))) objects();
+  } else if (sub === 'diff' || sub === 'difftool') {
+    if (content) { objects(); paths(0); }
+  } else if (sub === 'log' || sub === 'whatchanged') {
+    for (let i = 0; i < args.length; i++) {
+      const v = args[i].value;
+      if (v === '-L') { const p = gitObjectPath(args[i + 1]?.value || ''); if (p) read(p, null); i++; }
+      else if (/^-L./.test(v)) { const p = gitObjectPath(v.slice(2)); if (p) read(p, null); }
+    }
+    if (patch) { objects(); paths(0); }
+  } else if (sub === 'blame' || sub === 'annotate' || sub === 'archive') {
+    objects();
+    paths(0);
+  } else if (sub === 'grep') {
+    objects();
+    // A pattern file is read; a pattern given with -e leaves every word a revision or path.
+    for (const x of values) if (/^(?:-f|--file)$/.test(x.flag)) { read(x.word.value, x.attached ? null : x.word); const p = gitObjectPath(x.word.value); if (p) read(p, null); }
+    for (const f of flags) if (/^--file=/.test(f)) read(f.slice(7), null);
+    const given = values.some(x => /^(?:-e|-f|--regexp|--file)$/.test(x.flag)) || flags.some(f => /^(?:--regexp|--file)=/.test(f));
+    paths(given ? 0 : 1);
+  }
+}
+
+// Where curl and wget write what they fetch, and the other files they write: -o, -D, -c, --output,
+// --output-dir and the trace files for curl; -O, -o, -a, -P and --save-cookies for wget.
+const CURL_WRITE_SHORT = 'oDc';
+const CURL_WRITE_LONG = /^--(?:output|dump-header|cookie-jar|trace|trace-ascii|stderr|etag-save|libcurl)$/;
+const WGET_SHORT_VALUE = 'OoaPiBetTwQUYDIXlAR';
+const WGET_WRITE_LONG = /^--(?:output-document|output-file|append-output|save-cookies)$/;
+// The file a download is saved as when no output name is given: the last component of the URL path,
+// for curl -O or --remote-name and for wget by default.
+function remoteName(url) {
+  const path = url.replace(/[?#][\s\S]*$/, '').replace(/^[a-z][\w+.-]*:\/\/[^/]*/i, '');
+  let last = path.slice(path.lastIndexOf('/') + 1);
+  try { last = decodeURIComponent(last); } catch {}
+  return last && !last.includes('/') ? last : null;
+}
+function downloadTargets(name, ops) {
+  const out = [];
+  let dir = null;
+  const urls = [];
+  // curl pairs its -o and -O options with its URLs in order; wget's -O names one file for them all.
+  const outputs = [];
+  let remoteAll = false;
+  let document = null;
+  for (let j = 0; j < ops.length; j++) {
+    const v = ops[j].value;
+    const long = /^(--[\w-]+)(?:=([\s\S]*))?$/.exec(v);
+    if (long) {
+      const attached = long[2] !== undefined;
+      if (name === 'curl' && long[1] === '--url') { const u = attached ? long[2] : ops[++j]?.value; if (u) urls.push(u); continue; }
+      if (name === 'curl' && long[1] === '--remote-name') { outputs.push({ remote: true }); continue; }
+      if (name === 'curl' && long[1] === '--remote-name-all') { remoteAll = true; continue; }
+      const isDir = long[1] === (name === 'curl' ? '--output-dir' : '--directory-prefix');
+      const isFile = name === 'curl' ? CURL_WRITE_LONG.test(long[1]) : WGET_WRITE_LONG.test(long[1]);
+      if (!isDir && !isFile) continue;
+      const value = attached ? long[2] : ops[++j]?.value;
+      out.push({ value, word: attached ? null : ops[j], dir: isDir });
+      if (isDir) dir = value;
+      else if (name === 'curl' && long[1] === '--output') outputs.push({ name: value });
+      else if (name === 'wget' && long[1] === '--output-document') document = value;
+      continue;
+    }
+    if (!/^-[A-Za-z]/.test(v)) { if (!/^-/.test(v)) urls.push(v); continue; }
+    const values = name === 'curl' ? CURL_SHORT_VALUE : WGET_SHORT_VALUE;
+    for (let c = 1; c < v.length; c++) {
+      if (name === 'curl' && v[c] === 'O') outputs.push({ remote: true });
+      if (!values.includes(v[c])) continue;
+      const attached = c + 1 < v.length;
+      const value = attached ? v.slice(c + 1) : ops[++j]?.value;
+      const isDir = name === 'wget' && v[c] === 'P';
+      const isFile = name === 'curl' ? CURL_WRITE_SHORT.includes(v[c]) : 'Ooa'.includes(v[c]);
+      if (isDir || isFile) {
+        out.push({ value, word: attached ? null : ops[j], dir: isDir });
+        if (isDir) dir = value;
+        else if (name === 'curl' && v[c] === 'o') outputs.push({ name: value });
+        else if (name === 'wget' && v[c] === 'O') document = value;
+      }
+      break;
+    }
+  }
+  const names = [];
+  if (name === 'curl') {
+    urls.forEach((u, i) => {
+      const o = outputs[i];
+      if (o && o.name !== undefined) names.push(o.name);
+      else if ((o && o.remote) || remoteAll) { const n = remoteName(u); if (n) names.push(n); }
+    });
+  } else if (document === null) {
+    // Without -O, wget saves each URL under its last name; -o only names the log.
+    for (const u of urls) { const n = remoteName(u); if (n) names.push(n); }
+  }
+  for (const n of names) {
+    if (!n || n === '-') continue;
+    out.push({ value: dir && !n.startsWith('/') ? `${dir.replace(/\/+$/, '')}/${n}` : n, word: null, dir: false });
+  }
+  return out.filter(t => t.value && t.value !== '-');
+}
+
+// Archivers: what goes into an archive is copied, the archive written, and an extraction writes its
+// members into its directory. tar and bsdtar take a mode letter (c, r, u, x ...), a bundle without a
+// dash, short clusters whose value letters take the rest of the word or the next word, and long
+// options. -C changes the directory for the names after it.
+const TAR_SHORT_VALUE = 'fCTXbKNLgVHIF';
+const TAR_LONG_VALUE = /^--(?:file|directory|files-from|exclude-from|exclude|transform|xform|owner|group|mode|mtime|newer|newer-mtime|after-date|label|use-compress-program|format|blocking-factor|record-size|suffix|to-command|checkpoint-action|index-file|listed-incremental|volno-file|info-script|new-volume-script|rmt-command|rsh-command|strip-components|tape-length|starting-file)$/;
+const TAR_LONG_MODE = { '--create': 'c', '--append': 'r', '--update': 'u', '--concatenate': 'A', '--catenate': 'A', '--extract': 'x', '--get': 'x', '--list': 't', '--diff': 'd', '--compare': 'd', '--delete': 'D' };
+const COMPRESSORS = new Set(['gzip', 'gunzip', 'pigz', 'bzip2', 'bunzip2', 'pbzip2', 'xz', 'unxz', 'lzma', 'unlzma', 'zstd', 'unzstd', 'lz4', 'lzip', 'compress']);
+function archiveAccess(name, ops, take, ctx) {
+  const path = (dir, v) => (dir && !v.startsWith('/') && !v.startsWith('~') ? `${dir.replace(/\/+$/, '')}/${v}` : v)
+    .replace(/\/\.(?=\/|$)/g, '').replace(/\/+$/, '') || v;
+  if (name === 'tar' || name === 'bsdtar') {
+    let mode = null;
+    let dir = null;
+    let archive = null;
+    const operands = [];
+    const dirs = [];
+    const value = (letter, v, word) => {
+      if (letter === 'f') archive = { v, word };
+      else if (letter === 'C') { dir = v; dirs.push({ v, word }); }
+      else if (letter === 'T' || letter === 'X') take('read', secretPath(v, word, ctx));
+    };
+    let j = 0;
+    if (ops[0] && /^[A-Za-z]+$/.test(ops[0].value)) {
+      const pending = [];
+      for (const ch of ops[0].value) {
+        if ('crutxdA'.includes(ch)) mode = mode || ch;
+        if (TAR_SHORT_VALUE.includes(ch)) pending.push(ch);
+      }
+      j = 1;
+      for (const ch of pending) { const w = ops[j++]; if (w) value(ch, w.value, w); }
+    }
+    let options = true;
+    for (; j < ops.length; j++) {
+      const v = ops[j].value;
+      if (options && v === '--') { options = false; continue; }
+      if (options && /^--[\w-]/.test(v)) {
+        const long = /^(--[\w-]+)(?:=([\s\S]*))?$/.exec(v);
+        if (!long) continue;
+        if (TAR_LONG_MODE[long[1]]) { mode = mode || TAR_LONG_MODE[long[1]]; continue; }
+        if (!TAR_LONG_VALUE.test(long[1])) continue;
+        const attached = long[2] !== undefined;
+        const val = attached ? long[2] : ops[++j]?.value;
+        const letter = { '--file': 'f', '--directory': 'C', '--files-from': 'T', '--exclude-from': 'X' }[long[1]];
+        if (letter && val !== undefined) value(letter, val, attached ? null : ops[j]);
+        continue;
+      }
+      if (options && /^-[A-Za-z]/.test(v)) {
+        for (let c = 1; c < v.length; c++) {
+          if ('crutxdA'.includes(v[c])) mode = mode || v[c];
+          if (!TAR_SHORT_VALUE.includes(v[c])) continue;
+          const attached = c + 1 < v.length;
+          const val = attached ? v.slice(c + 1) : ops[++j]?.value;
+          if (val !== undefined) value(v[c], val, attached ? null : ops[j]);
+          break;
+        }
+        continue;
+      }
+      operands.push({ v: path(dir, v), word: ops[j] });
+    }
+    const extracting = mode === 'x';
+    // -C is where an extraction writes, where a new archive reads from, and where a compare reads the
+    // local files; a listing touches nothing there.
+    if (mode !== 't') for (const d of dirs) take(extracting || !mode ? 'write' : mode === 'd' ? 'read' : 'copy', secretPath(d.v, d.word, ctx, true));
+    if (archive && archive.v !== '-') take(extracting || mode === 't' || mode === 'd' ? 'read' : 'write', secretPath(archive.v, archive.word, ctx));
+    if (mode === 't') return;
+    // A compare reads each named local file to set it against the archived copy.
+    for (const o of operands) take(extracting ? 'write' : mode === 'd' ? 'read' : 'copy', secretPath(o.v, o.word, ctx, true));
+    return;
+  }
+  if (name === 'zip') {
+    let archive = null;
+    let lists = false;
+    // zip -d names members to delete from the archive, not files on disk. It counts only as an option
+    // word of its own, before --, and not as the value of an option such as -P.
+    let deleting = false;
+    for (let j = 0; j < ops.length; j++) {
+      const v = ops[j].value;
+      if (v === '--') break;
+      if (/^-[bnOtPZsI]$|^--(?:temp-path|suffixes|output-file|password|compression-method|split-size|from-date|before-date)$/.test(v)) { j++; continue; }
+      if (v === '-d' || v === '--delete') deleting = true;
+    }
+    let dataOnly = false;
+    for (let j = 0; j < ops.length; j++) {
+      const v = ops[j].value;
+      if (!dataOnly && v === '--') { dataOnly = true; continue; }
+      if (dataOnly) {
+        if (archive === null) { archive = v; take('write', secretPath(v, ops[j], ctx)); continue; }
+        if (!deleting) take('copy', secretPath(v, ops[j], ctx, true));
+        continue;
+      }
+      if (v === '-O' || v === '--output-file') { const w = ops[++j]; if (w) take('write', secretPath(w.value, w, ctx)); continue; }
+      if (/^--output-file=/.test(v)) { take('write', secretPath(v.slice(v.indexOf('=') + 1), null, ctx)); continue; }
+      if (/^-[xi]$/.test(v) || /^--(?:exclude|include)$/.test(v)) { lists = true; continue; }
+      if (/^-[bnOtPZsI]$/.test(v) || /^--(?:temp-path|suffixes|output-file|password|compression-method|split-size|from-date|before-date)$/.test(v)) { j++; continue; }
+      if (/^-/.test(v)) continue;
+      if (lists) continue;
+      if (archive === null) { archive = v; take('write', secretPath(v, ops[j], ctx)); continue; }
+      if (!deleting) take('copy', secretPath(v, ops[j], ctx, true));
+    }
+    return;
+  }
+  if (name === 'unzip') {
+    let dir = null;
+    let archive = null;
+    let writes = true;
+    const members = [];
+    for (let j = 0; j < ops.length; j++) {
+      const v = ops[j].value;
+      if (v === '-d') { dir = ops[++j]?.value; if (dir) take('write', secretPath(dir, ops[j], ctx, true)); continue; }
+      if (/^-d./.test(v)) { dir = v.slice(2); take('write', secretPath(dir, null, ctx, true)); continue; }
+      if (v === '-x') { j = ops.length; continue; }
+      if (/^-[A-Za-z]*[lptvzZ]/.test(v)) writes = false;
+      if (/^-/.test(v)) continue;
+      if (archive === null) { archive = v; take('read', secretPath(v, ops[j], ctx)); continue; }
+      members.push(v);
+    }
+    if (writes) for (const m of members) take('write', secretPath(path(dir, m), null, ctx));
+    return;
+  }
+  if (/^7z[ar]?$|^7zz$/.test(name)) {
+    const command = ops[0]?.value;
+    let archive = null;
+    let out = null;
+    const members = [];
+    for (let j = 1; j < ops.length; j++) {
+      const v = ops[j].value;
+      if (/^-o./.test(v)) { out = v.slice(2); take('write', secretPath(out, null, ctx, true)); continue; }
+      if (/^-/.test(v)) continue;
+      if (archive === null) { archive = v; take(/^[au]$/.test(command) ? 'write' : 'read', secretPath(v, ops[j], ctx)); continue; }
+      if (/^[au]$/.test(command)) take('copy', secretPath(v, ops[j], ctx, true));
+      else members.push(v);
+    }
+    // x keeps a member's folders, e writes it by its last name; both write into -o or here.
+    if (/^[ex]$/.test(command)) for (const m of members) take('write', secretPath(path(out, command === 'e' ? base(m) : m), null, ctx));
+    return;
+  }
+  // A compressor replaces the file it is given, or prints it with -c.
+  for (let j = 0; j < ops.length; j++) {
+    const v = ops[j].value;
+    if (v === '-S' || v === '--suffix' || (name === 'zstd' && v === '-D')) { j++; continue; }
+    if (name === 'zstd' && v === '-o') { const w = ops[++j]; if (w) take('write', secretPath(w.value, w, ctx)); continue; }
+    if (/^-/.test(v)) continue;
+    take('copy', secretPath(v, ops[j], ctx));
+  }
+}
+const ARCHIVERS = /^(?:tar|bsdtar|zip|unzip|7z|7za|7zr|7zz)$/;
+
 function commandFileAccess(cmd, ctx) {
   const found = (kind, file) => file && { id: FILE_ACCESS[kind].id, level: file.level, reason: `${FILE_ACCESS[kind].reason} (${file.reason})` };
   // Every operand is checked and the most severe file wins, so operand order never lowers the level.
@@ -1170,13 +1626,44 @@ function commandFileAccess(cmd, ctx) {
   const ops = words.slice(k + 1);
   if (name === 'curl' || name === 'wget') {
     for (const u of uploadArgs(name, ops)) take('send', secretPath(u.value, u.word, ctx));
+    for (const t of downloadTargets(name, ops)) take('write', secretPath(t.value, t.word, ctx, t.dir));
     return best;
+  }
+  if (ARCHIVERS.test(name) || COMPRESSORS.has(name)) {
+    archiveAccess(name, ops, take, ctx);
+    return best;
+  }
+  if (name === 'git') {
+    gitFileAccess(ops, take, ctx);
+    return best;
+  }
+  if (INTERPRETER.test(name)) {
+    const code = codeWords(name, ops);
+    const pwsh = /^(?:pwsh|powershell)/i.test(name);
+    let opens = false;
+    let evaluates = false;
+    for (const j of code) {
+      const v = ops[j].value;
+      const text = /^-[A-Za-z]|^--[\w-]+=/.test(v) ? v.replace(/^--[\w-]+=|^-[A-Za-z]*?[cepr]/i, '') : v;
+      if (codeReads(text, take, ctx)) opens = true;
+      if (CODE_EVAL.test(text)) evaluates = true;
+      if (pwsh) pwshBarewords(text, take, ctx);
+    }
+    // Code that evaluates a string may evaluate its own arguments: exec(sys.argv[1]).
+    if (evaluates) ops.forEach((w, j) => { if (!code.has(j)) codeReads(w.value, take, ctx); });
+    for (const h of ctx.heredocs || []) if (h.cmd === cmd && codeReads(ctx.src.slice(h.bodyStart, h.bodyEnd), take, ctx)) opens = true;
+    // Code that opens, runs or reads a file may take the name as an argument.
+    if (opens && [...code].some(j => CODE_OPENS.test(ops[j].value))) ops.forEach((w, j) => { if (!code.has(j) && !/^-/.test(w.value)) take('read', secretPath(w.value, w, ctx)); });
+    // perl -n or -p and ruby -n or -p read their file operands line by line, like sed.
+    if (/^(?:perl|ruby)$/.test(name) && ops.some(w => /^-[A-Za-z]*[np]/.test(w.value))) {
+      for (const w of ops) if (!/^-/.test(w.value)) take('read', secretPath(w.value, w, ctx));
+    }
   }
   if (name === 'source' || name === '.') {
     if (ops[0]) take('source', secretPath(ops[0].value, ops[0], ctx));
     return best;
   }
-  const kind = FILE_READERS.has(name) ? 'read' : name === 'tee' ? 'write' : FILE_COPIERS.has(name) ? 'copy' : FILE_SENDERS.has(name) ? 'send' : null;
+  const kind = FILE_READERS.has(name) ? 'read' : FILE_WRITERS.has(name) ? 'write' : FILE_COPIERS.has(name) ? 'copy' : FILE_SENDERS.has(name) ? 'send' : null;
   if (!kind) return best;
   let skipPattern = PATTERN_FIRST.test(name) && !ops.some(o => PATTERN_FLAG.test(o.value));
   const cluster = Object.hasOwn(CLUSTER_VALUES, name) ? CLUSTER_VALUES[name] : null;
@@ -1223,7 +1710,7 @@ function secretFileAccess(text, safetyLevel, literal) {
     }
     for (const [value, count] of literal) if ((seen.get(value) || 0) <= count) skip.add(value);
   }
-  const ctx = { safetyLevel, src: text, literal: skip };
+  const ctx = { safetyLevel, src: text, literal: skip, heredocs: read.heredocs };
   let best = null;
   for (const frame of read.frames) {
     for (const cmd of frame.cmds) best = stronger(best, commandFileAccess(cmd, ctx));
@@ -1397,6 +1884,27 @@ function maskTemplates(cmd) {
   });
 }
 
+// The log names the program a refused command runs and nothing of its arguments, the same record
+// guard-pack writes: a token, password or header value typed inline never reaches the log file.
+// A declaration builtin (export, readonly, declare, typeset, local) is logged as itself, since the
+// word after it is an argument. When the program is not plain text, no name is logged.
+const LOG_PASS = new Set(['!', '{', '(', 'if', 'then', 'else', 'elif', 'do', 'while', 'until', 'time']);
+const LOG_DECLARATIONS = new Set(['export', 'readonly', 'declare', 'typeset', 'local']);
+function commandName(command) {
+  if (typeof command !== 'string' || !command.trim()) return undefined;
+  const cmd = readShell(command).top.cmds[0];
+  if (!cmd) return undefined;
+  for (const w of argv(cmd)) {
+    if (w.dynamic || w.spans.length) return undefined;
+    if (LOG_DECLARATIONS.has(w.value)) return w.value;
+    if (LOG_PASS.has(w.value) || /^-p$/.test(w.value) || /^[A-Za-z_]\w*\+?=/.test(w.value)) continue;
+    if (KEYWORDS.has(w.value)) return undefined;
+    const name = base(w.value);
+    return /^[\w.+-]{1,40}$/.test(name) ? name : undefined;
+  }
+  return undefined;
+}
+
 function check(toolName, toolInput, safetyLevel = SAFETY_LEVEL) {
   if (toolName === 'Grep') {
     const searchPath = typeof toolInput?.path === 'string' ? toPosixPath(toolInput.path) : '';
@@ -1451,8 +1959,9 @@ async function main() {
       const p = result.pattern;
       const shouldAsk = ASK[p.level] === true;
       const decision = shouldAsk ? 'ask' : 'deny';
-      const target = tool_input?.file_path || tool_input?.command?.slice(0, 100);
-      log({ level: shouldAsk ? 'ASK' : 'BLOCKED', id: p.id, priority: p.level, decision, tool: tool_name, target, session_id, cwd, permission_mode });
+      const target = tool_input?.file_path || undefined;
+      const program = tool_name === 'Bash' ? commandName(tool_input?.command) : undefined;
+      log({ level: shouldAsk ? 'ASK' : 'BLOCKED', id: p.id, priority: p.level, decision, tool: tool_name, target, command: program, session_id, cwd, permission_mode });
 
       const action = { Read: 'read', Edit: 'modify', Write: 'write to', Bash: 'execute', Grep: 'search' }[tool_name];
       return console.log(JSON.stringify({
@@ -1465,7 +1974,8 @@ async function main() {
     }
     console.log('{}');
   } catch (e) {
-    log({ level: 'ERROR', error: e.message });
+    // A parse error message quotes the input, so the log keeps a fixed description instead.
+    log({ level: 'ERROR', error: data === undefined ? 'hook input is not valid JSON' : `check failed (${e && e.name})` });
     console.log(data !== null && typeof data === 'object' ? guardError(e) : '{}');
   }
 }
@@ -1476,6 +1986,6 @@ if (require.main === module) {
   module.exports = {
     SENSITIVE_FILES, BASH_PATTERNS, ALLOWLIST, LEVELS, SAFETY_LEVEL, ASK,
     HANDLED_TOOLS,
-    check, checkFilePath, checkBashCommand, isAllowlisted, toPosixPath, shellViews,
+    check, checkFilePath, checkBashCommand, isAllowlisted, toPosixPath, shellViews, commandName,
   };
 }
