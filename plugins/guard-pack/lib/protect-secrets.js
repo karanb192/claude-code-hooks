@@ -1466,6 +1466,27 @@ function maskTemplates(cmd) {
   });
 }
 
+// The log names the program a refused command runs and nothing of its arguments, the same record
+// guard-pack writes: a token, password or header value typed inline never reaches the log file.
+// A declaration builtin (export, readonly, declare, typeset, local) is logged as itself, since the
+// word after it is an argument. When the program is not plain text, no name is logged.
+const LOG_PASS = new Set(['!', '{', '(', 'if', 'then', 'else', 'elif', 'do', 'while', 'until', 'time']);
+const LOG_DECLARATIONS = new Set(['export', 'readonly', 'declare', 'typeset', 'local']);
+function commandName(command) {
+  if (typeof command !== 'string' || !command.trim()) return undefined;
+  const cmd = readShell(command).top.cmds[0];
+  if (!cmd) return undefined;
+  for (const w of argv(cmd)) {
+    if (w.dynamic || w.spans.length) return undefined;
+    if (LOG_DECLARATIONS.has(w.value)) return w.value;
+    if (LOG_PASS.has(w.value) || /^-p$/.test(w.value) || /^[A-Za-z_]\w*\+?=/.test(w.value)) continue;
+    if (KEYWORDS.has(w.value)) return undefined;
+    const name = base(w.value);
+    return /^[\w.+-]{1,40}$/.test(name) ? name : undefined;
+  }
+  return undefined;
+}
+
 function check(toolName, toolInput, safetyLevel = SAFETY_LEVEL) {
   if (toolName === 'Grep') {
     const searchPath = typeof toolInput?.path === 'string' ? toPosixPath(toolInput.path) : '';
@@ -1520,8 +1541,9 @@ async function main() {
       const p = result.pattern;
       const shouldAsk = ASK[p.level] === true;
       const decision = shouldAsk ? 'ask' : 'deny';
-      const target = tool_input?.file_path || tool_input?.command?.slice(0, 100);
-      log({ level: shouldAsk ? 'ASK' : 'BLOCKED', id: p.id, priority: p.level, decision, tool: tool_name, target, session_id, cwd, permission_mode });
+      const target = tool_input?.file_path || undefined;
+      const program = tool_name === 'Bash' ? commandName(tool_input?.command) : undefined;
+      log({ level: shouldAsk ? 'ASK' : 'BLOCKED', id: p.id, priority: p.level, decision, tool: tool_name, target, command: program, session_id, cwd, permission_mode });
 
       const action = { Read: 'read', Edit: 'modify', Write: 'write to', Bash: 'execute', Grep: 'search' }[tool_name];
       return console.log(JSON.stringify({
@@ -1534,7 +1556,8 @@ async function main() {
     }
     console.log('{}');
   } catch (e) {
-    log({ level: 'ERROR', error: e.message });
+    // A parse error message quotes the input, so the log keeps a fixed description instead.
+    log({ level: 'ERROR', error: data === undefined ? 'hook input is not valid JSON' : `check failed (${e && e.name})` });
     console.log(data !== null && typeof data === 'object' ? guardError(e) : '{}');
   }
 }
@@ -1545,6 +1568,6 @@ if (require.main === module) {
   module.exports = {
     SENSITIVE_FILES, BASH_PATTERNS, ALLOWLIST, LEVELS, SAFETY_LEVEL, ASK,
     HANDLED_TOOLS,
-    check, checkFilePath, checkBashCommand, isAllowlisted, toPosixPath, shellViews,
+    check, checkFilePath, checkBashCommand, isAllowlisted, toPosixPath, shellViews, commandName,
   };
 }

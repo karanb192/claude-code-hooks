@@ -105,7 +105,7 @@ From 1.3.0, a guard that cannot finish its check refuses the call instead of all
 
 ## Data & privacy
 
-Logs each deny/ask decision to `~/.claude/hooks-logs/<date>.jsonl`: pattern id, level, tool, target (file path or the command's first 100 chars), session id, and cwd. Grep decisions record the rule and tool, without a target field. The home directory comes from `HOME`, then `USERPROFILE`, then the operating system. It makes no network calls, so everything stays on your local machine.
+Logs each deny/ask decision to `~/.claude/hooks-logs/<date>.jsonl`: pattern id, level, tool, target (the file path for a file tool; for a Bash command only the name of the program it runs, or of a declaration builtin such as `export`, never its arguments, so a token or password typed inline is never logged; input that is not valid JSON is logged with a fixed description), session id, and cwd. Grep decisions record the rule and tool, without a target field. The home directory comes from `HOME`, then `USERPROFILE`, then the operating system. It makes no network calls, so everything stays on your local machine.
 
 ## Uninstall
 
