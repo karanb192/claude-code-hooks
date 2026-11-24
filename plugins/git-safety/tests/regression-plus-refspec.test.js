@@ -39,9 +39,19 @@ describe('force push through a + refspec (strict)', () => {
 
 describe('a push-option value is not a refspec (strict)', () => {
   it('allows -o +build', () => shouldAllow('git push -o +build origin topic', 'feature', 'strict'));
-  it('allows the value after --push-option, quoted or in a short-flag cluster', () => {
-    for (const c of ['git push --push-option +build origin topic', "git push -o '+build' origin topic", 'git push -uo +build origin topic'])
+  it('allows the value after --push-option or a short-flag cluster ending in o', () => {
+    for (const c of ['git push --push-option +build origin topic', 'git push -uo +build origin topic', 'git push --verbose -o +build origin topic'])
       shouldAllow(c, 'feature', 'strict');
+  });
+  it('each option takes exactly one value, so a later + refspec is still a force push', () => {
+    for (const c of [
+      'git push -oo +topic', 'git push -oo origin +topic', 'git push -o -o +topic',
+      'git push --repo -o +topic', 'git push --rep -o +topic', 'git push origin -- -o +topic', 'git push -o x -- +topic',
+    ]) shouldBlock(c, 'force-push', 'feature', 'strict');
+  });
+  it('keeps the refusal when the line is not plain enough to read exactly', () => {
+    for (const c of ["git push -o '+build' origin topic", 'git -C repo push -o +build origin topic', 'git push -o $v +topic'])
+      shouldBlock(c, 'force-push', 'feature', 'strict');
   });
   it('still blocks a + refspec later in the same call', () => {
     for (const c of ['git push -o +build origin +topic', 'git push -o ci.skip origin +topic', 'git push -ou origin +topic'])

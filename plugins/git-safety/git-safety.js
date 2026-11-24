@@ -62,9 +62,9 @@ const PATTERNS = [
   // STRICT - force-push is normally handled by block-dangerous-commands.js.
   // Only enforced here at 'strict' so git-safety is self-sufficient standalone.
   // -f may sit in a short-flag cluster (-fu, -uf), but not after -o, whose value is the rest of the word.
-  // A refspec with a leading + (origin +feature) force-updates that ref; the word after -o or
-  // --push-option is that option's value (-o +build), not a refspec.
-  { level: 'strict', id: 'force-push',              segment: true, regex: new RegExp(GIT + 'push\\b[^;&|\\n]*\\s["\']?(?:(?:--force|-[A-Za-eg-np-z0-9]*f[A-Za-z0-9]*)["\']?(?=\\s|$|[;&|"\'])|(?<!(?:^|\\s)(?:-[A-Za-z0-9]*o|--push-option)\\s+["\']?)\\+[^\\s;&|])'), reason: 'Force-pushing is not allowed' },
+  // A refspec with a leading + (origin +feature) force-updates that ref. flags is the rule without
+  // that branch: when only a + word matched, plusIsPushOption may waive it.
+  { level: 'strict', id: 'force-push',              segment: true, regex: new RegExp(GIT + 'push\\b[^;&|\\n]*\\s["\']?(?:(?:--force|-[A-Za-eg-np-z0-9]*f[A-Za-z0-9]*)["\']?(?=\\s|$|[;&|"\'])|\\+[^\\s;&|])'), flags: new RegExp(GIT + 'push\\b[^;&|\\n]*\\s["\']?(?:--force|-[A-Za-eg-np-z0-9]*f[A-Za-z0-9]*)["\']?(?=\\s|$|[;&|"\'])'), reason: 'Force-pushing is not allowed' },
 
   // HIGH - complementary coverage the sibling hook does not provide
 
@@ -598,6 +598,35 @@ function shellViews(cmd) {
 }
 // <<< shell-reading
 
+const PUSH_FLAGS = new Set(['--verbose', '--quiet', '--dry-run', '--porcelain', '--all', '--branches', '--mirror', '--tags', '--follow-tags', '--no-follow-tags', '--atomic', '--no-atomic', '--verify', '--no-verify', '--set-upstream', '--thin', '--no-thin', '--progress', '--no-progress', '--prune', '--no-prune', '--force', '--force-with-lease', '--no-force-with-lease', '--force-if-includes', '--no-force-if-includes', '--delete', '--ipv4', '--ipv6', '--signed', '--no-signed', '--no-recurse-submodules']);
+const PUSH_VALUE_OPTS = new Set(['--repo', '--receive-pack', '--exec', '--recurse-submodules']);
+
+// git push -o +build: every + word is the value of -o or --push-option, so no
+// refspec forces anything. Read only a plain line (no quotes, escapes,
+// expansions, groups, redirects, comments or newlines), whose words are
+// exactly what git gets, and parse each push once, one value per option. Any
+// other git call, global option, unknown long option or + word keeps the refusal.
+function plusIsPushOption(cmd) {
+  if (/['"\\$`<>(){}\n\r#*?[~]/.test(cmd)) return false;
+  for (const seg of cmd.split(/[;&|]+/)) {
+    const words = seg.trim().split(/[ \t]+/);
+    if (!/\bgit\b/.test(seg)) continue;
+    if (words[0] !== 'git' || words.slice(1).includes('git') || (words[1] || '').startsWith('-')) return false;
+    if (words[1] !== 'push') continue;
+    for (let i = 2; i < words.length; i++) {
+      const a = words[i];
+      if (a === '--') { if (words.slice(i + 1).some(x => x.startsWith('+'))) return false; break; }
+      if (a.startsWith('+')) return false;
+      if (a === '--push-option' || /^-[vqnfdu46]*o$/.test(a)) { i++; continue; }
+      if (/^--[\w-]+=/.test(a) || /^-[vqnfdu46]*o./.test(a)) continue;
+      if (PUSH_VALUE_OPTS.has(a)) { if ((words[i + 1] || '').startsWith('+')) return false; i++; continue; }
+      if (a.startsWith('--')) { if (!PUSH_FLAGS.has(a)) return false; continue; }
+      if (a.startsWith('-') && !/^-[vqnfdu46]+$/.test(a)) return false;
+    }
+  }
+  return true;
+}
+
 function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL) {
   const threshold = LEVELS[safetyLevel] || LEVELS.high;
   // bash removes a backslash-newline outright, joining the two lines.
@@ -606,6 +635,7 @@ function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL) {
   for (const p of PATTERNS) {
     if (LEVELS[p.level] > threshold) continue;
     if (!views.some(v => p.regex.test(p.segment ? v.masked : v.text))) continue;
+    if (p.flags && !views.some(v => p.flags.test(v.masked)) && plusIsPushOption(cmd)) continue;
 
     if (p.branchOnly) {
       if (!branch) branch = getCurrentBranch();
