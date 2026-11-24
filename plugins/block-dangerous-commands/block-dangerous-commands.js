@@ -73,7 +73,8 @@ const PATTERNS = [
   { level: 'critical', id: 'rm-home-abs',      regex: /\brm\s+(?:-.+\s)?["']?\/(home|Users)(\/[^\/\s"';&|]+)?(\/(\.{1,2}|\*+)?)*["']?(\s|$|[;&|])/, reason: 'rm targeting a home directory by absolute path' },
   { level: 'critical', id: 'rm-root',          regex: /\brm\s+(?:-.+\s)?\/+(\*|\s|$|[;&|])/,                               reason: 'rm targeting root filesystem' },
   { level: 'critical', id: 'rm-system',        regex: /\brm\s+(?:-.+\s)?\/(etc|usr|var|bin|sbin|lib|boot|dev|proc|sys)(\/|\s|$)/, reason: 'rm targeting system directory' },
-  { level: 'critical', id: 'rm-cwd',           regex: /\brm\s+(?:-.+\s)?(\.\/?|(\.\/)?\?*\*[*?]*)(\s|$|[;&|])/,                     reason: 'rm deleting current directory contents' },
+  // Only a glob that matches every name: stars with at most one ? (*, **, ?*, *?). ??* skips one-letter names.
+  { level: 'critical', id: 'rm-cwd',           regex: /\brm\s+(?:-.+\s)?(\.\/?|(\.\/)?(?:\*+(?:\?\**)?|\?\*+))(\s|$|[;&|])/,          reason: 'rm deleting current directory contents' },
   { level: 'critical', id: 'rm-parent',        regex: /\brm\s+(?:-.+\s)?["']?([^\s"';&|]*\/)?\.\.(\/\.{1,2})*\/?(\*)?["']?(\s|$|[;&|])/, reason: 'rm of a path ending in .. deletes a parent directory' },
   { level: 'critical', id: 'dd-disk',          regex: /\bdd\b.+of=\/dev\/(sd[a-z]|nvme|hd[a-z]|vd[a-z]|xvd[a-z]|r?disk\d)/,         reason: 'dd writing to disk device' },
   { level: 'critical', id: 'mkfs',             regex: /\bmkfs(\.\w+)?\s+\/dev\/(sd[a-z]|nvme|hd[a-z]|vd[a-z]|r?disk\d)/,    reason: 'mkfs formatting disk' },
@@ -98,6 +99,16 @@ const PATTERNS = [
   { level: 'strict', id: 'docker-prune',     regex: /\bdocker\s+(system|image)\s+prune/,                                   reason: 'docker prune removes images' },
   { level: 'strict', id: 'crontab-r',        regex: /\bcrontab\s+-r/,                                                      reason: 'removes all cron jobs' },
 ];
+
+// The glob forms of the rm rules (~/*, ?*) read a * or ? as a glob, but one
+// that rm gets inside quotes or after a backslash is a literal character:
+// rm -f '??*' and rm -rf "$HOME/*" each name one file. The rendered view drops
+// quotes, so a line with such a character is judged twice: the glob forms on a
+// copy with it blanked, and the forms without a glob on the views as read.
+for (const p of PATTERNS) {
+  if (p.regex.source.includes('|\\*+)')) p.plain = new RegExp(p.regex.source.replace('|\\*+)', ')'), p.regex.flags);
+}
+PATTERNS.find((p) => p.id === 'rm-cwd').plain = /\brm\s+(?:-.+\s)?(\.\/?|\*|\.\/\*)(\s|$|[;&|])/;
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
 const EMOJIS = { critical: '🚨', high: '⛔', strict: '⚠️' };
@@ -690,16 +701,50 @@ function pipesToShell(cmd) {
   return false;
 }
 
+// The line with each * or ? that an rm argument holds inside quotes or after a
+// backslash replaced by _. Text a shell or eval on the same command runs (sh -c
+// 'rm -rf ~/*') and an assigned value, which globs where it is expanded, keep
+// theirs; so does a $(...) inside double quotes, whose words are read on their own.
+function quotedGlobsBlanked(cmd) {
+  if (!/[*?]/.test(cmd) || !/['"\\]/.test(cmd)) return cmd;
+  const read = readShell(cmd);
+  const at = [];
+  for (const f of read.frames) {
+    for (const c of f.cmds) {
+      const words = argv(c);
+      if (!words.some((w) => base(w.value) === 'rm') || words.some((w) => SHELL_NAME.test(base(w.value)) || w.value === 'eval')) continue;
+      for (const w of words) {
+        if (/^[A-Za-z_]\w*\+?=/.test(w.lead)) continue;
+        const nested = w.parts.filter((p) => p.frame);
+        let j = 0;
+        for (const s of w.spans) {
+          for (let i = s.start; i < s.end; i++) {
+            while (j < nested.length && nested[j].to <= i) j++;
+            if (j < nested.length && i >= nested[j].from) { i = nested[j].to - 1; continue; }
+            if (cmd[i] === '*' || cmd[i] === '?') at.push(i);
+          }
+        }
+      }
+    }
+  }
+  if (!at.length) return cmd;
+  const chars = cmd.split('');
+  for (const i of at) chars[i] = '_';
+  return chars.join('');
+}
+
 function checkCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   const threshold = LEVELS[safetyLevel] || 2;
   // bash removes a backslash-newline outright, joining the two lines.
   cmd = cmd.replace(/\\\r?\n/g, '');
   const views = shellViews(cmd);
+  const blanked = quotedGlobsBlanked(cmd);
+  const globViews = blanked === cmd ? null : shellViews(blanked);
+  const hit = (p, regex, vs) => vs.some((v) => regex.test(p.segment ? v.masked : v.text) && (!p.confirm || p.confirm(v.text)));
   for (const p of PATTERNS) {
     if (LEVELS[p.level] > threshold) continue;
-    for (const v of views) {
-      if (p.regex.test(p.segment ? v.masked : v.text) && (!p.confirm || p.confirm(v.text))) return { blocked: true, pattern: p };
-    }
+    const found = p.plain && globViews ? hit(p, p.plain, views) || hit(p, p.regex, globViews) : hit(p, p.regex, views);
+    if (found) return { blocked: true, pattern: p };
   }
   return { blocked: false, pattern: null };
 }

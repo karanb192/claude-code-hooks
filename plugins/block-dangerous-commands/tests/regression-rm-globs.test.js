@@ -51,3 +51,17 @@ describe('rm of the root or the cwd by another spelling', () => {
     for (const c of ['rm -rf ./*.o', 'rm -f *.tmp', 'rm -rf build/*', 'rm -rf ?']) shouldAllow(c);
   });
 });
+
+describe('a quoted or narrower glob is not everything', () => {
+  it('allows a quoted glob, which names one file', () => {
+    for (const c of ["rm -f '??*'", 'rm -rf "$HOME/*"', "rm -rf '/Users/dev/*'", 'rm -rf ~/\\*']) shouldAllow(c);
+  });
+  it('allows a glob that skips one-letter names', () => shouldAllow('rm -f ??*'));
+  it('still blocks a glob outside the quotes and one run as a shell program', () => {
+    shouldBlock('rm -rf "$HOME"/*', 'rm-home-var');
+    shouldBlock('rm -rf *?', 'rm-cwd');
+    shouldBlock("sh -c 'rm -rf ~/*'", 'rm-home');
+    shouldBlock("X='*'; rm -rf ~/$X", 'rm-home');
+  });
+  it('still blocks a quoted star that main refuses', () => shouldBlock("rm -rf '*'", 'rm-cwd'));
+});
