@@ -31,6 +31,19 @@ const REFUSED = [
   ["SEC-05-l", "env -0", 'high'],
   ["unset-cluster", "env -ui", 'high'],
   ["command-p", "command -p env", 'high'],
+  // A wrapper's option value is not the command it runs.
+  ["exec-a", "exec -a NAME env", 'high'],
+  ["nice-n", "nice -n 5 env", 'high'],
+  ["sudo-u", "sudo -u root env", 'high'],
+  ["sudo-user", "sudo --user root env", 'high'],
+  ["timeout", "timeout 5 env", 'high'],
+  ["timeout-s", "timeout -s KILL 5 env", 'high'],
+  ["stdbuf-attached", "stdbuf -o0 env", 'high'],
+  ["stdbuf-separate", "stdbuf -o 0 env", 'high'],
+  ["time-p", "time -p env", 'high'],
+  // env runs the next word, which can be env again.
+  ["env-runs-env", "env -u FOO env", 'high'],
+  ["env-assign-env", "env FOO=1 env", 'high'],
 ];
 
 const ALLOWED = [
@@ -49,6 +62,13 @@ const ALLOWED = [
   ['env --version', 'high'],
   ['env --help', 'high'],
   ['env -i', 'high'],
+  // The same wrappers around a command that prints no environment.
+  ['exec -a NAME node server.js', 'high'],
+  ['nice -n 5 make', 'high'],
+  ['sudo -u root ls', 'high'],
+  ['timeout 5 npm test', 'high'],
+  ['stdbuf -o0 tail -f app.log', 'high'],
+  ['env -i env', 'high'],
 ];
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {

@@ -779,7 +779,13 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
 // after a newline, a keyword or a brace, behind a wrapper or a path, with its
 // output redirected or inside a substitution.
 const DECLARATIONS = new Set(['export', 'declare', 'typeset', 'readonly', 'local']);
-const DUMP_WRAPPERS = /^(?:command|builtin|exec|sudo|doas|nohup|nice|time)$/;
+// Wrappers that run the command after them, with the options whose value is the next word.
+const DUMP_WRAPPERS = {
+  sudo: /^(?:-[ugpCDhrRtTU]|--(?:user|group|other-user|prompt|close-from|chdir|role|type|host))$/,
+  doas: /^-[uC]$/, nice: /^(?:-n|--adjustment)$/, ionice: /^(?:-[cnpP]|--(?:class|classdata|pid|pgid|uid))$/,
+  stdbuf: /^(?:-[ioe]|--(?:input|output|error))$/, timeout: /^(?:-[sk]|--(?:signal|kill-after))$/,
+  exec: /^-a$/, time: /^(?:-[fo]|--(?:format|output))$/, command: null, builtin: null, nohup: null,
+};
 // env options that take a value; -S runs the command in its value, so it is no dump.
 const ENV_VALUE_OPT = /^(?:-[uC]|--(?:unset|chdir))$/;
 
@@ -788,32 +794,43 @@ function commandDumpsEnvironment(cmd) {
   let k = 0;
   while (k < words.length && !words[k].spans.length
     && ((KEYWORDS.has(words[k].value) && !DECLARATIONS.has(words[k].value)) || /^[A-Za-z_]\w*\+?=/.test(words[k].lead || ''))) k++;
-  while (k < words.length && !words[k].dynamic && DUMP_WRAPPERS.test(base(words[k].value))) {
-    const wrapper = base(words[k].value);
-    for (k++; k < words.length && /^-./.test(words[k].value); k++) {
-      // command -v and -V look the name up without running it.
-      if (wrapper === 'command' && /^-[A-Za-z]*[vV]/.test(words[k].value)) return false;
+  // The time keyword's -p only changes the timing format.
+  if (k > 0 && words[k - 1].value === 'time') while (words[k] && words[k].value === '-p') k++;
+  for (;;) {
+    while (k < words.length && !words[k].dynamic && Object.hasOwn(DUMP_WRAPPERS, base(words[k].value))) {
+      const wrapper = base(words[k].value);
+      const takesValue = DUMP_WRAPPERS[wrapper];
+      for (k++; k < words.length && /^-./.test(words[k].value); k++) {
+        if (words[k].value === '--') { k++; break; }
+        // command -v and -V look the name up without running it.
+        if (wrapper === 'command' && /^-[A-Za-z]*[vV]/.test(words[k].value)) return false;
+        if (takesValue && takesValue.test(words[k].value)) k++;
+      }
+      if (wrapper === 'timeout') k++;
     }
-  }
-  const w = words[k];
-  if (!w || w.dynamic) return false;
-  const name = base(w.value);
-  const ops = words.slice(k + 1).map(o => o.value);
-  if (name === 'env') {
-    let j = 0;
-    for (; j < ops.length && /^-/.test(ops[j]); j++) {
-      if (/^(?:-S|--split-string)/.test(ops[j])) return false;
-      // An emptied environment, help or version text prints none of the caller's variables.
-      if (/^(?:-[0v]*i[0iv]*|-|--ignore-environment|--help|--version)$/.test(ops[j])) return false;
-      if (ENV_VALUE_OPT.test(ops[j])) j++;
+    const w = words[k];
+    if (!w || w.dynamic) return false;
+    const name = base(w.value);
+    const ops = words.slice(k + 1).map(o => o.value);
+    if (name === 'env') {
+      let j = 0;
+      for (; j < ops.length && /^-/.test(ops[j]); j++) {
+        if (/^(?:-S|--split-string)/.test(ops[j])) return false;
+        // An emptied environment, help or version text prints none of the caller's variables.
+        if (/^(?:-[0v]*i[0iv]*|-|--ignore-environment|--help|--version)$/.test(ops[j])) return false;
+        if (ENV_VALUE_OPT.test(ops[j])) j++;
+      }
+      while (j < ops.length && /^[A-Za-z_]\w*=/.test(ops[j])) j++;
+      if (j >= ops.length) return true;
+      // env runs the next word as a command, which may itself print the environment.
+      k += 1 + j;
+      continue;
     }
-    while (j < ops.length && /^[A-Za-z_]\w*=/.test(ops[j])) j++;
-    return j >= ops.length;
+    if (name === 'export') return ops.every(o => o === '-p');
+    if (name === 'declare' || name === 'typeset') return ops.every(o => /^[-+][a-eg-zA-EG-Z]+$/.test(o));
+    if (name === 'set') return ops.length === 0;
+    return false;
   }
-  if (name === 'export') return ops.every(o => o === '-p');
-  if (name === 'declare' || name === 'typeset') return ops.every(o => /^[-+][a-eg-zA-EG-Z]+$/.test(o));
-  if (name === 'set') return ops.length === 0;
-  return false;
 }
 
 function dumpsEnvironment(text) {
