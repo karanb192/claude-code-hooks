@@ -155,7 +155,8 @@ const SECRET_OPERAND = SECRET_FILE + '(?:\\.(?:bak|backup|old|orig|save|tmp)|~)?
 const SECRET_WORD = '(?:SECRETS?|KEY|TOKEN|PASSWORD|PASSWD|PASSW|PASSPHRASE|PASS|CREDENTIALS?|API_KEY|APIKEY|PAT)';
 // Whole name segments, so $AUTHOR and $TOKENS_USED stay clean; AUTH and PRIVATE only as the last segment.
 const SECRET_TAIL = '(?:_(?:ID|FILE|PATH|VALUE|VAL|STR|STRING|B64|BASE64|JSON|PEM|DATA|CONTENT|TEXT|RAW|HEX|PROD|PRODUCTION|DEV|STAGING|TEST|OLD|NEW|[0-9]+))*';
-const SECRET_VAR = '\\$\\{?!?(?:(?:[A-Z0-9]+_)*' + SECRET_WORD + SECRET_TAIL + '|(?:[A-Z0-9]+_)*(?:AUTH|PRIVATE))\\}?(?![A-Za-z0-9_])';
+// PWD only after a prefix (MYSQL_PWD): a bare $PWD is the working directory.
+const SECRET_VAR = '\\$\\{?!?(?:(?:[A-Z0-9]+_)*' + SECRET_WORD + SECRET_TAIL + '|(?:[A-Z0-9]+_)*(?:AUTH|PRIVATE)|(?:[A-Z0-9]+_)+PWD)\\}?(?![A-Za-z0-9_])';
 // One grep's words: & only inside a redirection such as 2>&1 or &>, so && and a newline end it.
 const GREP_ANY = '(?:[^|;&\\n]|(?<=[<>])&|&(?=>))';
 // The same, stopping at a -- after which every word is an operand.
@@ -252,8 +253,9 @@ const BASH_PATTERNS = [
 
   // HIGH - Environment exposure
   { level: 'high', id: 'env-dump',               regex: /\bprintenv\b|(?:^|[;&|(]\s*)(?:env|set|export|declare\s+-x)\s*(?:$|[;&|)])/, reason: 'Environment dump may expose secrets' },
-  { level: 'high', id: 'echo-secret-var',        regex: /\becho\b[^;|&]*\$\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\}?/i, reason: 'Echoing secret variable' },
-  { level: 'high', id: 'printf-secret-var',      regex: /\bprintf\b[^;|&]*\$\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\}?/i, reason: 'Printing secret variable' },
+  // The keyword anywhere in a letters-only name, or a whole-segment SECRET_VAR (S3_SECRET_KEY, DB_PASS, GH_PAT).
+  { level: 'high', id: 'echo-secret-var',        regex: new RegExp('\\becho\\b[^;|&]*(?:\\$\\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\\}?|' + SECRET_VAR + ')', 'i'), reason: 'Echoing secret variable' },
+  { level: 'high', id: 'printf-secret-var',      regex: new RegExp('\\bprintf\\b[^;|&]*(?:\\$\\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\\}?|' + SECRET_VAR + ')', 'i'), reason: 'Printing secret variable' },
   { level: 'high', id: 'cat-secrets-file',       regex: /\b(cat|less|head|tail|more)\s+[^|;]*(credentials?|secrets?)\.(json|ya?ml|toml)/i, reason: 'Reading secrets file' },
   { level: 'high', id: 'cat-netrc',              regex: /\b(cat|less|head|tail|more)\s+[^|;]*\.netrc/i,                    reason: 'Reading .netrc credentials' },
   { level: 'high', id: 'source-env',             regex: /\bsource\s+[^|;]*\.env\b|(?:^|[;&|]\s*)\.\s+[^|;]*\.env\b|^\.\s+[^|;]*\.env\b/i, reason: 'Sourcing .env loads secrets' },
@@ -283,7 +285,9 @@ const BASH_PATTERNS = [
   { level: 'high', id: 'truncate-secrets',       regex: /\btruncate\b.*\.(env|pem|key)\b|(?:^|[;&|]\s*)>\s*\.env\b/i,      reason: 'Truncating secrets file' },
 
   // HIGH - Process environ
-  { level: 'high', id: 'proc-environ',           regex: /\/proc\/[^/]*\/environ/,                                          reason: 'Reading process environment' },
+  // A relative environ read after cd or pushd into /proc is judged by procEnvironRead, which tracks the
+  // directory per shell scope.
+  { level: 'high', id: 'proc-environ',           regex: /\/proc\/+(?:[^/\s]+\/+)*environ\b/, also: procEnvironRead, reason: 'Reading process environment' },
   { level: 'high', id: 'xargs-cat-env',          regex: /xargs.*cat|\.env.*xargs/i,                                         reason: 'Reading .env via xargs' },
   { level: 'high', id: 'find-exec-cat-env',      regex: /find\b.*\.env.*-exec|find\b.*-exec.*(cat|less)/i,                 reason: 'Finding and reading .env files' },
 
@@ -838,8 +842,11 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   // also: a check in code.
   const views = texts.flatMap(t => [maskTemplates(t), maskTemplates(maskSeparatorsApart(t))]);
   const quoted = views.concat(read.map(v => maskTemplates(v.masked)));
-  const rule = BASH_PATTERNS.find(p => LEVELS[p.level] <= threshold
+  let rule = BASH_PATTERNS.find(p => LEVELS[p.level] <= threshold
     && ((p.quoted ? quoted : views).some(v => (!p.pre || p.pre.test(v)) && p.regex.test(v)) || (p.also && texts.some(t => p.also(t)))));
+  // env-dump also reads each command in code, so a dump anywhere in the line counts.
+  const dump = BASH_PATTERNS.find(p => p.id === 'env-dump');
+  if (!rule && LEVELS[dump.level] <= threshold && texts.some(dumpsEnvironment)) rule = dump;
   const quotedGlobs = literalGlobs(texts[0]);
   let hit = null;
   texts.forEach((text, i) => { hit = stronger(hit, secretFileAccess(text, safetyLevel, i ? quotedGlobs : null)); });
@@ -1082,6 +1089,135 @@ function base64ReadsSecret(text) {
     }
   }
   return false;
+}
+
+// Reading /proc/<pid>/environ by a relative name after cd or pushd into /proc. The directory is
+// tracked per shell scope: a cd inside ( ... ) does not change the parent's directory. echo, printf
+// and test only name the file. A cd to an unknown place ($DIR) keeps the last known directory.
+const PROC_NAMES_ONLY = new Set(['echo', 'printf', 'test', '[', '[[']);
+// A directory is kept as its first component and its depth, which is all that decides whether a
+// relative name lands under /proc; this keeps long chains of cd linear.
+function resolveDir(dir, to) {
+  let { head, len } = to.startsWith('/') || !dir ? { head: null, len: 0 } : dir;
+  for (const part of to.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') { if (len > 0) len--; if (len === 0) head = null; }
+    else { if (len === 0) head = part; len++; }
+  }
+  return { head, len };
+}
+const inProc = (dir) => !!dir && dir.head === 'proc';
+function procEnvironRead(text) {
+  if (!/environ/.test(text)) return false;
+  const read = readShell(text);
+  let state = { dir: null, prev: null, stack: [] };
+  const saved = [];
+  const names = (w) => !w.dynamic && /(?:^|\/)environ$/.test(w.value) && !w.value.startsWith('/');
+  // A word of code (python3 -c, node -e) or an expanding heredoc body that names environ may open it.
+  const mentions = (t) => /(?<![\w.\/-])(?:[^\s\/'"`]+\/+)*environ(?![\w.-])/.test(t);
+  const hits = (st, w) => names(w) && inProc(st.dir) && inProc(resolveDir(st.dir, w.value));
+  const visit = (cmd, st) => {
+    for (const w of cmd.words) for (const f of w.frames || []) for (const c of f.cmds) if (visit(c, { ...st, stack: [...st.stack] })) return true;
+    if (cmd.words.some(w => w.target === '<' && hits(st, w))) return true;
+    const words = argv(cmd);
+    let k = commandIndex(words);
+    for (const w of words.slice(0, k < 0 ? words.length : k)) {
+      const m = /^[A-Za-z_]\w*\+?=([\s\S]*)$/.exec(w.value);
+      if (m && !w.dynamic && hits(st, { value: m[1], dynamic: false })) return true;
+    }
+    while (k >= 0 && words[k] && !words[k].dynamic && /^(?:builtin|command)$/.test(words[k].value) && words[k + 1] && !/^-/.test(words[k + 1].value)) k++;
+    // A command word that is not plain text may be any reader.
+    if (k < 0 || !words[k] || words[k].dynamic) return words.some(w => hits(st, w));
+    const name = base(words[k].value);
+    const ops = words.slice(k + 1).filter(w => !/^-./.test(w.value));
+    if (name === 'cd' || name === 'pushd') {
+      const to = ops[0];
+      const from = st.dir;
+      if (name === 'pushd') st.stack.push(from);
+      if (!to) { if (name === 'cd') st.dir = null; else st.dir = st.stack.length > 1 ? st.stack.splice(-2, 1)[0] : st.dir; }
+      else if (to.dynamic) { /* unknown target: keep the last known directory */ }
+      // cd - returns to a directory this line may not show; keep the current one when it is unknown.
+      else if (to.value === '-') st.dir = st.prev !== null ? st.prev : st.dir;
+      else if (to.value.startsWith('~')) st.dir = null;
+      else if (to.value.startsWith('/')) { const d = resolveDir(null, to.value); st.dir = inProc(d) ? d : null; }
+      else if (st.dir !== null) { const d = resolveDir(st.dir, to.value); st.dir = inProc(d) ? d : null; }
+      st.prev = from;
+      return false;
+    }
+    if (name === 'popd') { st.prev = st.dir; st.dir = st.stack.length ? st.stack.pop() : null; return false; }
+    if (PROC_NAMES_ONLY.has(name)) return false;
+    if (inProc(st.dir) && words.slice(k + 1).some(w => mentions(w.value))) return true;
+    if (inProc(st.dir) && read.heredocs.some(h => h.cmd === cmd && !h.quoted && /[$`]/.test(text.slice(h.bodyStart, h.bodyEnd)) && mentions(text.slice(h.bodyStart, h.bodyEnd)))) return true;
+    return words.slice(k + 1).some(w => hits(st, w) || hits(st, { value: w.value.replace(/^[^=]*=/, ''), dynamic: w.dynamic }));
+  };
+  for (const cmd of read.top.cmds) {
+    for (const w of cmd.words) if (w.op === '(') saved.push({ ...state, stack: [...state.stack] });
+    if (visit(cmd, state)) return true;
+    for (const w of cmd.words) if (w.op === ')' && saved.length) state = saved.pop();
+  }
+  return false;
+}
+
+// A command that prints the whole environment, wherever it sits in the line:
+// after a newline, a keyword or a brace, behind a wrapper or a path, with its
+// output redirected or inside a substitution.
+const DECLARATIONS = new Set(['export', 'declare', 'typeset', 'readonly', 'local']);
+// Wrappers that run the command after them, with the options whose value is the next word.
+const DUMP_WRAPPERS = {
+  sudo: /^(?:-[ugpCDhrRtTU]|--(?:user|group|other-user|prompt|close-from|chdir|role|type|host))$/,
+  doas: /^-[uC]$/, nice: /^(?:-n|--adjustment)$/, ionice: /^(?:-[cnpP]|--(?:class|classdata|pid|pgid|uid))$/,
+  stdbuf: /^(?:-[ioe]|--(?:input|output|error))$/, timeout: /^(?:-[sk]|--(?:signal|kill-after))$/,
+  exec: /^-a$/, time: /^(?:-[fo]|--(?:format|output))$/, command: null, builtin: null, nohup: null,
+};
+// env options that take a value; -S runs the command in its value, so it is no dump.
+const ENV_VALUE_OPT = /^(?:-[uC]|--(?:unset|chdir))$/;
+
+function commandDumpsEnvironment(cmd) {
+  const words = argv(cmd);
+  let k = 0;
+  while (k < words.length && !words[k].spans.length
+    && ((KEYWORDS.has(words[k].value) && !DECLARATIONS.has(words[k].value)) || /^[A-Za-z_]\w*\+?=/.test(words[k].lead || ''))) k++;
+  // The time keyword's -p only changes the timing format.
+  if (k > 0 && words[k - 1].value === 'time') while (words[k] && words[k].value === '-p') k++;
+  for (;;) {
+    while (k < words.length && !words[k].dynamic && Object.hasOwn(DUMP_WRAPPERS, base(words[k].value))) {
+      const wrapper = base(words[k].value);
+      const takesValue = DUMP_WRAPPERS[wrapper];
+      for (k++; k < words.length && /^-./.test(words[k].value); k++) {
+        if (words[k].value === '--') { k++; break; }
+        // command -v and -V look the name up without running it.
+        if (wrapper === 'command' && /^-[A-Za-z]*[vV]/.test(words[k].value)) return false;
+        if (takesValue && takesValue.test(words[k].value)) k++;
+      }
+      if (wrapper === 'timeout') k++;
+    }
+    const w = words[k];
+    if (!w || w.dynamic) return false;
+    const name = base(w.value);
+    const ops = words.slice(k + 1).map(o => o.value);
+    if (name === 'env') {
+      let j = 0;
+      for (; j < ops.length && /^-/.test(ops[j]); j++) {
+        if (/^(?:-S|--split-string)/.test(ops[j])) return false;
+        // An emptied environment, help or version text prints none of the caller's variables.
+        if (/^(?:-[0v]*i[0iv]*|-|--ignore-environment|--help|--version)$/.test(ops[j])) return false;
+        if (ENV_VALUE_OPT.test(ops[j])) j++;
+      }
+      while (j < ops.length && /^[A-Za-z_]\w*=/.test(ops[j])) j++;
+      if (j >= ops.length) return true;
+      // env runs the next word as a command, which may itself print the environment.
+      k += 1 + j;
+      continue;
+    }
+    if (name === 'export') return ops.every(o => o === '-p');
+    if (name === 'declare' || name === 'typeset') return ops.every(o => /^[-+][a-eg-zA-EG-Z]+$/.test(o));
+    if (name === 'set') return ops.length === 0;
+    return false;
+  }
+}
+
+function dumpsEnvironment(text) {
+  return readShell(text).frames.some(f => f.cmds.some(commandDumpsEnvironment));
 }
 
 // Mask each allowlisted file name on its own; matching the allowlist against
