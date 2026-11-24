@@ -630,20 +630,22 @@ function commitFree(sub, words) {
 
 // A pull that merges or rebases into the branch: --rebase (any value but
 // false), -r, --no-ff, or a branch other than main or master named after the
-// remote (git pull origin feature). A plain pull, git pull origin main,
-// --ff-only, --no-rebase and --rebase=false stay allowed, and so does a
-// branch named by an expansion.
+// remote (git pull origin feature). A word git gets only when the shell runs
+// (an expansion, a glob or a brace list) may be any branch or option, so it
+// counts as one. A plain pull, git pull origin main, --ff-only, --no-rebase
+// and --rebase=false stay allowed.
 const PULL_VALUE = /^(?:-[A-Za-z]*[sXj]|--(?:depth|deepen|shallow-since|shallow-exclude|upload-pack|strategy|strategy-option|jobs|negotiation-tip|server-option|recurse-submodules|refmap|cleanup|gpg-sign))$/;
 function pullMerges(words) {
   const pos = [];
   for (let i = 0; i < words.length; i++) {
     const a = words[i].value;
+    if (words[i].dynamic || /[*?[]|\{[^}]*(?:,|\.\.)/.test(a)) return true;
     if (a === '--') { pos.push(...words.slice(i + 1)); break; }
     if (/^(?:--no-ff|--rebase(?:=(?!false$).*)?|-[qvnfkpt46ae]*r[qvnfkpt46ae]*)$/.test(a)) return true;
     if (PULL_VALUE.test(a)) { i++; continue; }
     if (!a.startsWith('-')) pos.push(words[i]);
   }
-  return pos.slice(1).some(w => !w.dynamic && !/^\+?(?:(?:refs\/)?heads\/)?(?:main|master|HEAD)(?::.*)?$/.test(w.value));
+  return pos.slice(1).some(w => !/^\+?(?:(?:refs\/)?heads\/)?(?:main|master|HEAD)(?::.*)?$/.test(w.value));
 }
 
 // The words after the subcommand of every git <sub> call in the views, and

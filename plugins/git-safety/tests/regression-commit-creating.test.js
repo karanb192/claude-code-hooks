@@ -58,8 +58,12 @@ describe('git pull on main', () => {
       shouldBlock(c, 'pull-merge-on-protected');
   });
   it('allows a plain pull of the branch itself', () => {
-    for (const c of ['git pull', 'git pull origin main', 'git pull --ff-only', 'git pull -q', 'git pull --no-rebase', 'git pull --rebase=false', 'git pull --depth 1 origin main', 'git pull origin "$BRANCH"'])
+    for (const c of ['git pull', 'git pull origin main', 'git pull --ff-only', 'git pull -q', 'git pull --no-rebase', 'git pull --rebase=false', 'git pull --depth 1 origin main'])
       shouldAllow(c);
+  });
+  it('blocks a pull whose branch or options are known only when the shell runs', () => {
+    for (const c of ['git pull origin "$BRANCH"', 'git pull origin $BRANCH', 'git pull origin $(git rev-parse --abbrev-ref @{u})', 'git pull origin `cat branch`', 'git pull origin feat*', 'git pull origin {main,feature}', 'git pull $ARGS', 'git pull "$REMOTE" main'])
+      shouldBlock(c, 'pull-merge-on-protected');
   });
 });
 
