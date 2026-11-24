@@ -832,43 +832,78 @@ function maskSeparatorsApart(text) {
 }
 
 // The strict file rules read grep with its first two words as a pattern and a file, but grep -A 3 foo
-// gives -A the value 3 and reads stdin. grep's options are read here as getopt reads them, with case
-// kept (the rules match case-insensitively, and -a takes no value where -A does). stdinGrep: when a
-// grep in the command names no file and does not recurse, the rule must still match with that grep
-// set aside.
+// gives -A the value 3 and reads stdin. stdinGrep: when a grep in the command is shown to read only
+// stdin, the rule must still match with that grep set aside. Shown means every option is one this
+// list knows, spelled in full and with a literal value, nothing recurses, and every operand after the
+// pattern is -. Anything else keeps the grep counted as a reader. Case is kept, since -a takes no
+// value where -A does.
 const GREP_FAMILY = new Set(['grep', 'egrep', 'fgrep', 'zgrep']);
-const GREP_SHORT_VALUE = 'ABCmdDef';
-const GREP_LONG_VALUE = /^--(?:after-context|before-context|context|max-count|devices|directories|regexp|file|include|exclude|exclude-dir|exclude-from|label|binary-files)$/;
-function grepReadsFiles(ops) {
+const GREP_SHORT_FLAG = 'EFGPiyvwxcLloqsbHhnTZzUaIu';
+const GREP_SHORT_VALUE = 'ABCmdDe';
+const GREP_LONG_FLAG = new Set(['--extended-regexp', '--fixed-strings', '--basic-regexp', '--perl-regexp', '--ignore-case',
+  '--no-ignore-case', '--invert-match', '--word-regexp', '--line-regexp', '--count', '--color', '--colour',
+  '--files-with-matches', '--files-without-match', '--only-matching', '--quiet', '--silent', '--no-messages',
+  '--byte-offset', '--with-filename', '--no-filename', '--line-number', '--initial-tab', '--null', '--null-data',
+  '--text', '--binary', '--line-buffered']);
+const GREP_LONG_VALUE = new Set(['--after-context', '--before-context', '--context', '--max-count', '--regexp', '--label',
+  '--devices', '--directories', '--binary-files', '--color', '--colour']);
+// -d and -D change what grep does with a directory or device operand; only read and skip are plain.
+const grepPlainValue = (letter, v) => !/^(?:d|D|--devices|--directories)$/.test(letter) || /^(?:read|skip)$/.test(v);
+function grepStdinOnly(ops) {
   let patternGiven = false;
   const operands = [];
   let options = true;
   for (let j = 0; j < ops.length; j++) {
-    const v = ops[j].value;
-    if (ops[j].dynamic) return true;
+    const w = ops[j];
+    const v = w.value;
+    if (w.dynamic) return false;
     if (options && v === '--') { options = false; continue; }
     if (options && /^--./.test(v)) {
-      const name = v.replace(/=[\s\S]*$/, '');
-      if (/^--(?:recursive|dereference-recursive)$/.test(name) || (name === '--directories' && /recurse/.test(v + (ops[j + 1]?.value || '')))) return true;
-      if (/^--(?:regexp|file)$/.test(name)) patternGiven = true;
-      if (GREP_LONG_VALUE.test(name) && !v.includes('=')) j++;
+      const eq = v.indexOf('=');
+      const name = eq < 0 ? v : v.slice(0, eq);
+      if (eq < 0 && GREP_LONG_FLAG.has(name)) continue;
+      if (!GREP_LONG_VALUE.has(name)) return false;
+      let value;
+      if (eq >= 0) value = v.slice(eq + 1);
+      else { const next = ops[++j]; if (!next || next.dynamic) return false; value = next.value; }
+      if (!grepPlainValue(name, value)) return false;
+      if (name === '--regexp') patternGiven = true;
       continue;
     }
     if (options && /^-./.test(v)) {
       for (let c = 1; c < v.length; c++) {
-        if (v[c] === 'r' || v[c] === 'R') return true;
-        if (!GREP_SHORT_VALUE.includes(v[c])) continue;
-        if (v[c] === 'e' || v[c] === 'f') patternGiven = true;
-        const value = c + 1 < v.length ? v.slice(c + 1) : ops[++j]?.value;
-        if ((v[c] === 'd' || v[c] === 'D') && /recurse/.test(value || '')) return true;
-        if (v[c] === 'f') return true;
+        if (GREP_SHORT_FLAG.includes(v[c])) continue;
+        if (/[0-9]/.test(v[c])) continue;
+        if (!GREP_SHORT_VALUE.includes(v[c])) return false;
+        let value;
+        if (c + 1 < v.length) value = v.slice(c + 1);
+        else { const next = ops[++j]; if (!next || next.dynamic) return false; value = next.value; }
+        if (!grepPlainValue(v[c], value)) return false;
+        if (v[c] === 'e') patternGiven = true;
         break;
       }
       continue;
     }
     operands.push(v);
   }
-  return operands.length > (patternGiven ? 0 : 1);
+  const files = operands.slice(patternGiven ? 0 : 1);
+  return files.every(f => f === '-');
+}
+// The grep word of a command, past an env wrapper that only sets or clears variables.
+function grepWordIndex(words) {
+  let k = commandIndex(words);
+  if (k < 0 || !words[k] || words[k].dynamic) return -1;
+  if (base(words[k].value) === 'env' && !words[k].spans.length) {
+    for (k++; k < words.length; k++) {
+      const v = words[k].value;
+      if (words[k].dynamic) return -1;
+      if (v === '-i' || v === '-' || v === '--ignore-environment' || /^[A-Za-z_]\w*=/.test(v)) continue;
+      if (v === '-u' || v === '--unset') { k++; continue; }
+      if (/^--unset=/.test(v)) continue;
+      break;
+    }
+  }
+  return k < words.length ? k : -1;
 }
 function setAsideStdinGrep(text) {
   if (!/grep/.test(text)) return text;
@@ -876,12 +911,12 @@ function setAsideStdinGrep(text) {
   for (const f of readShell(text).frames) {
     for (const cmd of f.cmds) {
       const words = argv(cmd);
-      const k = commandIndex(words);
+      const k = grepWordIndex(words);
       const w = words[k];
       if (!w || w.dynamic || w.spans.length || !GREP_FAMILY.has(base(w.value))) continue;
       // An input redirect makes stdin a file, so such a grep still reads one.
       if (cmd.words.some(x => x.target && /^<(?:&|>)?$/.test(x.target))) continue;
-      if (!grepReadsFiles(words.slice(k + 1))) spots.push([w.start, w.end]);
+      if (grepStdinOnly(words.slice(k + 1))) spots.push([w.start, w.end]);
     }
   }
   let out = text;
