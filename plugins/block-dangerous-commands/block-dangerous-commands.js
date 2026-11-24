@@ -91,15 +91,17 @@ const PATTERNS = [
   // A trailing /. or /.. (~/., /Users/alice/..) still names the home directory or above;
   // a /* (~/*) or a doubled slash (~//) still deletes everything in it, and a dot glob
   // (~/.*, ~/.??*, ~/.[!.]*) deletes every hidden entry in it.
-  { level: 'critical', id: 'rm-home',          regex: /\brm\s+(?:-.+\s)?["']?~(\/(\.{1,2}|\*+|\.(?:\[[!^]\.\])?\?*\*[*?]*)?)*["']?(\s|$|[;&|)<>])/,             reason: 'rm targeting home directory' },
-  { level: 'critical', id: 'rm-home-var',      regex: /\brm\s+(?:-.+\s)?["']?\$(HOME|\{HOME\})(\/(\.{1,2}|\*+|\.(?:\[[!^]\.\])?\?*\*[*?]*)?)*["']?(\s|$|[;&|)<>])/, reason: 'rm targeting $HOME' },
-  { level: 'critical', id: 'rm-home-trailing', regex: /\brm\s.*\s["']?(~|\$(HOME|\{HOME\}))(\/(\.{1,2}|\*+|\.(?:\[[!^]\.\])?\?*\*[*?]*)?)*["']?(\s*$|[;&|)<>])/, reason: 'rm with trailing ~/ or $HOME' },
-  { level: 'critical', id: 'rm-home-abs',      regex: /\brm\s+(?:-.+\s)?["']?\/(home|Users)(\/[^\/\s"';&|]+)?(\/(\.{1,2}|\*+|\.(?:\[[!^]\.\])?\?*\*[*?]*)?)*["']?(\s|$|[;&|)<>])/, reason: 'rm targeting a home directory by absolute path' },
+  { level: 'critical', id: 'rm-home',          regex: /\brm\s+(?:-.+\s|[^;&|\n]*\s)?["']?~(\/(\.{1,2}|\*+|\.(?:\[[!^]\.\])?(?:\?{0,2}\*+|\*+\?\**))?)*["']?(\s|$|[;&|)<>])/,             reason: 'rm targeting home directory' },
+  { level: 'critical', id: 'rm-home-var',      regex: /\brm\s+(?:-.+\s|[^;&|\n]*\s)?["']?\$(HOME|\{HOME\})(\/(\.{1,2}|\*+|\.(?:\[[!^]\.\])?(?:\?{0,2}\*+|\*+\?\**))?)*["']?(\s|$|[;&|)<>])/, reason: 'rm targeting $HOME' },
+  { level: 'critical', id: 'rm-home-trailing', regex: /\brm\s.*\s["']?(~|\$(HOME|\{HOME\}))(\/(\.{1,2}|\*+|\.(?:\[[!^]\.\])?(?:\?{0,2}\*+|\*+\?\**))?)*["']?(\s*$|[;&|)<>])/, reason: 'rm with trailing ~/ or $HOME' },
+  { level: 'critical', id: 'rm-home-abs',      regex: /\brm\s+(?:-.+\s|[^;&|\n]*\s)?["']?\/(home|Users)(\/[^\/\s"';&|]+)?(\/(\.{1,2}|\*+|\.(?:\[[!^]\.\])?(?:\?{0,2}\*+|\*+\?\**))?)*["']?(\s|$|[;&|)<>])/, reason: 'rm targeting a home directory by absolute path' },
   { level: 'critical', id: 'rm-root',          regex: /\brm\s+(?:-.+\s)?\/+(\*|\s|$|[;&|)<>])/,                               reason: 'rm targeting root filesystem' },
   { level: 'critical', id: 'rm-system',        regex: /\brm\s+(?:-.+\s)?\/(etc|usr|var|bin|sbin|lib|boot|dev|proc|sys)(\/|\s|$|[;&|)<>])/, reason: 'rm targeting system directory' },
   // Only a glob that matches every name: stars with at most one ? (*, **, ?*, *?). ??* skips one-letter names.
-  // A dot glob (.*, .??*, .[!.]*) matches every hidden entry.
-  { level: 'critical', id: 'rm-cwd',           regex: /\brm\s+(?:-.+\s)?(\.\/?|(\.\/)?(?:\*+(?:\?\**)?|\?\*+|\.(?:\[[!^]\.\])?\?*\*[*?]*))(\s|$|[;&|)<>])/,          reason: 'rm deleting current directory contents' },
+  // A dot glob (.*, .??*, .[!.]*, with at most two ?) matches every hidden entry, and with a
+  // trailing / every hidden directory. The home rules and this one read a target after
+  // other operands in the same command, with or without flags (rm a b .*).
+  { level: 'critical', id: 'rm-cwd',           regex: /\brm\s+(?:-.+\s|[^;&|\n]*\s)?(\.\/?|(\.\/)?(?:\*+(?:\?\**)?|\?\*+|\.(?:\[[!^]\.\])?(?:\?{0,2}\*+|\*+\?\**)\/?))(\s|$|[;&|)<>])/,          reason: 'rm deleting current directory contents' },
   { level: 'critical', id: 'rm-parent',        regex: /\brm\s+(?:-.+\s)?["']?([^\s"';&|]*\/)?\.\.(\/\.{1,2})*\/?(\*)?["']?(\s|$|[;&|)<>])/, reason: 'rm of a path ending in .. deletes a parent directory' },
   { level: 'critical', id: 'dd-disk',          regex: new RegExp('\\bdd\\b.+of=' + DISK),                                                     reason: 'dd writing to disk device' },
   { level: 'critical', id: 'mkfs',             regex: new RegExp('\\bmkfs(?:\\.\\w+)?\\b(?:[^;&|\\n<>]|[<>]&?|&>)*\\s' + DISK), confirm: mkfsWrites,          reason: 'mkfs formatting disk' },
@@ -141,7 +143,7 @@ const PATTERNS = [
 // rm -f '??*' and rm -rf "$HOME/*" each name one file. The rendered view drops
 // quotes, so a line with such a character is judged twice: the glob forms on a
 // copy with it blanked, and the forms without a glob on the views as read.
-const HOME_GLOBS = '|\\*+|\\.(?:\\[[!^]\\.\\])?\\?*\\*[*?]*)';
+const HOME_GLOBS = '|\\*+|\\.(?:\\[[!^]\\.\\])?(?:\\?{0,2}\\*+|\\*+\\?\\**))';
 for (const p of PATTERNS) {
   if (p.regex.source.includes(HOME_GLOBS)) p.plain = new RegExp(p.regex.source.replace(HOME_GLOBS, ')'), p.regex.flags);
 }
@@ -883,7 +885,7 @@ function programWord(words) {
   return words[k];
 }
 
-// The line with each * or ? that an rm argument holds inside quotes or after a
+// The line with each * ? [ or ] that an rm argument holds inside quotes or after a
 // backslash replaced by _, for a command whose program is rm itself, so a file
 // named sh or eval is just a name. A shell or eval that runs text (sh -c
 // 'rm -rf ~/*'), an assigned value, which globs where it is expanded, and a
@@ -905,7 +907,7 @@ function quotedGlobsBlanked(cmd) {
           for (let i = s.start; i < s.end; i++) {
             while (j < nested.length && nested[j].to <= i) j++;
             if (j < nested.length && i >= nested[j].from) { i = nested[j].to - 1; continue; }
-            if (cmd[i] === '*' || cmd[i] === '?') at.push(i);
+            if (cmd[i] === '*' || cmd[i] === '?' || cmd[i] === '[' || cmd[i] === ']') at.push(i);
           }
         }
       }

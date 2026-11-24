@@ -51,3 +51,21 @@ describe('dot files that are not all of them', () => {
     for (const c of ['rm -rf "~/.*"', "rm -rf '$HOME/.*'", "rm -f '.*'"]) shouldAllow(c);
   });
 });
+
+describe('dot globs after other operands, with a trailing slash, and their breadth', () => {
+  it('blocks a dot glob of hidden directories in the cwd', () => {
+    for (const c of ['rm -rf .*/', 'rm -rf ./.*/']) shouldBlock(c, 'rm-cwd');
+  });
+  it('blocks a dot glob after other operands when rm has no flags', () => {
+    for (const c of ['rm x .*', 'rm a b .[!.]*', 'rm x *']) shouldBlock(c, 'rm-cwd');
+    shouldBlock('rm x ~/.* y', 'rm-home');
+  });
+  it('allows a dot glob that needs three or more characters after the dot', () => {
+    for (const c of ['rm -rf ~/.????????????*', 'rm -rf ~/.???*']) shouldAllow(c);
+  });
+  it('allows a quoted bracket expression, which is literal', () => shouldAllow("rm -rf ~/.'[!.]'*"));
+  it('allows a dot glob in another command after rm', () => {
+    for (const c of ['rm x; ls .*', 'rm x | ls .*']) shouldAllow(c);
+  });
+  it('still blocks a quoted ~ directory, read as home', () => shouldBlock("rm -rf '~'/.*", 'rm-home'));
+});
