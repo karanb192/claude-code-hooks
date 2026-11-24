@@ -404,7 +404,70 @@ function shellSegments(cmd) {
 // removes its settings and hooks. Only the verb's own command counts, so
 // copying .claude elsewhere next to an unrelated rm still passes.
 const CLAUDE_DIR_OPERAND = /(?:^|\s)["']?(?:[^\s"';|&()]*\/)?\.claude\/?\*?["']?(?=\s|$)/;
-const DIR_MUTATION = /^(?:(?:sudo|command|env|nice|nohup)\s+(?:-\S+\s+)*)*(?:rm|unlink|trash|shred|mv|git\s+rm|git\s+mv)\b/i;
+const WRAPPERS = /^(?:(?:sudo|command|env|nice|nohup|time)\s+(?:-\S+\s+)*)*/i;
+
+// Shell words of a command with their raw end offsets; quotes are removed.
+function rawWords(text) {
+  const out = [];
+  let i = 0;
+  while (i < text.length) {
+    while (i < text.length && /\s/.test(text[i])) i++;
+    if (i >= text.length) break;
+    const start = i;
+    let value = '', quote = '';
+    for (; i < text.length; i++) {
+      const c = text[i];
+      if (quote) { if (c === quote) quote = ''; else value += c; continue; }
+      if (/\s/.test(c)) break;
+      if (c === '"' || c === "'") { quote = c; continue; }
+      if (c === '\\') { value += text[++i] || ''; continue; }
+      value += c;
+    }
+    out.push({ start, end: i, value });
+  }
+  return out;
+}
+
+// git's global options before the subcommand: -C <dir> moves where paths
+// are read, and -c, --git-dir, --work-tree, --namespace, --super-prefix and
+// --config-env take a value. Returns the subcommand, where it ends, the -C
+// folders and whether any other value-taking option was given.
+const GIT_VALUE_OPTION = /^--(?:git-dir|work-tree|namespace|super-prefix|config-env)$/;
+function gitHead(text) {
+  const words = rawWords(text);
+  if (!words.length || !/^git$/i.test(words[0].value)) return null;
+  const dirs = [];
+  let other = false;
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i], v = w.value;
+    if (v === '-C' || v === '-c' || GIT_VALUE_OPTION.test(v)) {
+      const val = words[++i];
+      if (!val) return null;
+      if (v === '-C') dirs.push(val); else other = true;
+      continue;
+    }
+    if (/^-C./.test(v)) { dirs.push({ start: w.start + 2, end: w.end, value: v.slice(2) }); continue; }
+    if (/^-c./.test(v) || /^--(?:git-dir|work-tree|namespace|super-prefix|config-env)=/.test(v)) { other = true; continue; }
+    if (v.startsWith('-')) continue;
+    return { sub: v, end: w.end, dirs, other };
+  }
+  return null;
+}
+
+// The removal or move a segment runs, past wrappers and git's global options.
+function dirMutation(seg) {
+  const rest = seg.slice(seg.match(WRAPPERS)[0].length);
+  const plain = rest.match(/^(rm|unlink|trash|shred|mv)\b/i);
+  if (plain) return { move: /^mv$/i.test(plain[1]), args: rest.slice(plain[0].length), dir: '', other: false };
+  const git = gitHead(rest);
+  if (!git || !/^(?:rm|mv)$/i.test(git.sub)) return null;
+  let dir = '', unknown = false;
+  for (const d of git.dirs) {
+    if (/[$`]/.test(d.value)) unknown = true;
+    dir = !dir || d.value.startsWith('/') || /^~(?:\/|$)/.test(d.value) ? d.value : `${dir}/${d.value}`;
+  }
+  return { move: /^mv$/i.test(git.sub), args: rest.slice(git.end), dir, other: git.other || unknown };
+}
 
 // Moving files into an existing .claude folder does not remove it: judge
 // where each source lands instead. Anything unclear (globs, expansions,
@@ -414,20 +477,22 @@ const DIR_MUTATION = /^(?:(?:sudo|command|env|nice|nohup)\s+(?:-\S+\s+)*)*(?:rm|
 function claudeDirChange(cmd, cwd, judgeMoves = true) {
   const landings = [];
   for (const seg of shellSegments(cmd)) {
-    const verb = seg.match(DIR_MUTATION);
-    if (!verb) continue;
-    const args = seg.slice(verb[0].length);
+    const op = dirMutation(seg);
+    if (!op) continue;
+    const { args } = op;
     if (!CLAUDE_DIR_OPERAND.test(args)) continue;
-    const into = /mv$/i.test(verb[0]) ? movesIntoClaudeDir(args, cwd, judgeMoves) : null;
+    // Other git options can move the work tree, so such a move stays refused.
+    const into = op.move && !op.other ? movesIntoClaudeDir(args, cwd, judgeMoves, op.dir) : null;
     if (!into) return true;
     landings.push(...into);
   }
   return landings;
 }
 
-function movesIntoClaudeDir(args, cwd, judge = true) {
-  const words = args.trim().split(/\s+/).map((w) => w.replace(/^(["'])(.*)\1$/, '$2'));
-  if (words.some((w) => !w || /["'`$*?[\]{}\\<>]/.test(w))) return null;
+function movesIntoClaudeDir(args, cwd, judge = true, inDir = '') {
+  if (/[`$*?[\]{}\\<>]/.test(args)) return null;
+  const words = rawWords(args).map((w) => w.value);
+  if (words.some((w) => !w)) return null;
   const operands = [];
   let target = null, options = true;
   for (let i = 0; i < words.length; i++) {
@@ -446,9 +511,10 @@ function movesIntoClaudeDir(args, cwd, judge = true) {
   const isDir = (w) => CLAUDE_DIR_OPERAND.test(` ${w}`);
   if (!dest || !operands.length || !isDir(dest) || /\*$/.test(dest) || operands.some(isDir)) return null;
   if (!judge) return [];
-  const abs = path.resolve(cwd || process.cwd(), dest.replace(/^~(?=\/|$)/, HOME_DIR));
+  const home = (p) => p.replace(/^~(?=\/|$)/, HOME_DIR);
+  const abs = path.resolve(cwd || process.cwd(), home(inDir), home(dest));
   try { if (!fs.statSync(abs).isDirectory()) return null; } catch { return null; }
-  const base = dest.replace(/\/+$/, '');
+  const base = (inDir && !/^[/~]/.test(dest) ? `${inDir}/` : '') + dest.replace(/\/+$/, '');
   const out = [];
   for (const src of operands) {
     const name = path.posix.basename(src.replace(/\/+$/, ''));
@@ -510,19 +576,41 @@ function joinDir(dir, target) {
 
 // The command name stays as typed, with sudo-style wrappers and a git
 // subcommand, so `git mv` and `sudo rm` are still recognised.
-const COMMAND_HEAD = /^(?:(?:sudo|command|env|nice|nohup|time)\s+(?:-\S+\s+)*)*(?:git\s+(?:-C\s+\S+\s+|-\S+\s+)*\S+|\S+)/i;
 function prefixWords(seg, dir) {
-  const head = (seg.match(COMMAND_HEAD) || [''])[0];
-  return head + prefixArgs(seg.slice(head.length), dir);
+  const wrap = seg.match(WRAPPERS)[0];
+  const rest = seg.slice(wrap.length);
+  const git = gitHead(rest);
+  const head = git ? rest.slice(0, git.end) : (rest.match(/^\S*/) || [''])[0];
+  return wrap + head + prefixArgs(rest.slice(head.length), dir);
+}
+
+// git -C <dir> works like a cd for its own paths: drop the -C options and
+// prefix the paths with the folder they resolve in. Null when a -C value is
+// not literal, or the segment has no -C.
+function rewriteGitDir(seg, dir) {
+  const wrap = seg.match(WRAPPERS)[0];
+  const rest = seg.slice(wrap.length);
+  const git = gitHead(rest);
+  if (!git || !git.dirs.length || git.dirs.some((d) => /[$`"'\\]/.test(d.value))) return null;
+  let eff = dir;
+  for (const d of git.dirs) eff = joinDir(eff, d.value.replace(/(.)\/+$/, '$1'));
+  const words = rawWords(rest.slice(0, git.end));
+  const kept = [];
+  for (let i = 0; i < words.length; i++) {
+    if (words[i].value === '-C') { i++; continue; }
+    if (/^-C./.test(words[i].value)) continue;
+    kept.push(rest.slice(words[i].start, words[i].end));
+  }
+  const args = rest.slice(git.end);
+  return wrap + kept.join(' ') + (eff && eff !== '.' ? prefixArgs(args, eff) : args);
 }
 function prefixArgs(seg, dir) {
-  let first = false;
+  const base = dir.replace(/\/$/, '');
+  // A folder with spaces is quoted, so the rewritten word stays one word.
+  const open = /[^\w.\/~-]/.test(base) ? '"' : '';
   // Quoted words and ./ or ../ paths are relative too.
-  return seg.replace(/(^|[\s>])(["']?)((?:\.{1,2}\/|[A-Za-z0-9_]|\.[\w-])[\w.\/-]*)/g, (m, pre, quote, word) => {
-    if (first && pre === '') { first = false; return m; }
-    first = false;
-    return `${pre}${quote}${dir.replace(/\/$/, '')}/${word}`;
-  });
+  return seg.replace(/(^|[\s>])(["']?)((?:\.{1,2}\/|[A-Za-z0-9_]|\.[\w-])[\w.\/-]*)/g, (m, pre, quote, word) =>
+    quote ? `${pre}${quote}${base}/${word}` : `${pre}${open}${base}/${word}${open}`);
 }
 
 function withCdTargets(cmd) {
@@ -577,6 +665,14 @@ function withCdTargets(cmd) {
         }
       }
       parts.push(seg);
+      continue;
+    }
+    if (gitHead(seg.slice(seg.match(WRAPPERS)[0].length))?.dirs.length && rewriteGitDir(seg, '') !== null) {
+      for (const d of dirs) {
+        const r = rewriteGitDir(seg, d);
+        if (r !== seg) changed = true;
+        parts.push(r);
+      }
       continue;
     }
     if (dirs.includes('')) parts.push(seg);

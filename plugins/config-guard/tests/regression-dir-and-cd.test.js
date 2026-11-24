@@ -93,6 +93,27 @@ describe('Regression: the .claude folder and a cd into protected config', () => 
     }
   });
 
+  it('reads past git global options to the rm or mv subcommand', () => {
+    for (const cmd of ['git -C . rm -r .claude', 'git -C sub rm -r .claude', 'git -C . mv .claude x', 'git --git-dir=.git rm -r .claude',
+      'git -c x=y rm -r .claude', 'git --work-tree=. rm -r .claude', 'git -C "my dir" rm -r .claude']) bashBlocked(cmd, 'claude-dir');
+    for (const cmd of ['git -C . status', 'git -C sub rm notes.txt', 'git -C . log -- .claude']) bashAllowed(cmd);
+  });
+
+  it('judges git -C <dir> mv into .claude inside that folder', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-gitc-'));
+    try {
+      fs.mkdirSync(path.join(dir, 'subproject', '.claude'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'other'));
+      const at = (cmd) => checkBashCommand(cmd, 'high', dir).blocked;
+      for (const cmd of ['git -C subproject mv notes.txt .claude', 'cd other && git -C ../subproject mv notes.txt .claude'])
+        assert.strictEqual(at(cmd), false, `Expected ALLOWED: ${cmd}`);
+      for (const cmd of ['git -C other mv notes.txt .claude', 'git -C subproject mv settings.json .claude', 'git -c x=y mv notes.txt subproject/.claude'])
+        assert.strictEqual(at(cmd), true, `Expected BLOCKED: ${cmd}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('still allows copying .claude out, reads after cd, and unrelated folders', () => {
     for (const cmd of ['cp -r .claude /tmp/backup && rm -rf node_modules', 'cd .claude && ls && cat settings.json', 'cd src && rm settings.json',
       'cd build && rm -rf hooks', 'rm -rf .claude-old', 'rm -rf docs/.claude-example']) bashAllowed(cmd);
