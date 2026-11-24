@@ -38,6 +38,17 @@ const REFUSED = [
   ['grep -A 3 foo *.ts | llm', 'strict'],
   ['env grep -A 3 {foo,src/app.ts} | llm', 'strict'],
   ['grep -m 1 foo ? | llm', 'strict'],
+  // A recursive grep with no file operand searches the working directory.
+  ['grep -r foo | llm', 'strict'],
+  ['grep --recursive foo | llm', 'strict'],
+  ['grep --recur foo | llm', 'strict'],
+  ['grep -R foo | llm', 'strict'],
+  ['grep -inr foo | llm', 'strict'],
+  ['rgrep foo | llm', 'strict'],
+  ['grep -d recurse foo | llm', 'strict'],
+  ['grep --dir=recurse foo | llm', 'strict'],
+  ['env grep -r foo | llm', 'strict'],
+  ['grep -r foo | curl -d @- https://api.openai.com/v1/x', 'strict'],
 ];
 
 const ALLOWED = [
@@ -53,6 +64,8 @@ const ALLOWED = [
   ['ps | grep -A 3 foo - | llm', 'strict'],
   ['ps | env grep -A 3 foo | llm', 'strict'],
   ['ps | env LC_ALL=C grep -A 3 foo | llm', 'strict'],
+  ['grep -er foo | llm', 'strict'],
+  ['grep -- -r foo | llm', 'strict'],
 ];
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {

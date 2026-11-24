@@ -300,8 +300,8 @@ const BASH_PATTERNS = [
   { level: 'strict', id: 'base64-secrets',       regex: new RegExp('\\bbase64\\b[^|;]*(?:\\.env|credentials|secrets|id_rsa|\\.pem|' + SECRET_OPERAND + ')', 'i'), also: base64ReadsSecret, reason: 'Base64 encoding secrets' },
 
   // STRICT - Delegation sinks (any file contents into an external model)
-  { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&\\n]*' + SINK_CMD + '|' + SINK_CMD + SEG_QA + REDIRECT_IN + FILE_TOKEN + '|' + SINK_CMD + '[^;|&\\n]*' + SUBST_FILE + '|' + SINK_CMD + '[^;|&\\n]*(?:\\$\\(|`)\\s*' + READER_CMD + '|' + LEAD_REDIRECT + SINK_CLI + SINK_END + '|' + SINK_FILE_FLAG, 'i'), pre: SINK_NAME, stdinGrep: true, reason: 'Piping file contents to an external model CLI' },
-  { level: 'strict', id: 'model-api-file-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + API_BODY + FILE_TOKEN + '|' + HTTPIE_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + HTTPIE_FILE_ITEM + '[\\w.~\\/]|' + OLD_READER + '[^;&\\n]*' + HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')|' + READER_CMD + '[^;&\\n]*' + PIPE_HTTP + '(?=[^;|&\\n]*' + SINK_HOST + ')', 'i'), pre: SINK_HOST_NAME, stdinGrep: true, reason: 'Sending file contents to a model API endpoint' },
+  { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&\\n]*' + SINK_CMD + '|' + SINK_CMD + SEG_QA + REDIRECT_IN + FILE_TOKEN + '|' + SINK_CMD + '[^;|&\\n]*' + SUBST_FILE + '|' + SINK_CMD + '[^;|&\\n]*(?:\\$\\(|`)\\s*' + READER_CMD + '|' + LEAD_REDIRECT + SINK_CLI + SINK_END + '|' + SINK_FILE_FLAG, 'i'), pre: SINK_NAME, stdinGrep: true, also: (t) => recursiveGrepMatch('model-cli-file-input', t), reason: 'Piping file contents to an external model CLI' },
+  { level: 'strict', id: 'model-api-file-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + API_BODY + FILE_TOKEN + '|' + HTTPIE_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + HTTPIE_FILE_ITEM + '[\\w.~\\/]|' + OLD_READER + '[^;&\\n]*' + HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')|' + READER_CMD + '[^;&\\n]*' + PIPE_HTTP + '(?=[^;|&\\n]*' + SINK_HOST + ')', 'i'), pre: SINK_HOST_NAME, stdinGrep: true, also: (t) => recursiveGrepMatch('model-api-file-body', t), reason: 'Sending file contents to a model API endpoint' },
 ];
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
@@ -933,6 +933,59 @@ function setAsideStdinGrep(text) {
   for (const [a, b] of spots.sort((x, y) => y[0] - x[0])) out = out.slice(0, a) + 'stdin_filter' + out.slice(b);
   return out;
 }
+// A recursive grep with no file operand searches the working directory, so it reads files: grep -r,
+// -R or a cluster holding either, any abbreviation of --recursive or --dereference-recursive,
+// -d recurse or --directories=recurse, and rgrep. Such a grep is read as cat for the strict rules.
+function grepRecurses(ops) {
+  for (let j = 0; j < ops.length; j++) {
+    const v = ops[j].value;
+    if (v === '--') return false;
+    if (/^--./.test(v)) {
+      const name = v.replace(/=[\s\S]*$/, '');
+      if (name.length >= 3 && ('--recursive'.startsWith(name) || '--dereference-recursive'.startsWith(name))) return true;
+      if (name.length >= 4 && '--directories'.startsWith(name)) {
+        const value = v.includes('=') ? v.slice(v.indexOf('=') + 1) : ops[++j]?.value;
+        if (/^recurse$/.test(value || '')) return true;
+      }
+      continue;
+    }
+    if (!/^-./.test(v)) continue;
+    for (let c = 1; c < v.length; c++) {
+      if (v[c] === 'r' || v[c] === 'R') return true;
+      if (!'ABCmdDef'.includes(v[c])) continue;
+      const value = c + 1 < v.length ? v.slice(c + 1) : ops[++j]?.value;
+      if ((v[c] === 'd' || v[c] === 'D') && /^recurse$/.test(value || '')) return true;
+      break;
+    }
+  }
+  return false;
+}
+function recursiveGrepAsReader(text) {
+  if (!/grep/.test(text)) return text;
+  const spots = [];
+  for (const f of readShell(text).frames) {
+    for (const cmd of f.cmds) {
+      const words = argv(cmd);
+      const k = grepWordIndex(words);
+      const w = words[k];
+      if (!w || w.dynamic || w.spans.length) continue;
+      const name = base(w.value);
+      if (name === 'rgrep' || (GREP_FAMILY.has(name) && grepRecurses(words.slice(k + 1)))) spots.push([w.start, w.end]);
+    }
+  }
+  let out = text;
+  for (const [a, b] of spots.sort((x, y) => y[0] - x[0])) out = out.slice(0, a) + 'cat' + out.slice(b);
+  return out;
+}
+function recursiveGrepMatch(id, text) {
+  const p = BASH_PATTERNS.find(x => x.id === id);
+  // The rule needs a sink name, so a command without one is not parsed again.
+  if (p.pre && !p.pre.test(text)) return false;
+  const t = recursiveGrepAsReader(text);
+  if (t === text) return false;
+  return [maskTemplates(t), maskTemplates(maskSeparatorsApart(t))].some(v => (!p.pre || p.pre.test(v)) && p.regex.test(v));
+}
+
 function stdinGrepMatch(p, texts) {
   const aside = texts.map(setAsideStdinGrep);
   if (aside.every((t, i) => t === texts[i])) return true;
