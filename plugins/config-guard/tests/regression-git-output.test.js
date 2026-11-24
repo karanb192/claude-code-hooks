@@ -59,6 +59,25 @@ describe('Regression: git output options onto protected config', () => {
     ]) bashBlocked(cmd, 'settings-file');
   });
 
+  it('finds git by path or behind env, and normalises the output path', () => {
+    for (const cmd of [
+      '/usr/bin/git diff --output=.claude/settings.json',
+      'env GIT_PAGER=cat git diff --output=.claude/settings.json',
+      'GIT_PAGER=cat git diff --output=.claude/settings.json',
+      'git diff --output=.claude/./settings.json',
+      'cd .claude && git archive -osettings.json HEAD',
+    ]) bashBlocked(cmd, 'settings-file');
+  });
+
+  it('allows a search pattern or message that reads --output=', () => {
+    for (const cmd of [
+      'git grep "--output=.claude/settings.json" README.md',
+      'git grep -- "--output=.claude/settings.json" README.md',
+      'git log --grep "--output=.claude/settings.json"',
+      'git commit -m "--output=.claude/settings.json"',
+    ]) bashAllowed(cmd);
+  });
+
   it('still allows output elsewhere and reading config through git', () => {
     for (const cmd of [
       'git diff --output=/tmp/x.patch',
