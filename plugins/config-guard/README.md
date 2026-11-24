@@ -67,6 +67,8 @@ Text in a heredoc is not read as a command when the whole command has one of two
 
 Deleting or moving a `.claude` folder itself, the project's or the home one, is refused when `rm`, `mv`, `trash` or `git rm` names it as an operand, also behind git's global options such as `-C <dir>`, `-c`, `--git-dir` or `--work-tree`; copying it elsewhere is not. Moving files into an existing `.claude` folder is judged by where each file lands, so `mv notes.txt .claude` passes and `mv settings.json .claude` does not. After a `cd` or `pushd` into a folder such as `.claude`, `~/.claude` or `~/.codex` in the same command, later relative paths are judged as inside that folder, and `git -C <dir>` is read the same way for its own paths. A `cd` inside `( )` or `$( )` ends with it, one in the background does not move the shell, and a `popd` returns to the folder before the matching `pushd`. Running Claude Code with `--plugin-dir` loads plugin code from that folder, which is not protected.
 
+Extracting an archive member that lands on a protected path, such as `tar -xf a.tar .claude/settings.json` or `unzip a.zip .claude/settings.json`, is refused, and so is extracting a `.claude` folder by name. The landing path accounts for the folder the extraction writes to (`-C`, `-d` or a `cd`), `--strip-components` and `unzip -j`, and a wildcard member is refused when it can select a protected file or anything under a protected folder (`".claude/settings.*"`, `".claude/hooks/*.js"`, `"*.sh"`). An archive `*` crosses folders, so a narrower pattern needs `?`, a class, or `unzip -W`. Listing or printing members (`tar -t`, `tar -xO`, `unzip -l`, `unzip -p`) passes.
+
 A git output option that names a protected path is refused: `--output` on `git diff`, `log` and `show`, `-o` or `--output-directory` on `git format-patch`, `-o` or `--output` on `git archive`, and the file `git bundle create` writes, also after `git -C <dir>` or a `cd`, with git run by path or behind a wrapper such as `sudo -u <user>`, `env` with its options, `timeout`, `nice` or `xargs`, or an assignment, and with the path normalised (`.claude/./settings.json`). Output to any other path passes, and so does text that reads `--output=` as a `git grep` pattern, a `--grep` or `--author` value, or a commit message, or as an argument to another program (`env printf git ...`).
 
 Interpreter one-liners (`python -c "open(...).write(...)"`), `git checkout/restore` of a config path, `chmod`, and paths built from variables (`"$DIR/settings.json"`) are not caught. Shell command strings are matched as text, so a Bash redirect through a symlinked directory is not resolved. PreToolUse only sees the agent's own tool calls; out-of-band changes are covered by its sibling [config-watch](https://github.com/karanb192/claude-code-hooks) (ConfigChange event) in the root repo.
@@ -85,7 +87,7 @@ From 1.2.0, a guard that cannot finish its check refuses the call instead of all
 
 ## Data & privacy
 
-Logs decisions (pattern id, tool, truncated target, session id) to `~/.claude/hooks-logs/`. No network calls; everything stays on your local machine.
+Logs decisions (guard, pattern id, level, tool, session id and, for Bash, the command name) to `~/.claude/hooks-logs/`. No path or argument text is logged, so an inline token or password never reaches the log. No network calls; everything stays on your local machine.
 
 ## Uninstall
 
