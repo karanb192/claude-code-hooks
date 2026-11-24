@@ -163,6 +163,31 @@ describe('a session on main that switches to a new branch first', () => {
       'git checkout something && git commit -m x',
     ]) assert.strictEqual(onMain(c).pattern?.id, 'commit-on-protected', c);
   });
+  it('blocks when the new branch name is known only when the shell runs', () => {
+    for (const c of [
+      'git checkout -b "$b" && git commit -m x', 'git switch -c $b && git commit -m x', 'git switch "$b" && git commit -m x',
+      'git checkout -b "${b:-main}" && git commit -m x', 'git switch -c $(echo main) && git commit -m x', 'git switch -- "$b" && git commit -m x',
+      'git switch ma* && git commit -m x', 'git switch {main,x} && git commit -m x', 'git checkout -b fix && git checkout "$b" && git commit -m x',
+    ]) assert.strictEqual(onMain(c).pattern?.id, 'commit-on-protected', c);
+  });
+  it('git switch -- names the branch after it', () => {
+    assert.strictEqual(onMain('git switch -- fix && git commit -m x').blocked, false);
+    shouldBlock('git switch -- main && git commit -m x', 'commit-on-protected');
+  });
+});
+
+describe('a switch away from main that may not have run', () => {
+  it('leaves the call on main after ; || or a pipe', () => {
+    for (const c of [
+      'git checkout main; git switch -- fix; git commit -m x',
+      'git checkout main; git checkout -b fix; git commit -m x',
+      'git checkout main || git switch -- fix && git commit -m x',
+      'git checkout main | git switch -- fix && git commit -m x',
+      'git checkout main && git checkout "$b" && git commit -m x',
+    ]) shouldBlock(c, 'commit-on-protected');
+  });
+  it('allows the call when an && chain makes the switch certain', () =>
+    shouldAllow('git checkout main && git switch -- fix && git commit -m x'));
 });
 
 describe('another repository named by cd, git -C or --git-dir', () => {

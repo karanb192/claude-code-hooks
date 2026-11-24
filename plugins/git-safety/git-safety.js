@@ -655,7 +655,12 @@ function switchTarget(sub, args, isBranch) {
   const pos = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === '--') { if (sub === 'checkout' && i < args.length - 1) return KEEP; break; }
+    // checkout -- names files; switch -- only ends the options before the branch.
+    if (a === '--') {
+      if (sub === 'checkout' && i < args.length - 1) return KEEP;
+      if (sub === 'switch') pos.push(...args.slice(i + 1));
+      break;
+    }
     const m = /^(?:-[bBcC]|--(?:create|force-create|orphan))(?:=(.*))?$/.exec(a);
     if (m) return norm(m[1] !== undefined ? m[1] : (args[i + 1] ?? KEEP));
     if (a === '--detach' || (sub === 'switch' && a === '-d')) return '';
@@ -748,21 +753,40 @@ function resolveBranches(cmd, sessionBranch) {
       const own = where === session && gitDirArg === null;
       const gitDir = gitDirArg !== null ? path.resolve(where, gitDirArg) : findGitDir(where);
       const repo = gitDir || where;
+      // A switch is made for this call when an && chain joins them and nothing
+      // earlier in its list can skip it. One away from a protected branch that
+      // may not have run (a ; or || before this call, a switch that can fail)
+      // leaves the call on that protected branch.
+      const made = (rec) => rec.at >= 0 && lastBreak < rec.at;
+      const effective = (rec) => {
+        if (rec && rec.from && !made(rec)) return rec.from;
+        return rec && rec.branch !== null ? rec.branch : own ? sessionBranch() : headBranch(gitDir);
+      };
       if (sub.value === 'checkout' || sub.value === 'switch') {
-        const t = switchTarget(sub.value, args, (name) => hasBranch(gitDir, name));
+        const now = effective(switched.get(repo));
+        const from = PROTECTED_BRANCHES.includes(now) ? now : null;
+        const at = listClean && !c.words.some(x => !x.op && !x.spans.length && x.value === '!') ? n : -1;
+        // An expansion, glob, brace list or ~ in any operand is known only when
+        // the shell runs, so the branch may become anything, main included: a
+        // protected branch already reached stays, and nothing counts as certain.
+        if (words.slice(j + 1).some(x => x.dynamic || /[*?[~]|\{[^}]*(?:,|\.\.)/.test(x.value))) {
+          if (from) switched.set(repo, { branch: from, at: -1, from: null });
+          else switched.delete(repo);
+          before.set(repo, now);
+          known = false;
+          return;
+        }
+        let t = switchTarget(sub.value, args, (name) => hasBranch(gitDir, name));
         if (t === KEEP) return;
-        const cur = switched.has(repo) ? switched.get(repo) : null;
-        if (t === BACK && before.get(repo)) switched.set(repo, { branch: before.get(repo).branch, at: -1 });
-        else if (t === BACK || t === null) switched.delete(repo);
-        else switched.set(repo, { branch: t, at: listClean && !c.words.some(x => !x.op && !x.spans.length && x.value === '!') ? n : -1 });
-        before.set(repo, cur);
+        if (t === BACK) t = before.has(repo) ? before.get(repo) : null;
+        switched.set(repo, { branch: t, at, from });
+        before.set(repo, now);
         return;
       }
       const id = BRANCH_RULES[sub.value];
       if (!id) return;
       const rec = switched.get(repo);
-      const branch = rec ? rec.branch : own ? sessionBranch() : headBranch(gitDir);
-      out.ops.push({ id, branch, certain: !!rec && rec.at >= 0 && lastBreak < rec.at });
+      out.ops.push({ id, branch: effective(rec), certain: !!rec && rec.branch !== null && made(rec) });
     };
     f.cmds.forEach((c, n) => {
       let h = 0;
