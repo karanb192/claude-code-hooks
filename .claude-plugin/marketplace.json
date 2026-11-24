@@ -276,7 +276,7 @@
     {
       "name": "instructions-audit",
       "source": "./plugins/instructions-audit",
-      "description": "Prompt-injection tripwire for CLAUDE.md and .claude/rules files: flags invisible-Unicode smuggling, secret read/exfil directives, curl|sh, decode-and-execute, and hook/settings tampering as instructions load, then locks the session (every prompt and tool call denied) until a human clears it.",
+      "description": "Prompt-injection tripwire for CLAUDE.md and .claude/rules files: flags invisible-Unicode smuggling, secret read/exfil directives, curl|sh, decode-and-execute, and hook/settings tampering in the files read at session start (audited on the first prompt or tool call) and in files that load later, then locks the session (every prompt and tool call denied) until a human clears it.",
       "category": "security",
       "tags": [
         "security",
