@@ -639,7 +639,8 @@ function gitHead(text) {
 
 // Files git writes through an output option: --output on diff, log, show
 // and the other diff commands, -o and --output-directory on format-patch,
-// and -o or --output on archive. Paths after git -C <dir> resolve there.
+// -o or --output on archive, and the file git bundle create writes. Paths
+// after git -C <dir> resolve there.
 function gitOutputs(cmd) {
   const out = [];
   for (const seg of unquotedSegments(cmd.replace(/\\\r?\n/g, ' '))) {
@@ -650,6 +651,22 @@ function gitOutputs(cmd) {
     for (const d of git.dirs) dir = joinDir(dir, d.value);
     const shortO = /^(?:format-patch|archive)$/i.test(git.sub);
     const words = shellWords(rest.slice(git.end));
+    const at = (v) => out.push(dir && !/^[/~$]/.test(v) ? `${dir}/${v}` : v);
+    // After a cd the rewritten command reads dir/create, so match the last part.
+    if (/^bundle$/i.test(git.sub) && /(?:^|\/)create$/.test(words[0] || '')) {
+      // The file is the first operand after the options. A separate
+      // --version value may stand before it, so the next operand counts too.
+      let separate = false;
+      for (let i = 1; i < words.length; i++) {
+        const w = words[i];
+        if (w === '--version') { separate = true; continue; }
+        if (w.startsWith('-') && w !== '-' && w !== '--') continue;
+        if (w === '--') { if (words[i + 1] !== undefined) at(words[i + 1]); break; }
+        at(w);
+        if (!separate) break;
+        separate = false;
+      }
+    }
     for (let i = 0; i < words.length; i++) {
       const w = words[i];
       if (w === '--') break;
@@ -658,7 +675,7 @@ function gitOutputs(cmd) {
       if (long) v = long[2] !== undefined ? long[2] : words[++i];
       else if (shortO && /^-o/.test(w)) v = w.length > 2 ? w.slice(2) : words[++i];
       if (v === undefined) continue;
-      out.push(dir && !/^[/~$]/.test(v) ? `${dir}/${v}` : v);
+      at(v);
     }
   }
   return out;

@@ -48,6 +48,17 @@ describe('Regression: git output options onto protected config', () => {
     for (const cmd of ['git archive -o .claude/settings.json HEAD', 'git archive --output=.claude/settings.json HEAD']) bashBlocked(cmd, 'settings-file');
   });
 
+  it('denies git bundle create writing a protected file', () => {
+    for (const cmd of [
+      'git bundle create .claude/settings.json --all',
+      'git bundle create -q .claude/settings.json --all',
+      'git bundle create --quiet .claude/settings.json HEAD',
+      'git bundle create --version 3 .claude/settings.json --all',
+      'git -C .claude bundle create settings.json --all',
+      'cd .claude && git bundle create settings.json --all',
+    ]) bashBlocked(cmd, 'settings-file');
+  });
+
   it('still allows output elsewhere and reading config through git', () => {
     for (const cmd of [
       'git diff --output=/tmp/x.patch',
@@ -56,6 +67,9 @@ describe('Regression: git output options onto protected config', () => {
       'git archive -o /tmp/a.tar HEAD .claude/settings.json',
       'git diff -- .claude/settings.json',
       'git log --output-indicator-new=+ -- .claude/settings.json',
+      'git bundle create /tmp/x.bundle --all',
+      'git bundle create -q /tmp/x.bundle main',
+      'git bundle verify .claude/x.bundle',
     ]) bashAllowed(cmd);
   });
 });
