@@ -229,6 +229,17 @@ const PIPE_HTTP = '(?:(?<=\\|\\s*)(?:curl|wget)(?=\\s)(?=[^;|&\\n]*' + STDIN_ARG
 const SINK_NAME = new RegExp(SINK_CLI, 'i');
 const SINK_HOST_NAME = new RegExp(SINK_HOST, 'i');
 
+// What precedes a secret variable fed to a reader by <<<. Escapes are read as pairs, so a \\$ never
+// starts a variable. A ; | & < > or paren glued to the word ends the herestring, but the next command
+// can still run or print the variable, so the scan goes on, except through a command that is only an
+// assignment, such as ;label=$TOKEN, which prints nothing; (?=(...))\\k<asg> takes it whole.
+const HS_QUOTED = '"(?:[^"\\\\\\n]|\\\\[\\s\\S])*"|\'[^\']*\'';
+const HS_CHAR = '[^\\s\'"\\\\;|&<>()]|\\\\[\\s\\S]';
+const HS_ASSIGN = '\\s*[A-Za-z_]\\w*=(?:' + HS_QUOTED + '|' + HS_CHAR + ')*(?=\\s*(?:[;|&\\n]|$))';
+const HERESTRING_LEAD = '(?:' + HS_QUOTED + '|' + HS_CHAR
+  + '|(?=(?<asg>[;|&]' + HS_ASSIGN + '))\\k<asg>'
+  + '|[;|&](?!' + HS_ASSIGN + ')|[<>()])*?(?:"(?:[^"\\\\\\n]|\\\\[\\s\\S])*?)?';
+
 // Bash patterns that expose or exfiltrate secrets
 const BASH_PATTERNS = [
   // CRITICAL
@@ -247,6 +258,7 @@ const BASH_PATTERNS = [
   { level: 'high', id: 'cat-netrc',              regex: /\b(cat|less|head|tail|more)\s+[^|;]*\.netrc/i,                    reason: 'Reading .netrc credentials' },
   { level: 'high', id: 'source-env',             regex: /\bsource\s+[^|;]*\.env\b|(?:^|[;&|]\s*)\.\s+[^|;]*\.env\b|^\.\s+[^|;]*\.env\b/i, reason: 'Sourcing .env loads secrets' },
   { level: 'high', id: 'export-cat-env',         regex: /export\s+.*\$\(cat\s+[^)]*\.env/i,                                reason: 'Exporting secrets from .env' },
+  { level: 'high', id: 'herestring-secret-var',  regex: new RegExp('\\b(?:cat|tac|tee|head|tail|nl|rev|base64|base32|xxd|od|hexdump|sed|awk|tr|cut|sort|uniq|fold|jq)\\b[^;|&\\n]*<<<\\s*' + HERESTRING_LEAD + SECRET_VAR, 'i'), reason: 'Printing secret variable' },
 
   // HIGH - Exfiltration
   { level: 'high', id: 'curl-upload-env',        regex: /\bcurl\b[^;|&]*(-d\s*@|-F\s*[^=]+=@|--data[^=]*=@|--data[-a-z]*\s+@|(?<![\w-])-T(?![A-Za-z0-9-])\s*|--upload-file[=\s]+)[^;|&]*(\.env|credentials|secrets|id_rsa|\.pem|\.key)/i, reason: 'Uploading secrets via curl' },
@@ -808,14 +820,23 @@ function checkFilePath(filePath, safetyLevel = SAFETY_LEVEL) {
   return { blocked: false, pattern: null };
 }
 
+// The shared mask writes _ for a quoted ; | or &, which can join two words into a
+// variable name the shell never expands: "$USER;KEY" is $USER, not $USER_KEY.
+// A control character keeps the words apart without ending the segment.
+function maskSeparatorsApart(text) {
+  return maskQuotedSeparators(text.replace(/_/g, '\u0002')).replace(/_/g, '\u0001').replace(/\u0002/g, '_');
+}
+
 function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   if (!cmd) return { blocked: false, pattern: null };
   cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
   const threshold = LEVELS[safetyLevel] || 2;
   const read = shellViews(cmd);
   const texts = read.map(v => v.text);
-  const views = texts.map(maskTemplates);
-  // quoted: the rule also reads the copy where a quoted separator is blanked. also: a check in code.
+  // Each view is read as is and with a ; | & or newline inside quotes blanked, so quoted text before a
+  // secret variable does not end a match early. quoted: the rule also reads the shared masked copy.
+  // also: a check in code.
+  const views = texts.flatMap(t => [maskTemplates(t), maskTemplates(maskSeparatorsApart(t))]);
   const quoted = views.concat(read.map(v => maskTemplates(v.masked)));
   const rule = BASH_PATTERNS.find(p => LEVELS[p.level] <= threshold
     && ((p.quoted ? quoted : views).some(v => (!p.pre || p.pre.test(v)) && p.regex.test(v)) || (p.also && texts.some(t => p.also(t)))));
