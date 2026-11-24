@@ -1015,6 +1015,99 @@ function uploadArgs(name, ops) {
   return out.map(u => ({ value: u.value && uploadedFile(u.value, u.kind), word: u.kind === 'T' ? u.word : null }));
 }
 
+// git prints a file's contents from its objects: show REV:path, cat-file -p or blob, blame, grep,
+// archive, and diff, show or log with a patch. Both REV:path and a path after the revision count.
+const GIT_GLOBAL_VALUE = /^(?:-C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env|--super-prefix|--list-cmds)$/;
+// A patch is printed by default for diff and show, and with -p for log. A later -s or --no-patch
+// turns it off and a later patch flag back on; --quiet prints nothing; a stat or name list alone
+// replaces the patch, but not next to a patch flag.
+const GIT_FORMAT = /^(?:--stat|--numstat|--shortstat|--name-only|--name-status|--summary|--raw|--dirstat|--compact-summary)(?:=|$)/;
+const GIT_PATCH = /^(?:-p|-u|--patch|-U\d*|--unified(?:=\d+)?|--word-diff(?:=\w+)?|--full-diff|--patch-with-stat|--patch-with-raw|--cc|-c)$/;
+// Options that take the next word as their value, so a search text or author is not read as a path.
+// Options whose value is optional or must follow = (--pretty, --format, --color-moved) take nothing.
+// log takes search and author text; diff and show take a pickaxe text, an order file and a filter;
+// grep takes its patterns and pattern files. A count or filter must look like one to be consumed.
+const GIT_LOG_VALUE = /^(?:-n|-S|-G|-O|--author|--committer|--grep|--max-count|--skip|--since|--until|--before|--after|--diff-filter)$/;
+const GIT_LOG_ATTACHED = /^-([nSGO])(.+)$/;
+const GIT_DIFF_VALUE = /^(?:-S|-G|-O|--diff-filter)$/;
+const GIT_DIFF_ATTACHED = /^-([SGO])(.+)$/;
+const GIT_GREP_VALUE = /^(?:-e|-f|--regexp|--file)$/;
+const GIT_GREP_ATTACHED = /^-([ef])(.+)$/;
+const gitValueFits = (flag, v) => (/^(?:-n|--max-count|--skip)$/.test(flag) ? /^\d+$/.test(v) : flag === '--diff-filter' ? /^[ACDMRTUXB*]+$/i.test(v) : true);
+function gitObjectPath(v) {
+  const m = /^(?:[^:]*:)([0-3]:)?(.+)$/.exec(v);
+  return m && !/^[a-z][\w+.-]*:\/\//i.test(v) ? m[2] : null;
+}
+function gitFileAccess(ops, take, ctx) {
+  let k = 0;
+  while (k < ops.length && /^-/.test(ops[k].value)) {
+    if (GIT_GLOBAL_VALUE.test(ops[k].value)) k++;
+    k++;
+  }
+  const sub = ops[k]?.value;
+  const args = ops.slice(k + 1);
+  const logLike = sub === 'log' || sub === 'whatchanged';
+  const valueOpt = sub === 'grep' ? GIT_GREP_VALUE : logLike ? GIT_LOG_VALUE : GIT_DIFF_VALUE;
+  const attachedOpt = sub === 'grep' ? GIT_GREP_ATTACHED : logLike ? GIT_LOG_ATTACHED : GIT_DIFF_ATTACHED;
+  const words = [];
+  const flags = [];
+  const values = [];
+  let options = true;
+  for (let i = 0; i < args.length; i++) {
+    const v = args[i].value;
+    if (options && v === '--') { options = false; continue; }
+    if (options && /^-./.test(v)) {
+      flags.push(v);
+      const attached = attachedOpt.exec(v);
+      if (attached) values.push({ flag: `-${attached[1]}`, word: { value: attached[2], spans: [], parts: [], start: 0, end: 0 }, attached: true });
+      else if (valueOpt.test(v) && args[i + 1] && gitValueFits(v, args[i + 1].value)) values.push({ flag: v, word: args[++i] });
+      continue;
+    }
+    words.push(args[i]);
+  }
+  const read = (v, w) => take('read', secretPath(v, w, ctx));
+  const objects = () => { for (const w of words) { const p = gitObjectPath(w.value); if (p) read(p, null); } };
+  const paths = (from) => { for (const w of words.slice(from)) if (!gitObjectPath(w.value)) read(w.value, w); };
+  // -O names an order file that git reads.
+  if (sub !== 'grep') for (const x of values) if (x.flag === '-O') { read(x.word.value, x.attached ? null : x.word); const p = gitObjectPath(x.word.value); if (p) read(p, null); }
+  let patchOn = null;
+  let format = false;
+  let quiet = false;
+  for (const f of flags) {
+    if (GIT_PATCH.test(f)) patchOn = true;
+    else if (f === '-s' || f === '--no-patch') patchOn = false;
+    else if (GIT_FORMAT.test(f)) format = true;
+    else if (f === '--quiet') quiet = true;
+  }
+  const patch = !quiet && patchOn === true;
+  const content = !quiet && (patchOn === true || (patchOn === null && !format));
+  if (sub === 'show') {
+    objects();
+    if (content) paths(0);
+  } else if (sub === 'cat-file') {
+    if (!flags.some(f => /^-[tse]$/.test(f) || /^--batch/.test(f))) objects();
+  } else if (sub === 'diff' || sub === 'difftool') {
+    if (content) { objects(); paths(0); }
+  } else if (sub === 'log' || sub === 'whatchanged') {
+    for (let i = 0; i < args.length; i++) {
+      const v = args[i].value;
+      if (v === '-L') { const p = gitObjectPath(args[i + 1]?.value || ''); if (p) read(p, null); i++; }
+      else if (/^-L./.test(v)) { const p = gitObjectPath(v.slice(2)); if (p) read(p, null); }
+    }
+    if (patch) { objects(); paths(0); }
+  } else if (sub === 'blame' || sub === 'annotate' || sub === 'archive') {
+    objects();
+    paths(0);
+  } else if (sub === 'grep') {
+    objects();
+    // A pattern file is read; a pattern given with -e leaves every word a revision or path.
+    for (const x of values) if (/^(?:-f|--file)$/.test(x.flag)) { read(x.word.value, x.attached ? null : x.word); const p = gitObjectPath(x.word.value); if (p) read(p, null); }
+    for (const f of flags) if (/^--file=/.test(f)) read(f.slice(7), null);
+    const given = values.some(x => /^(?:-e|-f|--regexp|--file)$/.test(x.flag)) || flags.some(f => /^(?:--regexp|--file)=/.test(f));
+    paths(given ? 0 : 1);
+  }
+}
+
 // Where curl and wget write what they fetch, and the other files they write: -o, -D, -c, --output,
 // --output-dir and the trace files for curl; -O, -o, -a, -P and --save-cookies for wget.
 const CURL_WRITE_SHORT = 'oDc';
@@ -1261,6 +1354,10 @@ function commandFileAccess(cmd, ctx) {
   }
   if (ARCHIVERS.test(name) || COMPRESSORS.has(name)) {
     archiveAccess(name, ops, take, ctx);
+    return best;
+  }
+  if (name === 'git') {
+    gitFileAccess(ops, take, ctx);
     return best;
   }
   if (name === 'source' || name === '.') {
