@@ -922,20 +922,26 @@ function shellInvocation(words, from, shell) {
 // The file descriptor a redirect right before this word acts on ('' is the
 // default), read from the source text, since the reader keeps only the operator.
 function redirectFd(src, word) {
-  const m = /(\d*)(?:<<<|&>>|&>|>>|>\||>&|<>|<&|<|>)\s*$/.exec(src.slice(Math.max(0, word.start - 64), word.start));
+  const m = /(\d*)(?:<<<|<<-|<<|&>>|&>|>>|>\||>&|<>|<&|<|>)\s*$/.exec(src.slice(Math.max(0, word.start - 64), word.start));
   return m ? m[1] : null;
 }
 
-// stdout of this command goes to a file or another descriptor (> f, >> f, &> f, >&2).
+// A literal path that names a regular file: not -, not under /dev or /proc
+// (/dev/stdout, /dev/fd/1, /proc/self/fd/1), and not built from an expansion.
+const regularPath = (v) => !!v && v !== '-' && !/^\/(?:dev|proc)\//.test(v) && !/[$`]/.test(v);
+
+// stdout of this command goes to a regular file (> f, >> f, &> f). A copy of a
+// descriptor (>&1, >&2), a device and an expansion do not count, so the
+// download still counts as reaching the output.
 function stdoutRedirected(src, cmd) {
-  return cmd.words.some((w) => w.target && /^(?:>|>>|>\||>&|&>|&>>)$/.test(w.target) && (w.target[0] === '&' || ['', '1'].includes(redirectFd(src, w))) && w.value !== '/dev/stdout');
+  return cmd.words.some((w) => w.target && /^(?:>|>>|>\||&>|&>>)$/.test(w.target) && (w.target[0] === '&' || ['', '1'].includes(redirectFd(src, w))) && !w.dynamic && regularPath(w.value));
 }
 
 const CURL_SHORT_VALUE = 'AbcCdDeEFHKmPQrTuUwxXyYzt';
 // Whether curl or wget writes the download to stdout. wget saves to a file
-// unless -O names - or /dev/stdout. curl writes each URL to stdout unless an
-// -o (other than -) or -O claims it; a word whose role is unclear counts as a
-// URL, so the doubt falls on the side of stdout.
+// unless -O names anything but a regular file. curl writes each URL to stdout
+// unless an -o naming a regular file or an -O claims it; a word whose role is
+// unclear counts as a URL, so the doubt falls on the side of stdout.
 function downloadToStdout(name, values) {
   if (name === 'wget') {
     for (let k = 0; k < values.length; k++) {
@@ -944,7 +950,7 @@ function downloadToStdout(name, values) {
       let v = null;
       if (w.startsWith('--output-document')) v = w.includes('=') ? w.slice(w.indexOf('=') + 1) : values[k + 1];
       else if (/^-[^-]/.test(w) && w.indexOf('O') > 0) v = w.indexOf('O') < w.length - 1 ? w.slice(w.indexOf('O') + 1) : values[k + 1];
-      if (v === '-' || v === '/dev/stdout') return true;
+      if (v !== null && !regularPath(v)) return true;
     }
     return false;
   }
@@ -959,7 +965,7 @@ function downloadToStdout(name, values) {
       if (opt === 'config') return true;
       if (opt === 'remote-name-all') return false;
       if (opt === 'remote-name') files++;
-      else if (opt === 'output') { const v = eq < 0 ? values[++k] : w.slice(eq + 1); if (v !== '-') files++; }
+      else if (opt === 'output') { const v = eq < 0 ? values[++k] : w.slice(eq + 1); if (regularPath(v)) files++; }
       else if (opt === 'url') { urls++; if (eq < 0) k++; }
       continue;
     }
@@ -967,7 +973,7 @@ function downloadToStdout(name, values) {
       for (let j = 1; j < w.length; j++) {
         if (w[j] === 'K') return true;
         if (w[j] === 'O') { files++; continue; }
-        if (w[j] === 'o') { const v = j < w.length - 1 ? w.slice(j + 1) : values[++k]; if (v !== '-') files++; break; }
+        if (w[j] === 'o') { const v = j < w.length - 1 ? w.slice(j + 1) : values[++k]; if (regularPath(v)) files++; break; }
         if (CURL_SHORT_VALUE.includes(w[j])) { if (j === w.length - 1) k++; break; }
       }
       continue;
@@ -1050,6 +1056,8 @@ function downloadRunsAsCode(cmd, depth = 0) {
         }
       });
       const program = values.size ? programWord(argv(outer).filter((w) => !pairs.has(w) && !inputs.has(w))) : null;
+      // Only an assignment before the program reaches its environment; one after it is an argument.
+      for (const w of values) if (!program || w.start > program.start) values.delete(w);
       startup.set(outer, { values, shell: !!program && !program.dynamic && PIPE_SHELL.test(base(program.value)) });
     }
     const info = startup.get(outer);
