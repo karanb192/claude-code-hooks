@@ -115,10 +115,14 @@ const SINK_PREFIX = '(?:^|[|;&(`"\'!\\n]|\\b(?:do|then|else)\\b)\\s*'
   + '(?:(?:sudo|npx|uvx|bunx|pnpm\\s+dlx|command|time|exec|nice|nohup|env|timeout|xargs)\\b[^;|&\\n]*?\\s+)?'
   + '(?:[^\\s"\';|&]*\\/)?';
 const SINK_END = '(?=[\\s<]|$)';
+// /dev/null is the one input that is always empty; /dev/shm and /dev/fd hold real data.
+const NOT_DEV_NULL = '(?![\'"]?\\/dev\\/null[\'"]?(?![^\\s;|&<>()]))';
+// An input redirect written before the command: <file gemini.
+const LEAD_REDIRECT = '(?:^|[;&|({\\n])\\s*(?<!<)<(?![<(])\\s*' + NOT_DEV_NULL + '[^\\s;|&<>()]+\\s+(?:[^\\s"\';|&]*\\/)?';
 const SINK_CMD = SINK_PREFIX + SINK_CLI + SINK_END;
 const sinkCmd = (cli) => SINK_PREFIX + cli + SINK_END;
 // A segment with balanced quotes as opaque units: a name inside a quoted prompt is prose, not an operand.
-const SEG_QA = '(?:[^;|&\\n"\']|"[^"\\n]*"|\'[^\'\\n]*\')*?';
+const SEG_QA = '(?:[^;|&\\n"\']|"[^"]*"|\'[^\']*\')*?';
 // Commands whose stdout is the file they are given (ssh -i and kubectl --kubeconfig are not).
 const CONTENT_CMD = '\\b(?:cat|tac|head|tail|bat|more|less|sops|gpg|age|base64|xxd|od|rev|sed|awk|grep|jq|yq|strings|openssl\\s+enc|python3?|node|ruby|perl)\\b';
 const SINK_HOST = '(?:generativelanguage\\.googleapis\\.com|aiplatform\\.googleapis\\.com|api\\.openai\\.com|[\\w.-]+\\.openai\\.azure\\.com|api\\.anthropic\\.com|openrouter\\.ai|api\\.mistral\\.ai|api\\.groq\\.com|api\\.together\\.xyz|api\\.deepseek\\.com|api\\.x\\.ai|api\\.cohere\\.com|api\\.perplexity\\.ai|api\\.fireworks\\.ai|api\\.cerebras\\.ai|router\\.huggingface\\.co|bedrock-runtime(?:-fips)?\\.[\\w-]+\\.amazonaws\\.com|integrate\\.api\\.nvidia\\.com|api\\.deepinfra\\.com)';
@@ -146,16 +150,23 @@ const floatingNames = secretFiles.filter(p => !p.regex.source.startsWith(PATH_AN
 const SECRET_GLOB = '(?:\\.[A-Za-z]{0,3}[*?]|\\.(?:ssh|aws|kube|gnupg|azure|docker|config\\/gcloud)\\/[^\\s"\']*[*?])';
 const SECRET_NAME = '(?:' + FILE_DIR + '(?:' + anchoredNames.join('|') + '|' + SECRET_GLOB + ')|' + FILE_ANY + '(?:' + floatingNames.join('|') + '))(?![A-Za-z0-9])';
 const SECRET_FILE = '(?:^|[\\s"\'=<@(])\\s*' + SECRET_NAME;
+// The whole operand: a backup copy (.npmrc.bak) still counts, a different file (.npmrc.md) does not.
+const SECRET_OPERAND = SECRET_FILE + '(?:\\.(?:bak|backup|old|orig|save|tmp)|~)?(?![^\\s"\'`;|&<>()])';
 const SECRET_WORD = '(?:SECRETS?|KEY|TOKEN|PASSWORD|PASSWD|PASSW|PASSPHRASE|PASS|CREDENTIALS?|API_KEY|APIKEY|PAT)';
 // Whole name segments, so $AUTHOR and $TOKENS_USED stay clean; AUTH and PRIVATE only as the last segment.
 const SECRET_TAIL = '(?:_(?:ID|FILE|PATH|VALUE|VAL|STR|STRING|B64|BASE64|JSON|PEM|DATA|CONTENT|TEXT|RAW|HEX|PROD|PRODUCTION|DEV|STAGING|TEST|OLD|NEW|[0-9]+))*';
 const SECRET_VAR = '\\$\\{?!?(?:(?:[A-Z0-9]+_)*' + SECRET_WORD + SECRET_TAIL + '|(?:[A-Z0-9]+_)*(?:AUTH|PRIVATE))\\}?(?![A-Za-z0-9_])';
-// Not a heredoc, herestring, process substitution or /dev/*.
-const REDIRECT_IN = '(?<!<)<(?![<(])\\s*(?!\\/dev\\/)';
+// One grep's words: & only inside a redirection such as 2>&1 or &>, so && and a newline end it.
+const GREP_ANY = '(?:[^|;&\\n]|(?<=[<>])&|&(?=>))';
+// The same, stopping at a -- after which every word is an operand.
+const GREP_ARGS = '(?:(?!\\s--(?:\\s|$))' + GREP_ANY + ')';
+const GREP_TERM = '(?:password|secret|api.?key|token|credential)';
+// Not a heredoc, herestring, process substitution or /dev/null.
+const REDIRECT_IN = '(?<!<)<(?![<(])\\s*' + NOT_DEV_NULL;
 // -T as a whole flag: the patterns run case-insensitive, so a bare -T also matches --max-time.
-const UPLOAD_FLAG = '(?:(?<![\\w-])-T(?![A-Za-z0-9-])\\s*|--(?:upload|post|body)-file[=\\s]+)';
+const UPLOAD_FLAG = '(?:(?<![\\w-])-[A-Za-z]*T(?![A-Za-z0-9-])\\s*|--(?:upload|post|body)-file[=\\s]+)';
 const FILE_BODY = '(?:@|' + REDIRECT_IN + '|\\$\\(\\s*(?:cat|head|tail|<)\\s+|`\\s*(?:cat|head|tail)\\s+|' + UPLOAD_FLAG + ')';
-const SUBST_FILE = '(?:\\$\\(\\s*(?:cat|head|tail|<)\\s+|`\\s*(?:cat|head|tail)\\s+)["\']?[^\\s"\';|&<>()-]';
+const SUBST_FILE = '(?:\\$\\(\\s*(?:(?:cat|head|tail)\\s+|<\\s*)|`\\s*(?:cat|head|tail)\\s+)["\']?[^\\s"\';|&<>()-]';
 const BODY_FLAG = '(?:-d|--data(?:-binary|-raw|-urlencode|-ascii)?|--json|-F|--form(?:-string)?)';
 const API_BODY = '(?:' + BODY_FLAG + '\\s*=?\\s*["\']?(?:[\\w-]+=?)?(?:@|\\$\\(\\s*(?:cat|head|tail|<)\\s+|`\\s*cat\\s+)|' + REDIRECT_IN + '|' + UPLOAD_FLAG + ')';
 const HTTPIE_FILE_ITEM = '\\s(?:[\\w-]+:?=?)?@';
@@ -178,7 +189,45 @@ const SINK_FILE_FLAG = Object.entries(CLI_FILE_FLAGS)
   .concat([sinkCmd('(?:gemini(?:-cli)?|openai)') + '[^;|&\\n]*' + AT_PATH])
   .join('|');
 // A reader with a file operand, so `ps aux | head | llm` is a filter, not a read.
-const READER_CMD = '(?:\\b(?:cat|head|tail|bat|tac|more|less)\\b(?:\\s+-\\S+)*\\s+[^\\s|;&<>-]|\\bgit\\s+(?:diff|show)\\b)';
+// sed, awk, jq and grep take a script or pattern first, so they need a second operand.
+const OPERAND = '(?:\'[^\']*\'|"[^"]*"|[^\\s|;&<>\'"-])';
+// Short options whose value is the next word (sort -k 3, cut -d , -f 1), so the value is not read as a
+// file. The patterns match case-insensitively, so a letter is left out when its other case is a flag
+// without a value (sort -s, xxd -C, od -a). cat, head, tail and the other readers the rule read before
+// keep their earlier reading, so head -n 5 in a pipe still counts as reading a file.
+const READER_VALUE_OPTS = {
+  'cat|bat|more|less|rev|tac|head|tail': '', sort: 'kot', cut: 'bcdf', fold: 'w',
+  uniq: 'fsw', nl: 'bdfhilnsvw', paste: 'd', column: 'cos', strings: 'ent', xxd: 'glos', od: 'jnt',
+  hexdump: 'ens', base64: 'bw',
+};
+const LONG_VALUE_OPT = '--(?:key|lines|bytes|delimiter|fields|characters|field-separator|width|output|separator)';
+// A value is never another reader's name, so one reader's options cannot run on through the next.
+const OPT_VALUE = '(?!(?:' + Object.keys(READER_VALUE_OPTS).join('|') + ')(?:\\s|$))(?:\'[^\']*\'|"[^"]*"|[^\\s|;&<>\'"][^\\s|;&<>]*)';
+const readerOptions = (letters) => '(?:\\s+(?:'
+  + (letters ? '-[A-Za-z]*[' + letters + ']\\s+' + OPT_VALUE + '|' : '')
+  + LONG_VALUE_OPT + '\\s+' + OPT_VALUE
+  + '|-(?!-(?:key|lines|bytes|delimiter|fields|characters|field-separator|width|output|separator)(?:\\s|$))'
+  + (letters ? '(?![A-Za-z]*[' + letters + '](?:\\s|$))' : '') + '\\S+))*';
+const READER_CMD = '(?:' + Object.entries(READER_VALUE_OPTS)
+  .map(([cmds, letters]) => '\\b(?:' + cmds + ')\\b' + readerOptions(letters) + '\\s+' + OPERAND).join('|')
+  + '|\\b(?:sed|awk|gawk|jq|yq|grep|rg)\\b(?:\\s+-\\S+)*\\s+' + OPERAND + '\\S*(?:\\s+-\\S+)*\\s+' + OPERAND
+  + '|\\bdd\\b[^;|&\\n]*\\bif=|\\bgit\\s+(?:diff|show|blame|cat-file(?!\\s+-[est](?:\\s|$))|log\\b[^;|&\\n]*\\s(?:-p|--patch)\\b))';
+// curl and wget read a pipe only through a - or /dev/stdin argument (-d @-, -T -, -K -, -i -) or a
+// substitution that can read it. A - that is the value of an output or header option (-o -, -c -,
+// -w -, --stderr -) or sits inside a longer word ('X-Label: -') is not request input. The rules match
+// case-insensitively, so -D - stays counted: its letter is also -d.
+// HTTPie, xh and curlie send a piped stdin as the body by default.
+const OUTPUT_OPT = '(?:-[A-Za-z]*[ohcw]|--(?:output|dump-header|header|cookie-jar|stderr|write-out|output-document))';
+const STDIN_ARG = '(?:[@<]["\']?-["\']?(?=[\\s;|&)]|$)|(?<!(?:^|\\s)' + OUTPUT_OPT + ')[\\s=](?:"-"|\'-\'|-)(?=[\\s;|&)]|$)'
+  + '|(?<![\\w-])-(?![A-Za-z]*[ohcw]["\']?-)[A-Za-z]+["\']?-["\']?(?=[\\s;|&)]|$)'
+  + '|(?<![\\w-])-[A-Za-z]*T\\s*["\']?\\.["\']?(?=\\s|$)|--upload-file[=\\s]+["\']?\\.["\']?(?=\\s|$)|\\/dev\\/(?:stdin|fd\\/0)(?![\\w\\/])|\\/proc\\/self\\/fd\\/0(?![\\w\\/])|\\$\\(|`|<\\()';
+// The readers the rule read before still count with any HTTP command after them.
+const OLD_READER = '(?:\\b(?:cat|head|tail|bat|tac|more|less)\\b(?:\\s+-\\S+)*\\s+[^\\s|;&<>-]|\\bgit\\s+(?:diff|show)\\b)';
+const PIPE_HTTP = '(?:(?<=\\|\\s*)(?:curl|wget)(?=\\s)(?=[^;|&\\n]*' + STDIN_ARG + ')|(?<!\\|\\s*)' + HTTP_CMD + '|(?<=\\|\\s*)' + HTTPIE_CMD + '|(?<=\\|\\s*)curlie(?=\\s))';
+// Every branch of the two strict file rules names a sink CLI or a model API host. Testing for that name
+// first spares a command without one the large rule regexes, which V8 compiles on their first real use.
+const SINK_NAME = new RegExp(SINK_CLI, 'i');
+const SINK_HOST_NAME = new RegExp(SINK_HOST, 'i');
 
 // What precedes a secret variable fed to a reader by <<<. Escapes are read as pairs, so a \\$ never
 // starts a variable. A ; | & < > or paren glued to the word ends the herestring, but the next command
@@ -239,12 +288,16 @@ const BASH_PATTERNS = [
   { level: 'high', id: 'find-exec-cat-env',      regex: /find\b.*\.env.*-exec|find\b.*-exec.*(cat|less)/i,                 reason: 'Finding and reading .env files' },
 
   // STRICT
-  { level: 'strict', id: 'grep-password',        regex: /\bgrep\b[^|;]*(-r|--recursive)[^|;]*(password|secret|api.?key|token|credential)/i, reason: 'Grep for secrets may expose them' },
-  { level: 'strict', id: 'base64-secrets',       regex: /\bbase64\b[^|;]*(\.env|credentials|secrets|id_rsa|\.pem)/i,       reason: 'Base64 encoding secrets' },
+  // The recursive flag may come after the pattern or the path, or sit in a cluster (-rn, -iR).
+  // It must belong to the same grep (no && or newline in between) and come before a -- that ends the options.
+  // quoted: also read the copy where a quoted & or newline is blanked, so grep -r "a&token" still counts.
+  // (?=(...))\1 takes the first flag or term and never retries a later one, which keeps the match linear.
+  { level: 'strict', id: 'grep-password',        regex: new RegExp('\\bgrep\\b(?=(' + GREP_ARGS + '*?(?:-r|--recursive|\\s-[A-Za-z]*r)))\\1' + GREP_ANY + '*?' + GREP_TERM + '|\\bgrep\\b(?=(' + GREP_ARGS + '*?' + GREP_TERM + '))\\2' + GREP_ARGS + '*?\\s(?:-[A-Za-z]*r[A-Za-z]*|--(?:dereference-)?recursive)(?![\\w-])', 'i'), quoted: true, reason: 'Grep for secrets may expose them' },
+  { level: 'strict', id: 'base64-secrets',       regex: new RegExp('\\bbase64\\b[^|;]*(?:\\.env|credentials|secrets|id_rsa|\\.pem|' + SECRET_OPERAND + ')', 'i'), also: base64ReadsSecret, reason: 'Base64 encoding secrets' },
 
   // STRICT - Delegation sinks (any file contents into an external model)
-  { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&\\n]*' + SINK_CMD + '|' + SINK_CMD + SEG_QA + REDIRECT_IN + FILE_TOKEN + '|' + SINK_CMD + '[^;|&\\n]*' + SUBST_FILE + '|' + SINK_FILE_FLAG, 'i'), reason: 'Piping file contents to an external model CLI' },
-  { level: 'strict', id: 'model-api-file-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + API_BODY + FILE_TOKEN + '|' + HTTPIE_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + HTTPIE_FILE_ITEM + '[\\w.~\\/]|' + READER_CMD + '[^;&\\n]*' + HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')', 'i'), reason: 'Sending file contents to a model API endpoint' },
+  { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&\\n]*' + SINK_CMD + '|' + SINK_CMD + SEG_QA + REDIRECT_IN + FILE_TOKEN + '|' + SINK_CMD + '[^;|&\\n]*' + SUBST_FILE + '|' + SINK_CMD + '[^;|&\\n]*(?:\\$\\(|`)\\s*' + READER_CMD + '|' + LEAD_REDIRECT + SINK_CLI + SINK_END + '|' + SINK_FILE_FLAG, 'i'), pre: SINK_NAME, reason: 'Piping file contents to an external model CLI' },
+  { level: 'strict', id: 'model-api-file-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + API_BODY + FILE_TOKEN + '|' + HTTPIE_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + HTTPIE_FILE_ITEM + '[\\w.~\\/]|' + OLD_READER + '[^;&\\n]*' + HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')|' + READER_CMD + '[^;&\\n]*' + PIPE_HTTP + '(?=[^;|&\\n]*' + SINK_HOST + ')', 'i'), pre: SINK_HOST_NAME, reason: 'Sending file contents to a model API endpoint' },
 ];
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
@@ -778,14 +831,257 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   if (!cmd) return { blocked: false, pattern: null };
   cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
   const threshold = LEVELS[safetyLevel] || 2;
-  // The masked copy keeps a ; | & or newline inside quotes from ending a match early.
-  const views = shellViews(cmd).flatMap(v => [maskTemplates(v.text), maskTemplates(maskSeparatorsApart(v.text))]);
-  for (const p of BASH_PATTERNS) {
-    if (LEVELS[p.level] <= threshold && views.some(v => p.regex.test(v))) {
-      return { blocked: true, pattern: p };
+  const read = shellViews(cmd);
+  const texts = read.map(v => v.text);
+  // Each view is read as is and with a ; | & or newline inside quotes blanked, so quoted text before a
+  // secret variable does not end a match early. quoted: the rule also reads the shared masked copy.
+  // also: a check in code.
+  const views = texts.flatMap(t => [maskTemplates(t), maskTemplates(maskSeparatorsApart(t))]);
+  const quoted = views.concat(read.map(v => maskTemplates(v.masked)));
+  const rule = BASH_PATTERNS.find(p => LEVELS[p.level] <= threshold
+    && ((p.quoted ? quoted : views).some(v => (!p.pre || p.pre.test(v)) && p.regex.test(v)) || (p.also && texts.some(t => p.also(t)))));
+  const quotedGlobs = literalGlobs(texts[0]);
+  let hit = null;
+  texts.forEach((text, i) => { hit = stronger(hit, secretFileAccess(text, safetyLevel, i ? quotedGlobs : null)); });
+  if (!rule) return hit ? { blocked: true, pattern: hit } : { blocked: false, pattern: null };
+  // The rule keeps its id, but a more severe file in the same command sets the level, so an ask
+  // configured for one level never softens the denial another level calls for.
+  if (hit && LEVELS[hit.level] < LEVELS[rule.level]) return { blocked: true, pattern: { ...rule, level: hit.level, reason: `${rule.reason}; ${hit.reason}` } };
+  return { blocked: true, pattern: rule };
+}
+
+// The more severe of two hits; the earlier one on a tie.
+function stronger(a, b) {
+  return !a || (b && LEVELS[b.level] < LEVELS[a.level]) ? b || a : a;
+}
+
+// The shell route to a file the file tools guard: each command's file
+// operands, redirect targets and upload arguments are checked against
+// SENSITIVE_FILES, so a shell command reaches no file that Read or Write refuses.
+const FILE_ACCESS = {
+  read:   { id: 'read-secret-file',   reason: 'Reading a secret file' },
+  write:  { id: 'write-secret-file',  reason: 'Writing to a secret file' },
+  source: { id: 'source-secret-file', reason: 'Loading a secret file into the shell' },
+  copy:   { id: 'copy-secret-file',   reason: 'Copying, moving or deleting a secret file' },
+  send:   { id: 'send-secret-file',   reason: 'Sending a secret file off the machine' },
+};
+// Commands that print or decode the files they are given.
+const FILE_READERS = new Set(['cat', 'tac', 'nl', 'head', 'tail', 'less', 'more', 'most', 'bat', 'batcat', 'view',
+  'sed', 'awk', 'gawk', 'mawk', 'nawk', 'grep', 'egrep', 'fgrep', 'zgrep', 'rg', 'ag', 'ack', 'jq', 'yq', 'gojq',
+  'sort', 'uniq', 'cut', 'paste', 'fold', 'fmt', 'column', 'rev', 'pr', 'expand', 'unexpand', 'iconv',
+  'strings', 'od', 'xxd', 'hexdump', 'hd', 'base64', 'base32', 'basenc', 'uuencode', 'dd', 'diff', 'sdiff', 'comm', 'join']);
+// The first operand is a pattern, script or filter unless a flag supplies one.
+const PATTERN_FIRST = /^(?:grep|egrep|fgrep|zgrep|rg|ag|ack|sed|awk|gawk|mawk|nawk|jq|yq|gojq)$/;
+const PATTERN_FLAG = /^(?:-[ef]|--(?:regexp|file|expression|from-file)\b)/;
+// -e and -f read as getopt does: the value is the rest of the word, or the next word when the letter
+// ends the word. -e's value is the pattern or script and names no file; -f's value is a file that is
+// read. sed's -i takes only an attached suffix, so it ends the word.
+const CLUSTER_VALUES = { grep: 'ef', egrep: 'ef', fgrep: 'ef', zgrep: 'ef', rg: 'ef', sed: 'ef' };
+const PATTERN_LONG = /^--(?:regexp|expression)$/;
+const FILE_LONG = /^--file$/;
+const FILE_COPIERS = new Set(['cp', 'mv', 'rm', 'ln', 'unlink', 'install', 'truncate', 'shred']);
+const FILE_SENDERS = new Set(['scp', 'rsync', 'sftp']);
+// Options whose next word is a value (an identity file is used, not sent).
+const OPTION_VALUE = { scp: /^-[iFoPclSJD]$/, sftp: /^-[iFoPclSJDBRs]$/, rsync: /^-[eT]$/, truncate: /^-[sr]$/ };
+// Wrappers that run the command after them, with their options that take a value.
+const WRAPPERS = {
+  sudo: /^-[ugpCDhrRtTU]$/, doas: /^-[uC]$/, env: /^-[uCS]$/, nice: /^-n$/, ionice: /^-[cnpP]$/,
+  stdbuf: /^-[ioe]$/, timeout: /^-[sk]$/, exec: /^-a$/, time: /^-[fo]$/, command: null, builtin: null, nohup: null,
+};
+const CURL_SHORT_VALUE = 'AbcCdDeEFHKmoPQrtTuUwxXyYz';
+// --data-raw sends its value as typed: an @ there names no file.
+const CURL_UPLOAD_LONG = /^--(?:data(?:-binary|-ascii|-urlencode)?|json|form|upload-file|url-query)$/;
+const CURL_LITERAL_LONG = /^--data-raw$/;
+const WGET_UPLOAD_LONG = /^--(?:post|body)-file$/;
+const GLOB_SECRET = new RegExp('(?:^|\\/)' + SECRET_GLOB);
+const SECRET_DIRS = [
+  { level: 'critical', regex: /(?:^|\/)\.(?:ssh|aws|kube)\/?$/, reason: 'Directory of keys and credentials' },
+  { level: 'high', regex: /(?:^|\/)\.(?:azure|docker|config\/gcloud)\/?$/, reason: 'Directory of credentials' },
+];
+
+function unwrapCommand(words, k) {
+  while (k < words.length && !words[k].dynamic && Object.hasOwn(WRAPPERS, base(words[k].value))) {
+    const name = base(words[k].value);
+    const takesValue = WRAPPERS[name];
+    for (k++; k < words.length && /^-./.test(words[k].value); k++) {
+      if (words[k].value === '--') { k++; break; }
+      if (takesValue && takesValue.test(words[k].value)) k++;
+    }
+    if (name === 'env') while (k < words.length && /^[A-Za-z_]\w*=/.test(words[k].value)) k++;
+    if (name === 'timeout') k++;
+  }
+  return k;
+}
+
+// A * or ? that the shell expands: outside quotes, escapes and substitutions.
+function activeGlob(word, src) {
+  for (let p = word.start; p < word.end; p++) {
+    if (src[p] !== '*' && src[p] !== '?') continue;
+    if (word.spans.some(s => p >= s.start && p < s.end)) continue;
+    if (word.parts.some(x => typeof x !== 'string' && p >= x.from && p <= x.to)) continue;
+    return true;
+  }
+  return false;
+}
+
+// Glob-shaped words of the typed command whose * or ? is quoted or escaped, by
+// value and count. The bash-split view drops those quotes, so it must not
+// expand them again; a program run by sh -c or eval adds words of its own.
+function literalGlobs(text) {
+  const out = new Map();
+  const read = readShell(text);
+  for (const f of read.frames) for (const cmd of f.cmds) for (const w of cmd.words) {
+    if (!w.op && /[*?]/.test(w.value) && GLOB_SECRET.test(w.value) && !activeGlob(w, text)) out.set(w.value, (out.get(w.value) || 0) + 1);
+  }
+  return out;
+}
+
+function secretPath(value, word, ctx, dirs) {
+  if (!value) return null;
+  const { safetyLevel } = ctx;
+  const file = checkFilePath(value, safetyLevel);
+  if (file.blocked) return file.pattern;
+  const threshold = LEVELS[safetyLevel] || 2;
+  if (word && /[*?]/.test(value) && GLOB_SECRET.test(value) && activeGlob(word, ctx.src) && !ctx.literal.has(value)) {
+    return { level: 'critical', reason: 'A glob that can match a secret file' };
+  }
+  if (dirs) return SECRET_DIRS.find(d => LEVELS[d.level] <= threshold && d.regex.test(value)) || null;
+  return null;
+}
+
+// The file named by a curl or wget upload argument: -T file, -d @file,
+// --data-urlencode name@file, -F name=@file or name=<file.
+function uploadedFile(value, kind) {
+  if (kind === 'T') return value;
+  const at = /^(?:[^@<=]*=)?[@<]([^;]+)/.exec(value) || (kind === 'urlencode' && /^[^@=]*@([^;]+)/.exec(value));
+  return at && at[1] !== '-' ? at[1] : null;
+}
+
+function uploadArgs(name, ops) {
+  const out = [];
+  for (let j = 0; j < ops.length; j++) {
+    const v = ops[j].value;
+    const long = /^(--[\w-]+)(?:=([\s\S]*))?$/.exec(v);
+    if (long) {
+      const upload = name === 'wget' ? WGET_UPLOAD_LONG.test(long[1]) : CURL_UPLOAD_LONG.test(long[1]);
+      if (!upload) {
+        if (name === 'curl' && CURL_LITERAL_LONG.test(long[1]) && long[2] === undefined) j++;
+        continue;
+      }
+      const value = long[2] !== undefined ? long[2] : ops[++j]?.value;
+      const kind = name === 'wget' || long[1] === '--upload-file' ? 'T' : long[1] === '--data-urlencode' ? 'urlencode' : 'body';
+      out.push({ value, kind, word: ops[j] });
+      continue;
+    }
+    if (name !== 'curl' || !/^-[A-Za-z]/.test(v)) continue;
+    for (let c = 1; c < v.length; c++) {
+      if (!CURL_SHORT_VALUE.includes(v[c])) continue;
+      const value = c + 1 < v.length ? v.slice(c + 1) : ops[++j]?.value;
+      if ('dFT'.includes(v[c])) out.push({ value, kind: v[c] === 'T' ? 'T' : 'body', word: ops[j] });
+      break;
     }
   }
-  return { blocked: false, pattern: null };
+  return out.map(u => ({ value: u.value && uploadedFile(u.value, u.kind), word: u.kind === 'T' ? u.word : null }));
+}
+
+function commandFileAccess(cmd, ctx) {
+  const found = (kind, file) => file && { id: FILE_ACCESS[kind].id, level: file.level, reason: `${FILE_ACCESS[kind].reason} (${file.reason})` };
+  // Every operand is checked and the most severe file wins, so operand order never lowers the level.
+  let best = null;
+  const take = (kind, file) => { best = stronger(best, found(kind, file)); };
+  for (const w of cmd.words) {
+    if (!w.target || w.target === '<&') continue;
+    const kind = w.target === '<' ? 'read' : WRITE_REDIRECT.has(w.target) ? 'write' : null;
+    if (kind) take(kind, secretPath(w.value, w, ctx));
+  }
+  const words = argv(cmd);
+  const k = unwrapCommand(words, commandIndex(words));
+  if (!words[k] || words[k].dynamic) return best;
+  const name = base(words[k].value);
+  const ops = words.slice(k + 1);
+  if (name === 'curl' || name === 'wget') {
+    for (const u of uploadArgs(name, ops)) take('send', secretPath(u.value, u.word, ctx));
+    return best;
+  }
+  if (name === 'source' || name === '.') {
+    if (ops[0]) take('source', secretPath(ops[0].value, ops[0], ctx));
+    return best;
+  }
+  const kind = FILE_READERS.has(name) ? 'read' : name === 'tee' ? 'write' : FILE_COPIERS.has(name) ? 'copy' : FILE_SENDERS.has(name) ? 'send' : null;
+  if (!kind) return best;
+  let skipPattern = PATTERN_FIRST.test(name) && !ops.some(o => PATTERN_FLAG.test(o.value));
+  const cluster = Object.hasOwn(CLUSTER_VALUES, name) ? CLUSTER_VALUES[name] : null;
+  let options = true;
+  for (let j = 0; j < ops.length; j++) {
+    const v = ops[j].value;
+    if (options && v === '--') { options = false; continue; }
+    if (options && /^-./.test(v)) {
+      const long = /^(--[\w-]+)(?:=([\s\S]*))?$/.exec(v);
+      if (cluster && long && (PATTERN_LONG.test(long[1]) || FILE_LONG.test(long[1]))) {
+        const value = long[2] !== undefined ? long[2] : ops[++j]?.value;
+        skipPattern = false;
+        if (FILE_LONG.test(long[1])) take(kind, secretPath(value, long[2] !== undefined ? null : ops[j], ctx));
+      } else if (cluster && !long) {
+        for (let c = 1; c < v.length; c++) {
+          if (name === 'sed' && v[c] === 'i') break;
+          if (!cluster.includes(v[c])) continue;
+          const attached = c + 1 < v.length;
+          const value = attached ? v.slice(c + 1) : ops[++j]?.value;
+          if (v[c] === 'e' || v[c] === 'f') skipPattern = false;
+          if (v[c] === 'f') take(kind, secretPath(value, attached ? null : ops[j], ctx));
+          break;
+        }
+      } else if (OPTION_VALUE[name] && OPTION_VALUE[name].test(v)) j++;
+      else if (kind === 'read' && v.includes('=')) take(kind, secretPath(v.slice(v.indexOf('=') + 1), null, ctx));
+      continue;
+    }
+    if (skipPattern) { skipPattern = false; continue; }
+    const value = name === 'dd' ? v.replace(/^(?:if|of)=/, '') : v;
+    take(kind, secretPath(value, ops[j], ctx, kind === 'copy' || kind === 'send'));
+  }
+  return best;
+}
+
+// literal: the typed command's quoted glob words; a view that has no more
+// words of that value than the typed command has quoted ones does not expand them.
+function secretFileAccess(text, safetyLevel, literal) {
+  const read = readShell(text);
+  const skip = new Set();
+  if (literal && literal.size) {
+    const seen = new Map();
+    for (const f of read.frames) for (const cmd of f.cmds) for (const w of cmd.words) {
+      if (literal.has(w.value)) seen.set(w.value, (seen.get(w.value) || 0) + 1);
+    }
+    for (const [value, count] of literal) if ((seen.get(value) || 0) <= count) skip.add(value);
+  }
+  const ctx = { safetyLevel, src: text, literal: skip };
+  let best = null;
+  for (const frame of read.frames) {
+    for (const cmd of frame.cmds) best = stronger(best, commandFileAccess(cmd, ctx));
+  }
+  return best;
+}
+
+// base64 given a file the file tools refuse, judged on the whole name as they judge it, so a name the
+// pattern's word list does not spell out (.azure/accessTokens.json) still counts. A backup suffix
+// (.bak, .backup, .old, .orig, .save, .tmp, ~) is the same file.
+const BACKUP_SUFFIX = /(?:\.(?:bak|backup|old|orig|save|tmp)|~)$/i;
+function base64ReadsSecret(text) {
+  const named = (v) => {
+    const parts = [v, ...v.split(/[=@<(]/).slice(1)];
+    if (/^-[A-Za-z]./.test(v)) parts.push(v.slice(2));
+    return parts.some(p => p && (checkFilePath(p, 'high').blocked || checkFilePath(p.replace(BACKUP_SUFFIX, ''), 'high').blocked));
+  };
+  if (!/base64/.test(text)) return false;
+  for (const f of readShell(text).frames) {
+    for (const cmd of f.cmds) {
+      const at = cmd.words.findIndex(w => !w.op && !w.target && base(w.value) === 'base64');
+      if (at < 0) continue;
+      if (cmd.words.slice(at + 1).some(w => !w.op && named(w.value))) return true;
+      if (cmd.words.some(w => w.target && named(w.value))) return true;
+    }
+  }
+  return false;
 }
 
 // Mask each allowlisted file name on its own; matching the allowlist against

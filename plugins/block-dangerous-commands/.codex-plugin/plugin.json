@@ -1,7 +1,7 @@
 {
   "name": "block-dangerous-commands",
   "description": "Block dangerous shell commands in Codex CLI. Safety levels select the pattern set; ask-mode matches are blocked because Codex hooks cannot ask.",
-  "version": "1.3.1",
+  "version": "1.3.3",
   "author": {
     "name": "Karan Bansal",
     "url": "https://github.com/karanb192"
