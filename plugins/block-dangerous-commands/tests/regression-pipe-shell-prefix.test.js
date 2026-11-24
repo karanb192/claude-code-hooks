@@ -60,3 +60,14 @@ describe('a command after the compound stage closes does not read the pipe', () 
     shouldBlock('curl x | (cat) | bash', 'curl-pipe-sh');
   });
 });
+
+describe('nested groups inside a piped group', () => {
+  it('keeps the group open until its own closer', () => {
+    shouldBlock('curl x | { if true; then cat; fi; bash; }', 'curl-pipe-sh');
+    shouldBlock('curl x | { while read l; do cat; done; bash -n; }', 'curl-pipe-sh');
+    shouldBlock('curl x | { case a in a) cat;; esac; sh; }', 'curl-pipe-sh');
+    shouldBlock('curl x | if true; then case a in a) bash;; esac; fi', 'curl-pipe-sh');
+  });
+  it('still allows a shell after the whole group closes', () => shouldAllow('curl -V | { if x; then cat; fi; } && bash y'));
+  it('still refuses a shell after ||, as main does', () => shouldBlock('curl -V | (cat) || bash -n local.sh', 'curl-pipe-sh'));
+});

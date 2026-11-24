@@ -663,12 +663,19 @@ const COMPOUND = /^(?:[({!]|(?:if|while|until|for|select|case)(?=\s|$))/;
 // The commands of one pipe stage that read the pipe: the first one, or every
 // command of a compound stage ({ ...; }, ( ... ), if, while) up to the close
 // that ends it. A command after that close (curl x | (cat) && bash y) runs
-// after the pipeline and does not read it. In a case body ) ends a pattern.
+// after the pipeline and does not read it. Each opener waits for its own
+// closer ({ if ...; fi; bash; } still reads the pipe at bash), and in a case
+// body ) ends a pattern. A closer that matches nothing leaves the stage open
+// to its end, so every later command still counts.
+const OPENERS_OF = { '}': ['{'], fi: ['if'], done: ['while', 'until', 'for', 'select'], esac: ['case'] };
+const STAGE_OPENER = /^(?:\{|if|while|until|for|select|case)$/;
+const STAGE_PREFIX = /^(?:then|do|else|elif|!|time)$/;
 function stageCommands(stage) {
   const head = stage.replace(/^[\s&]+/, '');
   if (!COMPOUND.test(head)) return [firstCommand(head)];
   const out = [];
   const open = [];
+  let lost = false;
   let q = '';
   let start = 0;
   for (let i = 0; i <= head.length; i++) {
@@ -680,14 +687,21 @@ function stageCommands(stage) {
       if (!/[;&()\n]/.test(ch)) continue;
     }
     const segment = head.slice(start, i);
-    const word = /^\s*(\S*)/.exec(segment)[1];
-    if (/^(?:\{|if|while|until|for|select|case)$/.test(word)) open.push(word);
-    else if (/^(?:\}|fi|done|esac)$/.test(word)) open.pop();
+    for (const word of segment.trim().split(/\s+/)) {
+      if (STAGE_OPENER.test(word)) open.push(word);
+      else if (Object.prototype.hasOwnProperty.call(OPENERS_OF, word)) {
+        if (OPENERS_OF[word].includes(open[open.length - 1])) open.pop();
+        else lost = true;
+      } else if (!STAGE_PREFIX.test(word)) break;
+    }
     out.push(firstCommand(segment));
     if (ch === '(') open.push('(');
-    else if (ch === ')' && open[open.length - 1] !== 'case') open.pop();
+    else if (ch === ')' && open[open.length - 1] !== 'case') {
+      if (open[open.length - 1] === '(') open.pop();
+      else lost = true;
+    }
     start = i + 1;
-    if (!open.length) break;
+    if (!open.length && !lost) break;
   }
   return out;
 }
