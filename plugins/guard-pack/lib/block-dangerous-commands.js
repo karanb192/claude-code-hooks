@@ -661,11 +661,14 @@ function firstCommand(stage) {
 const COMPOUND = /^(?:[({!]|(?:if|while|until|for|select|case)(?=\s|$))/;
 
 // The commands of one pipe stage that read the pipe: the first one, or every
-// command of a compound stage ({ ...; }, ( ... ), if, while).
+// command of a compound stage ({ ...; }, ( ... ), if, while) up to the close
+// that ends it. A command after that close (curl x | (cat) && bash y) runs
+// after the pipeline and does not read it. In a case body ) ends a pattern.
 function stageCommands(stage) {
   const head = stage.replace(/^[\s&]+/, '');
   if (!COMPOUND.test(head)) return [firstCommand(head)];
   const out = [];
+  const open = [];
   let q = '';
   let start = 0;
   for (let i = 0; i <= head.length; i++) {
@@ -676,8 +679,15 @@ function stageCommands(stage) {
       if (ch === '"' || ch === "'") { q = ch; continue; }
       if (!/[;&()\n]/.test(ch)) continue;
     }
-    out.push(firstCommand(head.slice(start, i)));
+    const segment = head.slice(start, i);
+    const word = /^\s*(\S*)/.exec(segment)[1];
+    if (/^(?:\{|if|while|until|for|select|case)$/.test(word)) open.push(word);
+    else if (/^(?:\}|fi|done|esac)$/.test(word)) open.pop();
+    out.push(firstCommand(segment));
+    if (ch === '(') open.push('(');
+    else if (ch === ')' && open[open.length - 1] !== 'case') open.pop();
     start = i + 1;
+    if (!open.length) break;
   }
   return out;
 }

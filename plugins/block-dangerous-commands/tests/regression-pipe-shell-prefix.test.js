@@ -46,3 +46,17 @@ describe('curl piped into a compound command that runs a shell', () => {
     shouldAllow('curl x | for sh in a b; do echo; done');
   });
 });
+
+describe('a command after the compound stage closes does not read the pipe', () => {
+  it('allows a shell that runs after the pipeline ends', () => {
+    shouldAllow('curl -V | (cat) && bash local.sh');
+    shouldAllow('curl -V | (cat); bash local.sh');
+    shouldAllow('curl -V | { cat; } && bash local.sh');
+    shouldAllow('curl -V | while read l; do cat; done && bash local.sh');
+  });
+  it('still blocks a shell inside the group, inside a case body, or in a later pipe stage', () => {
+    shouldBlock('curl x | (bash) && bash y', 'curl-pipe-sh');
+    shouldBlock('curl x | case a in a) bash;; esac', 'curl-pipe-sh');
+    shouldBlock('curl x | (cat) | bash', 'curl-pipe-sh');
+  });
+});
