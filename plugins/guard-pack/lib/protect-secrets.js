@@ -239,7 +239,7 @@ const BASH_PATTERNS = [
   // quoted: also read the copy where a quoted & or newline is blanked, so grep -r "a&token" still counts.
   // (?=(...))\1 takes the first flag or term and never retries a later one, which keeps the match linear.
   { level: 'strict', id: 'grep-password',        regex: new RegExp('\\bgrep\\b(?=(' + GREP_ARGS + '*?(?:-r|--recursive|\\s-[A-Za-z]*r)))\\1' + GREP_ANY + '*?' + GREP_TERM + '|\\bgrep\\b(?=(' + GREP_ARGS + '*?' + GREP_TERM + '))\\2' + GREP_ARGS + '*?\\s(?:-[A-Za-z]*r[A-Za-z]*|--(?:dereference-)?recursive)(?![\\w-])', 'i'), quoted: true, reason: 'Grep for secrets may expose them' },
-  { level: 'strict', id: 'base64-secrets',       regex: new RegExp('\\bbase64\\b[^|;]*(?:\\.env|credentials|secrets|id_rsa|\\.pem|' + SECRET_OPERAND + ')', 'i'), reason: 'Base64 encoding secrets' },
+  { level: 'strict', id: 'base64-secrets',       regex: new RegExp('\\bbase64\\b[^|;]*(?:\\.env|credentials|secrets|id_rsa|\\.pem|' + SECRET_OPERAND + ')', 'i'), also: base64ReadsSecret, reason: 'Base64 encoding secrets' },
 
   // STRICT - Delegation sinks (any file contents into an external model)
   { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&\\n]*' + SINK_CMD + '|' + SINK_CMD + SEG_QA + REDIRECT_IN + FILE_TOKEN + '|' + SINK_CMD + '[^;|&\\n]*' + SUBST_FILE + '|' + SINK_FILE_FLAG, 'i'), reason: 'Piping file contents to an external model CLI' },
@@ -774,11 +774,33 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   const views = read.map(v => maskTemplates(v.text));
   const quoted = views.concat(read.map(v => maskTemplates(v.masked)));
   for (const p of BASH_PATTERNS) {
-    if (LEVELS[p.level] <= threshold && (p.quoted ? quoted : views).some(v => p.regex.test(v))) {
+    if (LEVELS[p.level] <= threshold && ((p.quoted ? quoted : views).some(v => p.regex.test(v)) || (p.also && read.some(v => p.also(v.text))))) {
       return { blocked: true, pattern: p };
     }
   }
   return { blocked: false, pattern: null };
+}
+
+// base64 given a file the file tools refuse, judged on the whole name as they judge it, so a name the
+// pattern's word list does not spell out (.azure/accessTokens.json) still counts. A backup suffix
+// (.bak, .backup, .old, .orig, .save, .tmp, ~) is the same file.
+const BACKUP_SUFFIX = /(?:\.(?:bak|backup|old|orig|save|tmp)|~)$/i;
+function base64ReadsSecret(text) {
+  const named = (v) => {
+    const parts = [v, ...v.split(/[=@<(]/).slice(1)];
+    if (/^-[A-Za-z]./.test(v)) parts.push(v.slice(2));
+    return parts.some(p => p && (checkFilePath(p, 'high').blocked || checkFilePath(p.replace(BACKUP_SUFFIX, ''), 'high').blocked));
+  };
+  if (!/base64/.test(text)) return false;
+  for (const f of readShell(text).frames) {
+    for (const cmd of f.cmds) {
+      const at = cmd.words.findIndex(w => !w.op && !w.target && base(w.value) === 'base64');
+      if (at < 0) continue;
+      if (cmd.words.slice(at + 1).some(w => !w.op && named(w.value))) return true;
+      if (cmd.words.some(w => w.target && named(w.value))) return true;
+    }
+  }
+  return false;
 }
 
 // Mask each allowlisted file name on its own; matching the allowlist against

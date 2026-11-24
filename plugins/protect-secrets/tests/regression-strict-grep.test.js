@@ -26,6 +26,10 @@ const REFUSED = [
   // A backup copy of a secret file is still the secret.
   ["base64 .npmrc.bak", 'strict'],
   ["base64 .npmrc.backup", 'strict'],
+  // A name the file tools refuse counts on its whole name, with or without a backup suffix.
+  ["base64 .azure/accessTokens.json", 'strict'],
+  ["base64 .azure/accessTokens.json.bak", 'strict'],
+  ["base64 < .azure/accessTokens.json", 'strict'],
 ];
 
 const ALLOWED = [
