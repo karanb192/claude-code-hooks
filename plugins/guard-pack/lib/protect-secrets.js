@@ -994,13 +994,22 @@ function uploadArgs(name, ops) {
 // git prints a file's contents from its objects: show REV:path, cat-file -p or blob, blame, grep,
 // archive, and diff, show or log with a patch. Both REV:path and a path after the revision count.
 const GIT_GLOBAL_VALUE = /^(?:-C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env|--super-prefix|--list-cmds)$/;
-// Options that stop a patch: a stat, a name list, the raw form or quiet. --exit-code and --check
-// still print lines, so they do not count.
-const GIT_NO_CONTENT = /^(?:-s|--no-patch|--stat|--numstat|--shortstat|--name-only|--name-status|--summary|--raw|--dirstat|--compact-summary|--quiet)(?:=|$)/;
+// A patch is printed by default for diff and show, and with -p for log. A later -s or --no-patch
+// turns it off and a later patch flag back on; --quiet prints nothing; a stat or name list alone
+// replaces the patch, but not next to a patch flag.
+const GIT_FORMAT = /^(?:--stat|--numstat|--shortstat|--name-only|--name-status|--summary|--raw|--dirstat|--compact-summary)(?:=|$)/;
 const GIT_PATCH = /^(?:-p|-u|--patch|-U\d*|--unified(?:=\d+)?|--word-diff(?:=\w+)?|--full-diff|--patch-with-stat|--patch-with-raw|--cc|-c)$/;
-// Options whose value is the next word, so a search text or author name is not read as a path.
-const GIT_LOG_VALUE = /^(?:-n|-S|-G|-O|--author|--committer|--grep|--since|--until|--before|--after|--max-count|--skip|--format|--pretty|--date|--diff-filter|--encoding|--word-diff-regex|--color-moved|--ignore-matching-lines|-I|--anchored|--inter-hunk-context|--output-indicator-new|--output-indicator-old|--output-indicator-context|--src-prefix|--dst-prefix|--line-prefix|--exclude|--glob|--branches|--tags|--remotes|--min-parents|--max-parents)$/;
-const GIT_GREP_VALUE = /^(?:-e|-f|-A|-B|-C|-m|--regexp|--file|--after-context|--before-context|--context|--max-depth|--max-count|--threads|-O|--open-files-in-pager)$/;
+// Options that take the next word as their value, so a search text or author is not read as a path.
+// Options whose value is optional or must follow = (--pretty, --format, --color-moved) take nothing.
+// log takes search and author text; diff and show take a pickaxe text, an order file and a filter;
+// grep takes its patterns and pattern files. A count or filter must look like one to be consumed.
+const GIT_LOG_VALUE = /^(?:-n|-S|-G|-O|--author|--committer|--grep|--max-count|--skip|--since|--until|--before|--after|--diff-filter)$/;
+const GIT_LOG_ATTACHED = /^-([nSGO])(.+)$/;
+const GIT_DIFF_VALUE = /^(?:-S|-G|-O|--diff-filter)$/;
+const GIT_DIFF_ATTACHED = /^-([SGO])(.+)$/;
+const GIT_GREP_VALUE = /^(?:-e|-f|--regexp|--file)$/;
+const GIT_GREP_ATTACHED = /^-([ef])(.+)$/;
+const gitValueFits = (flag, v) => (/^(?:-n|--max-count|--skip)$/.test(flag) ? /^\d+$/.test(v) : flag === '--diff-filter' ? /^[ACDMRTUXB*]+$/i.test(v) : true);
 function gitObjectPath(v) {
   const m = /^(?:[^:]*:)([0-3]:)?(.+)$/.exec(v);
   return m && !/^[a-z][\w+.-]*:\/\//i.test(v) ? m[2] : null;
@@ -1013,7 +1022,9 @@ function gitFileAccess(ops, take, ctx) {
   }
   const sub = ops[k]?.value;
   const args = ops.slice(k + 1);
-  const valueOpt = sub === 'grep' ? GIT_GREP_VALUE : GIT_LOG_VALUE;
+  const logLike = sub === 'log' || sub === 'whatchanged';
+  const valueOpt = sub === 'grep' ? GIT_GREP_VALUE : logLike ? GIT_LOG_VALUE : GIT_DIFF_VALUE;
+  const attachedOpt = sub === 'grep' ? GIT_GREP_ATTACHED : logLike ? GIT_LOG_ATTACHED : GIT_DIFF_ATTACHED;
   const words = [];
   const flags = [];
   const values = [];
@@ -1023,7 +1034,9 @@ function gitFileAccess(ops, take, ctx) {
     if (options && v === '--') { options = false; continue; }
     if (options && /^-./.test(v)) {
       flags.push(v);
-      if (valueOpt.test(v) && args[i + 1]) values.push({ flag: v, word: args[++i] });
+      const attached = attachedOpt.exec(v);
+      if (attached) values.push({ flag: `-${attached[1]}`, word: { value: attached[2], spans: [], parts: [], start: 0, end: 0 }, attached: true });
+      else if (valueOpt.test(v) && args[i + 1] && gitValueFits(v, args[i + 1].value)) values.push({ flag: v, word: args[++i] });
       continue;
     }
     words.push(args[i]);
@@ -1032,9 +1045,18 @@ function gitFileAccess(ops, take, ctx) {
   const objects = () => { for (const w of words) { const p = gitObjectPath(w.value); if (p) read(p, null); } };
   const paths = (from) => { for (const w of words.slice(from)) if (!gitObjectPath(w.value)) read(w.value, w); };
   // -O names an order file that git reads.
-  if (sub !== 'grep') for (const x of values) if (x.flag === '-O') read(x.word.value, x.word);
-  const patch = flags.some(f => GIT_PATCH.test(f));
-  const content = patch || !flags.some(f => GIT_NO_CONTENT.test(f));
+  if (sub !== 'grep') for (const x of values) if (x.flag === '-O') { read(x.word.value, x.attached ? null : x.word); const p = gitObjectPath(x.word.value); if (p) read(p, null); }
+  let patchOn = null;
+  let format = false;
+  let quiet = false;
+  for (const f of flags) {
+    if (GIT_PATCH.test(f)) patchOn = true;
+    else if (f === '-s' || f === '--no-patch') patchOn = false;
+    else if (GIT_FORMAT.test(f)) format = true;
+    else if (f === '--quiet') quiet = true;
+  }
+  const patch = !quiet && patchOn === true;
+  const content = !quiet && (patchOn === true || (patchOn === null && !format));
   if (sub === 'show') {
     objects();
     if (content) paths(0);
@@ -1055,8 +1077,9 @@ function gitFileAccess(ops, take, ctx) {
   } else if (sub === 'grep') {
     objects();
     // A pattern file is read; a pattern given with -e leaves every word a revision or path.
-    for (const x of values) if (/^(?:-f|--file)$/.test(x.flag)) read(x.word.value, x.word);
-    const given = values.some(x => /^(?:-e|-f|--regexp|--file)$/.test(x.flag)) || flags.some(f => /^(?:-e|-f|--regexp|--file)=/.test(f));
+    for (const x of values) if (/^(?:-f|--file)$/.test(x.flag)) { read(x.word.value, x.attached ? null : x.word); const p = gitObjectPath(x.word.value); if (p) read(p, null); }
+    for (const f of flags) if (/^--file=/.test(f)) read(f.slice(7), null);
+    const given = values.some(x => /^(?:-e|-f|--regexp|--file)$/.test(x.flag)) || flags.some(f => /^(?:--regexp|--file)=/.test(f));
     paths(given ? 0 : 1);
   }
 }

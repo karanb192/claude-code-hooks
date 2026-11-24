@@ -35,6 +35,15 @@ const REFUSED = [
   ['git log --stat --patch -- .npmrc', 'high'],
   ['git grep -e TOKEN -- .npmrc', 'high'],
   ['git grep -f .npmrc README.md', 'high'],
+  // An option whose value is optional takes no word; an attached value reads like a separate one.
+  ['git log -p --pretty HEAD:.env', 'high'],
+  ['git show --pretty HEAD:.env', 'high'],
+  ['git diff --color-moved HEAD~1 -- .env', 'high'],
+  ['git grep -efoo .npmrc', 'high'],
+  ['git grep -f.npmrc README.md', 'high'],
+  ['git diff -O.npmrc', 'high'],
+  ['git log -p -s -p -- .npmrc', 'high'],
+  ['git grep -A 3 TOKEN -- .npmrc', 'high'],
 ];
 
 const ALLOWED = [
@@ -54,6 +63,9 @@ const ALLOWED = [
   ['git grep --regexp .npmrc README.md', 'high'],
   ['git log -p --author .npmrc', 'high'],
   ['git log -p --grep .npmrc', 'high'],
+  // A later --no-patch or a --quiet prints no patch.
+  ['git log -p --no-patch -- .npmrc', 'high'],
+  ['git diff -p --quiet -- .env', 'high'],
 ];
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {
