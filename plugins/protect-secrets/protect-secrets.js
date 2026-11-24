@@ -224,9 +224,9 @@ const BASH_PATTERNS = [
   { level: 'high', id: 'truncate-secrets',       regex: /\btruncate\b.*\.(env|pem|key)\b|(?:^|[;&|]\s*)>\s*\.env\b/i,      reason: 'Truncating secrets file' },
 
   // HIGH - Process environ
-  // After cd /proc, a later command that names environ as an operand reads it, unless a cd to an
-  // absolute path, a bare cd or popd came between. echo and printf only print the word.
-  { level: 'high', id: 'proc-environ',           regex: /\/proc\/+(?:[^/\s]+\/+)*environ\b|\b(?:cd|pushd)\s+["']?\/proc(?![\w.-])(?:(?!\b(?:cd|pushd)\s+["']?[/~]|\bcd\s*(?:$|[;&|)\n])|\bpopd\b)[\s\S])*?[;&|\n(`]\s*(?!\s|(?:echo|printf)\b)[^;&|\n]*?[\s<='"](?:[^\s/;&|'"]+\/+)*environ(?![\w.-])/, reason: 'Reading process environment' },
+  // A relative environ read after cd or pushd into /proc is judged by procEnvironRead, which tracks the
+  // directory per shell scope.
+  { level: 'high', id: 'proc-environ',           regex: /\/proc\/+(?:[^/\s]+\/+)*environ\b/, also: procEnvironRead, reason: 'Reading process environment' },
   { level: 'high', id: 'xargs-cat-env',          regex: /xargs.*cat|\.env.*xargs/i,                                         reason: 'Reading .env via xargs' },
   { level: 'high', id: 'find-exec-cat-env',      regex: /find\b.*\.env.*-exec|find\b.*-exec.*(cat|less)/i,                 reason: 'Finding and reading .env files' },
 
@@ -766,13 +766,80 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   const texts = shellViews(cmd).map(v => v.text);
   const views = texts.map(maskTemplates);
   for (const p of BASH_PATTERNS) {
-    if (LEVELS[p.level] <= threshold && views.some(v => p.regex.test(v))) {
+    if (LEVELS[p.level] <= threshold && (views.some(v => p.regex.test(v)) || (p.also && texts.some(p.also)))) {
       return { blocked: true, pattern: p };
     }
   }
   const dump = BASH_PATTERNS.find(p => p.id === 'env-dump');
   if (LEVELS[dump.level] <= threshold && texts.some(dumpsEnvironment)) return { blocked: true, pattern: dump };
   return { blocked: false, pattern: null };
+}
+
+// Reading /proc/<pid>/environ by a relative name after cd or pushd into /proc. The directory is
+// tracked per shell scope: a cd inside ( ... ) does not change the parent's directory. echo, printf
+// and test only name the file. A cd to an unknown place ($DIR) keeps the last known directory.
+const PROC_NAMES_ONLY = new Set(['echo', 'printf', 'test', '[', '[[']);
+// A directory is kept as its first component and its depth, which is all that decides whether a
+// relative name lands under /proc; this keeps long chains of cd linear.
+function resolveDir(dir, to) {
+  let { head, len } = to.startsWith('/') || !dir ? { head: null, len: 0 } : dir;
+  for (const part of to.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') { if (len > 0) len--; if (len === 0) head = null; }
+    else { if (len === 0) head = part; len++; }
+  }
+  return { head, len };
+}
+const inProc = (dir) => !!dir && dir.head === 'proc';
+function procEnvironRead(text) {
+  if (!/environ/.test(text)) return false;
+  const read = readShell(text);
+  let state = { dir: null, prev: null, stack: [] };
+  const saved = [];
+  const names = (w) => !w.dynamic && /(?:^|\/)environ$/.test(w.value) && !w.value.startsWith('/');
+  // A word of code (python3 -c, node -e) or an expanding heredoc body that names environ may open it.
+  const mentions = (t) => /(?<![\w.\/-])(?:[^\s\/'"`]+\/+)*environ(?![\w.-])/.test(t);
+  const hits = (st, w) => names(w) && inProc(st.dir) && inProc(resolveDir(st.dir, w.value));
+  const visit = (cmd, st) => {
+    for (const w of cmd.words) for (const f of w.frames || []) for (const c of f.cmds) if (visit(c, { ...st, stack: [...st.stack] })) return true;
+    if (cmd.words.some(w => w.target === '<' && hits(st, w))) return true;
+    const words = argv(cmd);
+    let k = commandIndex(words);
+    for (const w of words.slice(0, k < 0 ? words.length : k)) {
+      const m = /^[A-Za-z_]\w*\+?=([\s\S]*)$/.exec(w.value);
+      if (m && !w.dynamic && hits(st, { value: m[1], dynamic: false })) return true;
+    }
+    while (k >= 0 && words[k] && !words[k].dynamic && /^(?:builtin|command)$/.test(words[k].value) && words[k + 1] && !/^-/.test(words[k + 1].value)) k++;
+    // A command word that is not plain text may be any reader.
+    if (k < 0 || !words[k] || words[k].dynamic) return words.some(w => hits(st, w));
+    const name = base(words[k].value);
+    const ops = words.slice(k + 1).filter(w => !/^-./.test(w.value));
+    if (name === 'cd' || name === 'pushd') {
+      const to = ops[0];
+      const from = st.dir;
+      if (name === 'pushd') st.stack.push(from);
+      if (!to) { if (name === 'cd') st.dir = null; else st.dir = st.stack.length > 1 ? st.stack.splice(-2, 1)[0] : st.dir; }
+      else if (to.dynamic) { /* unknown target: keep the last known directory */ }
+      // cd - returns to a directory this line may not show; keep the current one when it is unknown.
+      else if (to.value === '-') st.dir = st.prev !== null ? st.prev : st.dir;
+      else if (to.value.startsWith('~')) st.dir = null;
+      else if (to.value.startsWith('/')) { const d = resolveDir(null, to.value); st.dir = inProc(d) ? d : null; }
+      else if (st.dir !== null) { const d = resolveDir(st.dir, to.value); st.dir = inProc(d) ? d : null; }
+      st.prev = from;
+      return false;
+    }
+    if (name === 'popd') { st.prev = st.dir; st.dir = st.stack.length ? st.stack.pop() : null; return false; }
+    if (PROC_NAMES_ONLY.has(name)) return false;
+    if (inProc(st.dir) && words.slice(k + 1).some(w => mentions(w.value))) return true;
+    if (inProc(st.dir) && read.heredocs.some(h => h.cmd === cmd && !h.quoted && /[$`]/.test(text.slice(h.bodyStart, h.bodyEnd)) && mentions(text.slice(h.bodyStart, h.bodyEnd)))) return true;
+    return words.slice(k + 1).some(w => hits(st, w) || hits(st, { value: w.value.replace(/^[^=]*=/, ''), dynamic: w.dynamic }));
+  };
+  for (const cmd of read.top.cmds) {
+    for (const w of cmd.words) if (w.op === '(') saved.push({ ...state, stack: [...state.stack] });
+    if (visit(cmd, state)) return true;
+    for (const w of cmd.words) if (w.op === ')' && saved.length) state = saved.pop();
+  }
+  return false;
 }
 
 // A command that prints the whole environment, wherever it sits in the line:

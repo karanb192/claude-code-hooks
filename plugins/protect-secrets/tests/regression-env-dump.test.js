@@ -44,6 +44,9 @@ const REFUSED = [
   // env runs the next word, which can be env again.
   ["env-runs-env", "env -u FOO env", 'high'],
   ["env-assign-env", "env FOO=1 env", 'high'],
+  // Still refused on purpose: main refuses every printenv by name, and this branch keeps that.
+  ["printenv-lookup", "command -v printenv", 'high'],
+  ["printenv-empty-env", "env -i printenv", 'high'],
 ];
 
 const ALLOWED = [

@@ -22,6 +22,12 @@ const REFUSED = [
   ["relative-cd", "cd /proc && cd self && cat environ", 'high'],
   ["next-line", "cd /proc/self\ncat environ", 'high'],
   ["substitution", "cd /proc/self && echo \"$(<environ)\"", 'high'],
+  // A cd inside ( ... ) changes only that subshell's directory.
+  ["subshell-cd-out", "cd /proc/self && (cd /); cat environ", 'high'],
+  ["subshell-read", "(cd /proc/self; cat environ)", 'high'],
+  ["cd-option", "cd -P /proc/self && cat environ", 'high'],
+  ["cd-back", "cd /proc/self && cd - && cat environ", 'high'],
+  ["builtin-cd", "builtin cd /proc/self && cat environ", 'high'],
 ];
 
 const ALLOWED = [
@@ -33,6 +39,10 @@ const ALLOWED = [
   ['cd /proc && cd / && echo environ', 'high'],
   ['cd /proc && echo environ', 'high'],
   ['cd /proc && cd / && cat environ', 'high'],
+  // The parent shell never entered /proc, and test only checks that the file exists.
+  ['(cd /proc/self); cat environ', 'high'],
+  ['cd /proc/self && test -e environ', 'high'],
+  ['cd /proc/self && [ -f environ ]', 'high'],
 ];
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {
