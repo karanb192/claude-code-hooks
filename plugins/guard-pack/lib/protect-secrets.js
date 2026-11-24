@@ -887,6 +887,8 @@ const CLUSTER_VALUES = { grep: 'ef', egrep: 'ef', fgrep: 'ef', zgrep: 'ef', rg: 
 const PATTERN_LONG = /^--(?:regexp|expression)$/;
 const FILE_LONG = /^--file$/;
 const FILE_COPIERS = new Set(['cp', 'mv', 'rm', 'ln', 'unlink', 'install', 'truncate', 'shred']);
+// Commands that write the files they are given, like tee.
+const FILE_WRITERS = new Set(['tee', 'sponge']);
 const FILE_SENDERS = new Set(['scp', 'rsync', 'sftp']);
 // Options whose next word is a value (an identity file is used, not sent).
 const OPTION_VALUE = { scp: /^-[iFoPclSJD]$/, sftp: /^-[iFoPclSJDBRs]$/, rsync: /^-[eT]$/, truncate: /^-[sr]$/ };
@@ -991,6 +993,169 @@ function uploadArgs(name, ops) {
   return out.map(u => ({ value: u.value && uploadedFile(u.value, u.kind), word: u.kind === 'T' ? u.word : null }));
 }
 
+// Where curl and wget write what they fetch, and the other files they write: -o, -D, -c, --output,
+// --output-dir and the trace files for curl; -O, -o, -a, -P and --save-cookies for wget.
+const CURL_WRITE_SHORT = 'oDc';
+const CURL_WRITE_LONG = /^--(?:output|dump-header|cookie-jar|trace|trace-ascii|stderr|etag-save|libcurl)$/;
+const WGET_SHORT_VALUE = 'OoaPiBetTwQUYDIXlAR';
+const WGET_WRITE_LONG = /^--(?:output-document|output-file|append-output|save-cookies)$/;
+function downloadTargets(name, ops) {
+  const out = [];
+  let dir = null;
+  const names = [];
+  for (let j = 0; j < ops.length; j++) {
+    const v = ops[j].value;
+    const long = /^(--[\w-]+)(?:=([\s\S]*))?$/.exec(v);
+    if (long) {
+      const isDir = long[1] === (name === 'curl' ? '--output-dir' : '--directory-prefix');
+      const isFile = name === 'curl' ? CURL_WRITE_LONG.test(long[1]) : WGET_WRITE_LONG.test(long[1]);
+      if (!isDir && !isFile) continue;
+      const attached = long[2] !== undefined;
+      const value = attached ? long[2] : ops[++j]?.value;
+      const item = { value, word: attached ? null : ops[j], dir: isDir };
+      out.push(item);
+      if (isDir) dir = value; else if (long[1] === '--output' || long[1] === '--output-document') names.push(value);
+      continue;
+    }
+    if (!/^-[A-Za-z]/.test(v)) continue;
+    const values = name === 'curl' ? CURL_SHORT_VALUE : WGET_SHORT_VALUE;
+    for (let c = 1; c < v.length; c++) {
+      if (!values.includes(v[c])) continue;
+      const attached = c + 1 < v.length;
+      const value = attached ? v.slice(c + 1) : ops[++j]?.value;
+      const isDir = name === 'wget' && v[c] === 'P';
+      const isFile = name === 'curl' ? CURL_WRITE_SHORT.includes(v[c]) : 'Ooa'.includes(v[c]);
+      if (isDir || isFile) {
+        out.push({ value, word: attached ? null : ops[j], dir: isDir });
+        if (isDir) dir = value; else if (v[c] === 'o' || v[c] === 'O') names.push(value);
+      }
+      break;
+    }
+  }
+  // A file name under an output directory is written inside it.
+  if (dir) for (const n of names) if (n && !n.startsWith('/')) out.push({ value: `${dir.replace(/\/+$/, '')}/${n}`, word: null, dir: false });
+  return out.filter(t => t.value && t.value !== '-');
+}
+
+// Archivers: what goes into an archive is copied, the archive written, and an extraction writes its
+// members into its directory. tar and bsdtar take a mode letter (c, r, u, x ...), a bundle without a
+// dash, short clusters whose value letters take the rest of the word or the next word, and long
+// options. -C changes the directory for the names after it.
+const TAR_SHORT_VALUE = 'fCTXbKNLgVHIF';
+const TAR_LONG_VALUE = /^--(?:file|directory|files-from|exclude-from|exclude|transform|xform|owner|group|mode|mtime|newer|newer-mtime|after-date|label|use-compress-program|format|blocking-factor|record-size|suffix|to-command|checkpoint-action|index-file|listed-incremental|volno-file|info-script|new-volume-script|rmt-command|rsh-command|strip-components|occurrence|tape-length|starting-file|backup)$/;
+const TAR_LONG_MODE = { '--create': 'c', '--append': 'r', '--update': 'u', '--concatenate': 'A', '--catenate': 'A', '--extract': 'x', '--get': 'x', '--list': 't', '--diff': 'd', '--compare': 'd', '--delete': 'D' };
+const COMPRESSORS = new Set(['gzip', 'gunzip', 'pigz', 'bzip2', 'bunzip2', 'pbzip2', 'xz', 'unxz', 'lzma', 'unlzma', 'zstd', 'unzstd', 'lz4', 'lzip', 'compress']);
+function archiveAccess(name, ops, take, ctx) {
+  const path = (dir, v) => (dir && !v.startsWith('/') && !v.startsWith('~') ? `${dir.replace(/\/+$/, '')}/${v}` : v);
+  if (name === 'tar' || name === 'bsdtar') {
+    let mode = null;
+    let dir = null;
+    let archive = null;
+    const operands = [];
+    const value = (letter, v, word) => {
+      if (letter === 'f') archive = { v, word };
+      else if (letter === 'C') { dir = v; take('write', secretPath(v, word, ctx, true)); }
+      else if (letter === 'T' || letter === 'X') take('read', secretPath(v, word, ctx));
+    };
+    let j = 0;
+    if (ops[0] && /^[A-Za-z]+$/.test(ops[0].value)) {
+      const pending = [];
+      for (const ch of ops[0].value) {
+        if ('crutxdA'.includes(ch)) mode = mode || ch;
+        if (TAR_SHORT_VALUE.includes(ch)) pending.push(ch);
+      }
+      j = 1;
+      for (const ch of pending) { const w = ops[j++]; if (w) value(ch, w.value, w); }
+    }
+    let options = true;
+    for (; j < ops.length; j++) {
+      const v = ops[j].value;
+      if (options && v === '--') { options = false; continue; }
+      if (options && /^--[\w-]/.test(v)) {
+        const long = /^(--[\w-]+)(?:=([\s\S]*))?$/.exec(v);
+        if (!long) continue;
+        if (TAR_LONG_MODE[long[1]]) { mode = mode || TAR_LONG_MODE[long[1]]; continue; }
+        if (!TAR_LONG_VALUE.test(long[1])) continue;
+        const attached = long[2] !== undefined;
+        const val = attached ? long[2] : ops[++j]?.value;
+        const letter = { '--file': 'f', '--directory': 'C', '--files-from': 'T', '--exclude-from': 'X' }[long[1]];
+        if (letter && val !== undefined) value(letter, val, attached ? null : ops[j]);
+        continue;
+      }
+      if (options && /^-[A-Za-z]/.test(v)) {
+        for (let c = 1; c < v.length; c++) {
+          if ('crutxdA'.includes(v[c])) mode = mode || v[c];
+          if (!TAR_SHORT_VALUE.includes(v[c])) continue;
+          const attached = c + 1 < v.length;
+          const val = attached ? v.slice(c + 1) : ops[++j]?.value;
+          if (val !== undefined) value(v[c], val, attached ? null : ops[j]);
+          break;
+        }
+        continue;
+      }
+      operands.push({ v: path(dir, v), word: ops[j] });
+    }
+    const extracting = mode === 'x';
+    if (archive && archive.v !== '-') take(extracting || mode === 't' || mode === 'd' ? 'read' : 'write', secretPath(archive.v, archive.word, ctx));
+    if (mode === 't' || mode === 'd') return;
+    for (const o of operands) take(extracting ? 'write' : 'copy', secretPath(o.v, o.word, ctx, !extracting));
+    return;
+  }
+  if (name === 'zip') {
+    let archive = null;
+    let lists = false;
+    for (let j = 0; j < ops.length; j++) {
+      const v = ops[j].value;
+      if (/^-[xi]$/.test(v) || /^--(?:exclude|include)$/.test(v)) { lists = true; continue; }
+      if (/^-[bnOtPZsI]$/.test(v) || /^--(?:temp-path|suffixes|output-file|password|compression-method|split-size|from-date|before-date)$/.test(v)) { j++; continue; }
+      if (/^-/.test(v)) continue;
+      if (lists) continue;
+      if (archive === null) { archive = v; take('write', secretPath(v, ops[j], ctx)); continue; }
+      take('copy', secretPath(v, ops[j], ctx, true));
+    }
+    return;
+  }
+  if (name === 'unzip') {
+    let dir = null;
+    let archive = null;
+    let writes = true;
+    const members = [];
+    for (let j = 0; j < ops.length; j++) {
+      const v = ops[j].value;
+      if (v === '-d') { dir = ops[++j]?.value; if (dir) take('write', secretPath(dir, ops[j], ctx, true)); continue; }
+      if (/^-d./.test(v)) { dir = v.slice(2); take('write', secretPath(dir, null, ctx, true)); continue; }
+      if (v === '-x') { j = ops.length; continue; }
+      if (/^-[A-Za-z]*[lptvzZ]/.test(v)) writes = false;
+      if (/^-/.test(v)) continue;
+      if (archive === null) { archive = v; take('read', secretPath(v, ops[j], ctx)); continue; }
+      members.push(v);
+    }
+    if (writes) for (const m of members) take('write', secretPath(path(dir, m), null, ctx));
+    return;
+  }
+  if (/^7z[ar]?$|^7zz$/.test(name)) {
+    const command = ops[0]?.value;
+    let archive = null;
+    for (let j = 1; j < ops.length; j++) {
+      const v = ops[j].value;
+      if (/^-o./.test(v)) { take('write', secretPath(v.slice(2), null, ctx, true)); continue; }
+      if (/^-/.test(v)) continue;
+      if (archive === null) { archive = v; take(/^[au]$/.test(command) ? 'write' : 'read', secretPath(v, ops[j], ctx)); continue; }
+      if (/^[au]$/.test(command)) take('copy', secretPath(v, ops[j], ctx, true));
+    }
+    return;
+  }
+  // A compressor replaces the file it is given, or prints it with -c.
+  for (let j = 0; j < ops.length; j++) {
+    const v = ops[j].value;
+    if (v === '-S' || v === '--suffix' || (name === 'zstd' && v === '-D')) { j++; continue; }
+    if (name === 'zstd' && v === '-o') { const w = ops[++j]; if (w) take('write', secretPath(w.value, w, ctx)); continue; }
+    if (/^-/.test(v)) continue;
+    take('copy', secretPath(v, ops[j], ctx));
+  }
+}
+const ARCHIVERS = /^(?:tar|bsdtar|zip|unzip|7z|7za|7zr|7zz)$/;
+
 function commandFileAccess(cmd, ctx) {
   const found = (kind, file) => file && { id: FILE_ACCESS[kind].id, level: file.level, reason: `${FILE_ACCESS[kind].reason} (${file.reason})` };
   // Every operand is checked and the most severe file wins, so operand order never lowers the level.
@@ -1008,13 +1173,18 @@ function commandFileAccess(cmd, ctx) {
   const ops = words.slice(k + 1);
   if (name === 'curl' || name === 'wget') {
     for (const u of uploadArgs(name, ops)) take('send', secretPath(u.value, u.word, ctx));
+    for (const t of downloadTargets(name, ops)) take('write', secretPath(t.value, t.word, ctx, t.dir));
+    return best;
+  }
+  if (ARCHIVERS.test(name) || COMPRESSORS.has(name)) {
+    archiveAccess(name, ops, take, ctx);
     return best;
   }
   if (name === 'source' || name === '.') {
     if (ops[0]) take('source', secretPath(ops[0].value, ops[0], ctx));
     return best;
   }
-  const kind = FILE_READERS.has(name) ? 'read' : name === 'tee' ? 'write' : FILE_COPIERS.has(name) ? 'copy' : FILE_SENDERS.has(name) ? 'send' : null;
+  const kind = FILE_READERS.has(name) ? 'read' : FILE_WRITERS.has(name) ? 'write' : FILE_COPIERS.has(name) ? 'copy' : FILE_SENDERS.has(name) ? 'send' : null;
   if (!kind) return best;
   let skipPattern = PATTERN_FIRST.test(name) && !ops.some(o => PATTERN_FLAG.test(o.value));
   const cluster = Object.hasOwn(CLUSTER_VALUES, name) ? CLUSTER_VALUES[name] : null;
