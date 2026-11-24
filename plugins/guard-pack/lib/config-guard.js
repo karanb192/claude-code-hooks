@@ -406,36 +406,160 @@ function shellSegments(cmd) {
 const CLAUDE_DIR_OPERAND = /(?:^|\s)["']?(?:[^\s"';|&()]*\/)?\.claude\/?\*?["']?(?=\s|$)/;
 const DIR_MUTATION = /^(?:(?:sudo|command|env|nice|nohup)\s+(?:-\S+\s+)*)*(?:rm|unlink|trash|shred|mv|git\s+rm|git\s+mv)\b/i;
 
-function removesClaudeDir(cmd) {
-  return shellSegments(cmd).some((seg) => DIR_MUTATION.test(seg) && CLAUDE_DIR_OPERAND.test(seg.replace(DIR_MUTATION, '')));
+// Moving files into an existing .claude folder does not remove it: judge
+// where each source lands instead. Anything unclear (globs, expansions,
+// -T, a missing folder that mv would create by renaming) counts as removal.
+function claudeDirChange(cmd, cwd) {
+  const landings = [];
+  for (const seg of shellSegments(cmd)) {
+    const verb = seg.match(DIR_MUTATION);
+    if (!verb) continue;
+    const args = seg.slice(verb[0].length);
+    if (!CLAUDE_DIR_OPERAND.test(args)) continue;
+    const into = /mv$/i.test(verb[0]) ? movesIntoClaudeDir(args, cwd) : null;
+    if (!into) return true;
+    landings.push(...into);
+  }
+  return landings;
+}
+
+function movesIntoClaudeDir(args, cwd) {
+  const words = args.trim().split(/\s+/).map((w) => w.replace(/^(["'])(.*)\1$/, '$2'));
+  if (words.some((w) => !w || /["'`$*?[\]{}\\<>]/.test(w))) return null;
+  const operands = [];
+  let target = null, options = true;
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (options && w === '--') { options = false; continue; }
+    if (options && w.startsWith('-') && w !== '-') {
+      if (w === '-T' || w === '--no-target-directory') return null;
+      const t = w.match(/^-t(.*)$|^--target-directory(?:=(.*))?$/);
+      if (t) { target = (t[1] || t[2]) || words[++i]; continue; }
+      if (w === '-S' || w === '--suffix') i++;
+      continue;
+    }
+    operands.push(w);
+  }
+  const dest = target || operands.pop();
+  const isDir = (w) => CLAUDE_DIR_OPERAND.test(` ${w}`);
+  if (!dest || !operands.length || !isDir(dest) || /\*$/.test(dest) || operands.some(isDir)) return null;
+  const abs = path.resolve(cwd || process.cwd(), dest.replace(/^~(?=\/|$)/, HOME_DIR));
+  try { if (!fs.statSync(abs).isDirectory()) return null; } catch { return null; }
+  const base = dest.replace(/\/+$/, '');
+  const out = [];
+  for (const src of operands) {
+    const name = path.posix.basename(src.replace(/\/+$/, ''));
+    if (!name || name === '.' || name === '..') return null;
+    out.push(`mv ${src} ${base}/${name}`);
+  }
+  return out;
 }
 
 // After `cd .claude` or `cd ~/.codex`, a bare `settings.json` or `hooks` is
-// the protected path. Later relative words are rewritten with the cd target
+// the protected path. Later relative words are rewritten with the directory
 // in front, and the rewritten command is checked as well. The command name
-// of each segment is left alone.
-const CD_SEGMENT = /^(?:cd|pushd)\s+(?:--\s+)?(["']?)([^\s"';|&()]+)\1$/;
+// of each segment is left alone. A cd inside ( ) or $( ) ends with it, a cd
+// in the background or before a pipe never moves the shell, and relative
+// cds build on the directory before them. A cd at the end of a pipe moves
+// zsh's shell but not bash's, so both directories are checked.
+const CD_SEGMENT = /^(?:cd|pushd)(?:\s+-[LPe@]+)*\s+(?:--\s+)?(["']?)([^\s"';|&()]+)\1$/;
+const HOME_START = /^(?:~|\$HOME|\$\{HOME\})(?:\/|$)/;
+
+function shellSteps(cmd) {
+  const out = [];
+  let cur = '', quote = '';
+  const flush = () => { const t = cur.trim(); if (t) out.push({ seg: t }); cur = ''; };
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (quote) { if (c === quote) quote = ''; cur += c; continue; }
+    if (c === '"' || c === "'") { quote = c; cur += c; continue; }
+    if (c === '\\') { cur += c + (cmd[i + 1] || ''); i++; continue; }
+    if (c === '(' || c === ')') { flush(); out.push({ paren: c }); continue; }
+    if ((c === '&' && (cmd[i - 1] === '>' || cmd[i + 1] === '>')) || (c === '|' && cmd[i - 1] === '>')) { cur += c; continue; }
+    if (/[;&|\n]/.test(c)) {
+      let op = c;
+      if ((c === '&' || c === '|' || c === ';') && cmd[i + 1] === c) { op += c; i++; }
+      else if (c === '|' && cmd[i + 1] === '&') { i++; }
+      flush(); out.push({ sep: op }); continue;
+    }
+    cur += c;
+  }
+  flush();
+  return out;
+}
+
+function joinDir(dir, target) {
+  const full = HOME_START.test(target) || target.startsWith('/') || !dir ? target : `${dir}/${target}`;
+  if (full.length > 4096) return target;
+  const parts = [];
+  for (const p of full.split('/')) {
+    if (p === '' && parts.length) continue;
+    if (p === '.') continue;
+    if (p === '..' && parts.length && !['..', '', '~', '$HOME', '${HOME}'].includes(parts[parts.length - 1])) { parts.pop(); continue; }
+    if (p === '..' && parts.length === 1 && parts[0] === '') continue;
+    parts.push(p);
+  }
+  // Past a sane depth, judge by the last target alone, as a single cd would.
+  if (parts.length > 32) return target;
+  const out = parts.join('/');
+  return out === '' && full.startsWith('/') ? '/' : out;
+}
+
+function prefixWords(seg, dir) {
+  let first = true;
+  return seg.replace(/(^|[\s>])([A-Za-z0-9_][\w.\/-]*|\.[\w-][\w.\/-]*)/g, (m, pre, word) => {
+    if (first && pre === '') { first = false; return m; }
+    first = false;
+    return `${pre}${dir.replace(/\/$/, '')}/${word}`;
+  });
+}
 
 function withCdTargets(cmd) {
-  let dir = null;
-  let changed = false;
-  const segs = shellSegments(cmd).map((seg) => {
+  let dirs = [''], prev = [''];
+  const subshells = [], pushed = [];
+  let inCase = 0, changed = false;
+  const parts = [];
+  const steps = shellSteps(cmd);
+  const sepAt = (k) => (steps[k] && steps[k].sep) || '';
+  for (let k = 0; k < steps.length; k++) {
+    const step = steps[k];
+    if (step.paren === '(') { subshells.push([dirs, prev]); continue; }
+    // In a case statement `pattern)` closes nothing, so stay in scope.
+    if (step.paren === ')') { if (!inCase && subshells.length) [dirs, prev] = subshells.pop(); continue; }
+    if (!step.seg) continue;
+    const seg = step.seg;
+    if (/^case\s/.test(seg)) inCase++;
+    else if (/^esac\b/.test(seg) && inCase) inCase--;
+
+    let next = null;
     const cd = seg.match(CD_SEGMENT);
     if (cd) {
+      if (/^pushd/.test(seg)) pushed.push(dirs);
       const target = cd[2];
-      dir = /^(?:~|\$HOME|\$\{HOME\})(?:\/|$)|^[^$`]+$/.test(target) ? target.replace(/\/+$/, '') : null;
-      return seg;
+      if (target === '-') next = prev;
+      else if (target.startsWith('-')) next = dirs;
+      else if (HOME_START.test(target) || /^[^$`]+$/.test(target)) next = [...new Set(dirs.map((d) => joinDir(d, target.replace(/(.)\/+$/, '$1'))))];
+      else next = [''];
+    } else if (/^cd$/.test(seg)) next = ['~'];
+    else if (/^popd$/.test(seg)) next = pushed.length ? pushed.pop() : dirs;
+    if (next) {
+      const after = sepAt(k + 1);
+      if (after !== '&' && after !== '|') {
+        // Keep the newest few, so a long run of piped cds stays cheap.
+        if (sepAt(k - 1) === '|') dirs = [...new Set([...dirs, ...next])].slice(-4);
+        else { prev = dirs; dirs = next; }
+      }
+      parts.push(seg);
+      continue;
     }
-    if (!dir) return seg;
-    changed = true;
-    let first = true;
-    return seg.replace(/(^|[\s>])([A-Za-z0-9_][\w.\/-]*|\.[\w-][\w.\/-]*)/g, (m, pre, word) => {
-      if (first && pre === '') { first = false; return m; }
-      first = false;
-      return `${pre}${dir}/${word}`;
-    });
-  });
-  return changed ? segs.join(' ; ') : null;
+    if (dirs.includes('')) parts.push(seg);
+    for (const d of dirs) {
+      if (d === '') continue;
+      changed = true;
+      parts.push(prefixWords(seg, d));
+    }
+  }
+  return changed ? parts.join(' ; ') : null;
 }
 
 // Pure check for Bash commands - unit-testable.
@@ -472,8 +596,13 @@ function checkCommandText(rawCmd, safetyLevel, cwd) {
     if (WRITE_VERB.test(cmd))
       return { blocked: true, id: t.id, level: t.level, reason: `writing to protected config: ${t.reason}` };
   }
-  if (removesClaudeDir(cmd)) {
+  const dirChange = claudeDirChange(cmd, cwd);
+  if (dirChange === true) {
     return { blocked: true, id: 'claude-dir', level: 'critical', reason: 'deleting or moving a .claude folder removes its settings and hooks' };
+  }
+  for (const landing of dirChange) {
+    const r = checkCommandText(landing, safetyLevel, cwd);
+    if (r.blocked) return r;
   }
 
   return { blocked: false };
