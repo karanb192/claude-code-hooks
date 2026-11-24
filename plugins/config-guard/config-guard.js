@@ -409,21 +409,23 @@ const DIR_MUTATION = /^(?:(?:sudo|command|env|nice|nohup)\s+(?:-\S+\s+)*)*(?:rm|
 // Moving files into an existing .claude folder does not remove it: judge
 // where each source lands instead. Anything unclear (globs, expansions,
 // -T, a missing folder that mv would create by renaming) counts as removal.
-function claudeDirChange(cmd, cwd) {
+// With judgeMoves off, a move into a .claude folder is left for the pass
+// that knows the folder the move runs in; a removal is still refused.
+function claudeDirChange(cmd, cwd, judgeMoves = true) {
   const landings = [];
   for (const seg of shellSegments(cmd)) {
     const verb = seg.match(DIR_MUTATION);
     if (!verb) continue;
     const args = seg.slice(verb[0].length);
     if (!CLAUDE_DIR_OPERAND.test(args)) continue;
-    const into = /mv$/i.test(verb[0]) ? movesIntoClaudeDir(args, cwd) : null;
+    const into = /mv$/i.test(verb[0]) ? movesIntoClaudeDir(args, cwd, judgeMoves) : null;
     if (!into) return true;
     landings.push(...into);
   }
   return landings;
 }
 
-function movesIntoClaudeDir(args, cwd) {
+function movesIntoClaudeDir(args, cwd, judge = true) {
   const words = args.trim().split(/\s+/).map((w) => w.replace(/^(["'])(.*)\1$/, '$2'));
   if (words.some((w) => !w || /["'`$*?[\]{}\\<>]/.test(w))) return null;
   const operands = [];
@@ -443,6 +445,7 @@ function movesIntoClaudeDir(args, cwd) {
   const dest = target || operands.pop();
   const isDir = (w) => CLAUDE_DIR_OPERAND.test(` ${w}`);
   if (!dest || !operands.length || !isDir(dest) || /\*$/.test(dest) || operands.some(isDir)) return null;
+  if (!judge) return [];
   const abs = path.resolve(cwd || process.cwd(), dest.replace(/^~(?=\/|$)/, HOME_DIR));
   try { if (!fs.statSync(abs).isDirectory()) return null; } catch { return null; }
   const base = dest.replace(/\/+$/, '');
@@ -505,49 +508,73 @@ function joinDir(dir, target) {
   return out === '' && full.startsWith('/') ? '/' : out;
 }
 
+// The command name stays as typed, with sudo-style wrappers and a git
+// subcommand, so `git mv` and `sudo rm` are still recognised.
+const COMMAND_HEAD = /^(?:(?:sudo|command|env|nice|nohup|time)\s+(?:-\S+\s+)*)*(?:git\s+(?:-C\s+\S+\s+|-\S+\s+)*\S+|\S+)/i;
 function prefixWords(seg, dir) {
-  let first = true;
-  return seg.replace(/(^|[\s>])([A-Za-z0-9_][\w.\/-]*|\.[\w-][\w.\/-]*)/g, (m, pre, word) => {
+  const head = (seg.match(COMMAND_HEAD) || [''])[0];
+  return head + prefixArgs(seg.slice(head.length), dir);
+}
+function prefixArgs(seg, dir) {
+  let first = false;
+  // Quoted words and ./ or ../ paths are relative too.
+  return seg.replace(/(^|[\s>])(["']?)((?:\.{1,2}\/|[A-Za-z0-9_]|\.[\w-])[\w.\/-]*)/g, (m, pre, quote, word) => {
     if (first && pre === '') { first = false; return m; }
     first = false;
-    return `${pre}${dir.replace(/\/$/, '')}/${word}`;
+    return `${pre}${quote}${dir.replace(/\/$/, '')}/${word}`;
   });
 }
 
 function withCdTargets(cmd) {
   let dirs = [''], prev = [''];
-  const subshells = [], pushed = [];
+  // The pushd stack is a linked list, so a subshell saves it by reference.
+  const subshells = [];
+  let pushed = null;
   let inCase = 0, changed = false;
   const parts = [];
   const steps = shellSteps(cmd);
   const sepAt = (k) => (steps[k] && steps[k].sep) || '';
   for (let k = 0; k < steps.length; k++) {
     const step = steps[k];
-    if (step.paren === '(') { subshells.push([dirs, prev]); continue; }
+    // A subshell gets copies of the folder, the previous folder and the
+    // pushd stack; none of its changes reach the parent.
+    if (step.paren === '(') { subshells.push([dirs, prev, pushed]); continue; }
     // In a case statement `pattern)` closes nothing, so stay in scope.
-    if (step.paren === ')') { if (!inCase && subshells.length) [dirs, prev] = subshells.pop(); continue; }
+    if (step.paren === ')') {
+      if (!inCase && subshells.length) [dirs, prev, pushed] = subshells.pop();
+      continue;
+    }
     if (!step.seg) continue;
     const seg = step.seg;
     if (/^case\s/.test(seg)) inCase++;
     else if (/^esac\b/.test(seg) && inCase) inCase--;
 
-    let next = null;
+    let next = null, stackOp = null;
     const cd = seg.match(CD_SEGMENT);
     if (cd) {
-      if (/^pushd/.test(seg)) pushed.push(dirs);
+      if (/^pushd/.test(seg)) stackOp = 'push';
       const target = cd[2];
       if (target === '-') next = prev;
       else if (target.startsWith('-')) next = dirs;
       else if (HOME_START.test(target) || /^[^$`]+$/.test(target)) next = [...new Set(dirs.map((d) => joinDir(d, target.replace(/(.)\/+$/, '$1'))))];
       else next = [''];
     } else if (/^cd$/.test(seg)) next = ['~'];
-    else if (/^popd$/.test(seg)) next = pushed.length ? pushed.pop() : dirs;
+    else if (/^popd$/.test(seg)) { stackOp = 'pop'; next = pushed ? pushed.dirs : dirs; }
     if (next) {
       const after = sepAt(k + 1);
+      // Before & or | the cd runs in a subshell and changes nothing here.
       if (after !== '&' && after !== '|') {
-        // Keep the newest few, so a long run of piped cds stays cheap.
-        if (sepAt(k - 1) === '|') dirs = [...new Set([...dirs, ...next])].slice(-4);
-        else { prev = dirs; dirs = next; }
+        if (sepAt(k - 1) === '|') {
+          // Maybe moved (zsh) or not (bash): keep both, newest few only.
+          const both = (a, b) => [...new Set([...a, ...b])].slice(-4);
+          if (stackOp === 'push') pushed = { dirs, next: pushed };
+          if (stackOp === 'pop' && pushed && pushed.next) pushed = { dirs: both(pushed.next.dirs, pushed.dirs), next: pushed.next.next };
+          dirs = both(dirs, next);
+        } else {
+          if (stackOp === 'push') pushed = { dirs, next: pushed };
+          if (stackOp === 'pop' && pushed) pushed = pushed.next;
+          prev = dirs; dirs = next;
+        }
       }
       parts.push(seg);
       continue;
@@ -566,13 +593,15 @@ function withCdTargets(cmd) {
 function checkBashCommand(rawCmd = '', safetyLevel = SAFETY_LEVEL, cwd = process.cwd()) {
   if (typeof rawCmd !== 'string') throw new TypeError('Bash command must be a string');
   if (!rawCmd) return { blocked: false };
-  const direct = checkCommandText(rawCmd, safetyLevel, cwd);
-  if (direct.blocked) return direct;
   const viaCd = withCdTargets(stripTextHeredocs(rawCmd));
-  return viaCd ? checkCommandText(viaCd, safetyLevel, cwd) : direct;
+  // Whether a move's .claude destination exists depends on the folder the
+  // move runs in, so after a cd only the rewritten command judges it.
+  const direct = checkCommandText(rawCmd, safetyLevel, cwd, !viaCd);
+  if (direct.blocked) return direct;
+  return viaCd ? checkCommandText(viaCd, safetyLevel, cwd, true) : direct;
 }
 
-function checkCommandText(rawCmd, safetyLevel, cwd) {
+function checkCommandText(rawCmd, safetyLevel, cwd, dirMoves = true) {
   const cmd = stripTextHeredocs(rawCmd);
   const threshold = LEVELS[safetyLevel] || 2;
 
@@ -596,7 +625,7 @@ function checkCommandText(rawCmd, safetyLevel, cwd) {
     if (WRITE_VERB.test(cmd))
       return { blocked: true, id: t.id, level: t.level, reason: `writing to protected config: ${t.reason}` };
   }
-  const dirChange = claudeDirChange(cmd, cwd);
+  const dirChange = claudeDirChange(cmd, cwd, dirMoves);
   if (dirChange === true) {
     return { blocked: true, id: 'claude-dir', level: 'critical', reason: 'deleting or moving a .claude folder removes its settings and hooks' };
   }

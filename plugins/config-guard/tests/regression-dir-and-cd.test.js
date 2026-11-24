@@ -70,6 +70,29 @@ describe('Regression: the .claude folder and a cd into protected config', () => 
     }
   });
 
+  it('keeps a subshell pushd stack apart from its parent', () => {
+    for (const cmd of ['pushd .claude; (pushd x; popd); popd; rm settings.json', 'pushd .claude; (pushd x); popd; rm settings.json',
+      'pushd .claude; pushd x & popd; rm settings.json']) bashAllowed(cmd);
+    for (const cmd of ['pushd .claude; pushd x; popd; rm settings.json', 'cd .claude; (pushd x; popd; rm settings.json)'])
+      bashBlocked(cmd, 'settings-file');
+  });
+
+  it('checks a move destination in the folder the move runs in', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-mvcd-'));
+    try {
+      fs.mkdirSync(path.join(dir, 'subproject', '.claude'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'other'));
+      const at = (cmd) => checkBashCommand(cmd, 'high', dir).blocked;
+      for (const cmd of ['mv notes.txt subproject/.claude', 'cd subproject && mv notes.txt .claude', 'cd subproject && git mv notes.txt .claude/'])
+        assert.strictEqual(at(cmd), false, `Expected ALLOWED: ${cmd}`);
+      for (const cmd of ['mv notes.txt .claude', 'cd other && mv backup .claude', 'cd other && mv backup "./.claude"',
+        'cd subproject && mv settings.json .claude', 'cd other && sudo rm -rf .claude', 'pushd other; git mv ./.claude x'])
+        assert.strictEqual(at(cmd), true, `Expected BLOCKED: ${cmd}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('still allows copying .claude out, reads after cd, and unrelated folders', () => {
     for (const cmd of ['cp -r .claude /tmp/backup && rm -rf node_modules', 'cd .claude && ls && cat settings.json', 'cd src && rm settings.json',
       'cd build && rm -rf hooks', 'rm -rf .claude-old', 'rm -rf docs/.claude-example']) bashAllowed(cmd);
