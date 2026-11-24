@@ -999,13 +999,24 @@ const CURL_WRITE_SHORT = 'oDc';
 const CURL_WRITE_LONG = /^--(?:output|dump-header|cookie-jar|trace|trace-ascii|stderr|etag-save|libcurl)$/;
 const WGET_SHORT_VALUE = 'OoaPiBetTwQUYDIXlAR';
 const WGET_WRITE_LONG = /^--(?:output-document|output-file|append-output|save-cookies)$/;
+// The file a download is saved as when no output name is given: the last component of the URL path,
+// for curl -O or --remote-name and for wget by default.
+function remoteName(url) {
+  const path = url.replace(/[?#][\s\S]*$/, '').replace(/^[a-z][\w+.-]*:\/\/[^/]*/i, '');
+  let last = path.slice(path.lastIndexOf('/') + 1);
+  try { last = decodeURIComponent(last); } catch {}
+  return last && !last.includes('/') ? last : null;
+}
 function downloadTargets(name, ops) {
   const out = [];
   let dir = null;
   const names = [];
+  const urls = [];
+  let remote = false;
   for (let j = 0; j < ops.length; j++) {
     const v = ops[j].value;
     const long = /^(--[\w-]+)(?:=([\s\S]*))?$/.exec(v);
+    if (name === 'curl' && long && /^--remote-name(?:-all)?$/.test(long[1])) { remote = true; continue; }
     if (long) {
       const isDir = long[1] === (name === 'curl' ? '--output-dir' : '--directory-prefix');
       const isFile = name === 'curl' ? CURL_WRITE_LONG.test(long[1]) : WGET_WRITE_LONG.test(long[1]);
@@ -1017,9 +1028,10 @@ function downloadTargets(name, ops) {
       if (isDir) dir = value; else if (long[1] === '--output' || long[1] === '--output-document') names.push(value);
       continue;
     }
-    if (!/^-[A-Za-z]/.test(v)) continue;
+    if (!/^-[A-Za-z]/.test(v)) { if (!/^-/.test(v)) urls.push(v); continue; }
     const values = name === 'curl' ? CURL_SHORT_VALUE : WGET_SHORT_VALUE;
     for (let c = 1; c < v.length; c++) {
+      if (name === 'curl' && v[c] === 'O') remote = true;
       if (!values.includes(v[c])) continue;
       const attached = c + 1 < v.length;
       const value = attached ? v.slice(c + 1) : ops[++j]?.value;
@@ -1032,6 +1044,9 @@ function downloadTargets(name, ops) {
       break;
     }
   }
+  // curl -O and a wget call without -O save each URL under its own last path component.
+  if (name === 'curl' ? remote : !names.length) for (const u of urls) { const n = remoteName(u); if (n) names.push(n); }
+  if (!dir) for (const n of names) if (n && !out.some(t => t.value === n)) out.push({ value: n, word: null, dir: false });
   // A file name under an output directory is written inside it.
   if (dir) for (const n of names) if (n && !n.startsWith('/')) out.push({ value: `${dir.replace(/\/+$/, '')}/${n}`, word: null, dir: false });
   return out.filter(t => t.value && t.value !== '-');
@@ -1042,19 +1057,21 @@ function downloadTargets(name, ops) {
 // dash, short clusters whose value letters take the rest of the word or the next word, and long
 // options. -C changes the directory for the names after it.
 const TAR_SHORT_VALUE = 'fCTXbKNLgVHIF';
-const TAR_LONG_VALUE = /^--(?:file|directory|files-from|exclude-from|exclude|transform|xform|owner|group|mode|mtime|newer|newer-mtime|after-date|label|use-compress-program|format|blocking-factor|record-size|suffix|to-command|checkpoint-action|index-file|listed-incremental|volno-file|info-script|new-volume-script|rmt-command|rsh-command|strip-components|occurrence|tape-length|starting-file|backup)$/;
+const TAR_LONG_VALUE = /^--(?:file|directory|files-from|exclude-from|exclude|transform|xform|owner|group|mode|mtime|newer|newer-mtime|after-date|label|use-compress-program|format|blocking-factor|record-size|suffix|to-command|checkpoint-action|index-file|listed-incremental|volno-file|info-script|new-volume-script|rmt-command|rsh-command|strip-components|tape-length|starting-file)$/;
 const TAR_LONG_MODE = { '--create': 'c', '--append': 'r', '--update': 'u', '--concatenate': 'A', '--catenate': 'A', '--extract': 'x', '--get': 'x', '--list': 't', '--diff': 'd', '--compare': 'd', '--delete': 'D' };
 const COMPRESSORS = new Set(['gzip', 'gunzip', 'pigz', 'bzip2', 'bunzip2', 'pbzip2', 'xz', 'unxz', 'lzma', 'unlzma', 'zstd', 'unzstd', 'lz4', 'lzip', 'compress']);
 function archiveAccess(name, ops, take, ctx) {
-  const path = (dir, v) => (dir && !v.startsWith('/') && !v.startsWith('~') ? `${dir.replace(/\/+$/, '')}/${v}` : v);
+  const path = (dir, v) => (dir && !v.startsWith('/') && !v.startsWith('~') ? `${dir.replace(/\/+$/, '')}/${v}` : v)
+    .replace(/\/\.(?=\/|$)/g, '').replace(/\/+$/, '') || v;
   if (name === 'tar' || name === 'bsdtar') {
     let mode = null;
     let dir = null;
     let archive = null;
     const operands = [];
+    const dirs = [];
     const value = (letter, v, word) => {
       if (letter === 'f') archive = { v, word };
-      else if (letter === 'C') { dir = v; take('write', secretPath(v, word, ctx, true)); }
+      else if (letter === 'C') { dir = v; dirs.push({ v, word }); }
       else if (letter === 'T' || letter === 'X') take('read', secretPath(v, word, ctx));
     };
     let j = 0;
@@ -1096,6 +1113,8 @@ function archiveAccess(name, ops, take, ctx) {
       operands.push({ v: path(dir, v), word: ops[j] });
     }
     const extracting = mode === 'x';
+    // -C is where an extraction writes and where a new archive reads from; a listing does neither.
+    if (mode !== 't' && mode !== 'd') for (const d of dirs) take(extracting || !mode ? 'write' : 'copy', secretPath(d.v, d.word, ctx, true));
     if (archive && archive.v !== '-') take(extracting || mode === 't' || mode === 'd' ? 'read' : 'write', secretPath(archive.v, archive.word, ctx));
     if (mode === 't' || mode === 'd') return;
     for (const o of operands) take(extracting ? 'write' : 'copy', secretPath(o.v, o.word, ctx, !extracting));
@@ -1104,14 +1123,18 @@ function archiveAccess(name, ops, take, ctx) {
   if (name === 'zip') {
     let archive = null;
     let lists = false;
+    // zip -d names members to delete from the archive, not files on disk.
+    const deleting = ops.some(w => w.value === '-d' || w.value === '--delete');
     for (let j = 0; j < ops.length; j++) {
       const v = ops[j].value;
+      if (v === '-O' || v === '--output-file') { const w = ops[++j]; if (w) take('write', secretPath(w.value, w, ctx)); continue; }
+      if (/^--output-file=/.test(v)) { take('write', secretPath(v.slice(v.indexOf('=') + 1), null, ctx)); continue; }
       if (/^-[xi]$/.test(v) || /^--(?:exclude|include)$/.test(v)) { lists = true; continue; }
       if (/^-[bnOtPZsI]$/.test(v) || /^--(?:temp-path|suffixes|output-file|password|compression-method|split-size|from-date|before-date)$/.test(v)) { j++; continue; }
       if (/^-/.test(v)) continue;
       if (lists) continue;
       if (archive === null) { archive = v; take('write', secretPath(v, ops[j], ctx)); continue; }
-      take('copy', secretPath(v, ops[j], ctx, true));
+      if (!deleting) take('copy', secretPath(v, ops[j], ctx, true));
     }
     return;
   }
@@ -1136,13 +1159,18 @@ function archiveAccess(name, ops, take, ctx) {
   if (/^7z[ar]?$|^7zz$/.test(name)) {
     const command = ops[0]?.value;
     let archive = null;
+    let out = null;
+    const members = [];
     for (let j = 1; j < ops.length; j++) {
       const v = ops[j].value;
-      if (/^-o./.test(v)) { take('write', secretPath(v.slice(2), null, ctx, true)); continue; }
+      if (/^-o./.test(v)) { out = v.slice(2); take('write', secretPath(out, null, ctx, true)); continue; }
       if (/^-/.test(v)) continue;
       if (archive === null) { archive = v; take(/^[au]$/.test(command) ? 'write' : 'read', secretPath(v, ops[j], ctx)); continue; }
       if (/^[au]$/.test(command)) take('copy', secretPath(v, ops[j], ctx, true));
+      else members.push(v);
     }
+    // x keeps a member's folders, e writes it by its last name; both write into -o or here.
+    if (/^[ex]$/.test(command)) for (const m of members) take('write', secretPath(path(out, command === 'e' ? base(m) : m), null, ctx));
     return;
   }
   // A compressor replaces the file it is given, or prints it with -c.

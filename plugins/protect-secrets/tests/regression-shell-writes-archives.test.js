@@ -37,6 +37,20 @@ const REFUSED = [
   ['7z x k.7z -o~/.ssh', 'high', 'write-secret-file'],
   ['gzip .env', 'high', 'copy-secret-file'],
   ['gzip -c .env', 'high', 'copy-secret-file'],
+  // A download saved under the URL's own last name.
+  ['curl -O https://x.example/.env', 'high', 'write-secret-file'],
+  ['curl --remote-name https://x.example/a/.npmrc', 'high', 'write-secret-file'],
+  ['curl -sO https://x.example/.env?x=1', 'high', 'write-secret-file'],
+  ['wget https://x.example/.env', 'high', 'write-secret-file'],
+  ['wget -q https://x.example/.npmrc', 'high', 'write-secret-file'],
+  // Extraction members and zip's output file are destinations too.
+  ['7z x k.7z .env', 'high', 'write-secret-file'],
+  ['7z e k.7z dir/.npmrc', 'high', 'write-secret-file'],
+  ['zip -O ~/.ssh/authorized_keys a.zip x', 'high', 'write-secret-file'],
+  ['zip a.zip x --output-file .env', 'high', 'write-secret-file'],
+  // A new archive read from a protected directory, and an option whose count is optional.
+  ['tar -C ~/.ssh -czf k.tgz config', 'high', 'copy-secret-file'],
+  ['tar --occurrence -xf a.tar .env', 'high', 'write-secret-file'],
 ];
 
 const ALLOWED = [
@@ -52,6 +66,13 @@ const ALLOWED = [
   ['unzip -l k.zip', 'high'],
   ['gzip big.log', 'high'],
   ['tar czf /tmp/e.tgz .env.example', 'high'],
+  ['curl -O https://x.example/data.json', 'high'],
+  ['wget https://x.example/data.json', 'high'],
+  ['wget -O out.txt https://x.example/.env', 'high'],
+  ['7z x k.7z -o/tmp/out', 'high'],
+  // Listing an archive writes nothing, and zip -d deletes a member inside the archive.
+  ['tar -tzf k.tgz -C ~/.ssh', 'high'],
+  ['zip -d out.zip .env', 'high'],
 ];
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {
