@@ -67,13 +67,34 @@ describe('git pull on main', () => {
   });
 });
 
+describe('pull forms read exactly', () => {
+  it('blocks a wrapped git, whose call the guard cannot clear', () => {
+    for (const c of ['env git pull --rebase', 'env GIT_TRACE=1 git pull origin feature']) shouldBlock(c, 'pull-merge-on-protected');
+    shouldBlock('sudo git cherry-pick abc', 'cherry-pick-on-protected');
+    shouldBlock('nice git am fix.patch', 'am-on-protected');
+  });
+  it('a flag with an optional attached value does not take the remote as its value', () => {
+    for (const c of ['git pull --recurse-submodules origin feature', 'git pull --gpg-sign origin feature']) shouldBlock(c, 'pull-merge-on-protected');
+  });
+  it('compares the pulled branch with the branch the pull lands on', () => {
+    for (const c of ['git pull origin master', 'git pull origin HEAD']) shouldBlock(c, 'pull-merge-on-protected');
+    shouldAllow('git pull origin main:main');
+    shouldBlock('git checkout main && git pull origin feature', 'pull-merge-on-protected', 'feature');
+    shouldAllow('git pull origin feature', 'feature');
+  });
+  it('allows modes that write nothing', () => {
+    for (const c of ['git pull --dry-run', 'git pull --dry-run origin feature', 'git revert --no-commit --no-edit HEAD', 'git cherry-pick -n --signoff abc', 'git am --show-current-patch=diff'])
+      shouldAllow(c);
+  });
+});
+
 describe('controls', () => {
   it('allows the same calls on a feature branch', () => {
     for (const c of ['git cherry-pick abc123', 'git revert HEAD', 'git am fix.patch', 'git pull --rebase', 'git pull origin other-branch'])
       shouldAllow(c, 'feature');
   });
   it('allows them on main after a certain switch to a new branch', () => {
-    for (const c of ['git checkout -b fix && git cherry-pick x', 'git switch -c fix && git revert HEAD', 'git checkout -b fix && git pull origin feature'])
+    for (const c of ['git checkout -b fix && git cherry-pick x', 'git switch -c fix && git revert HEAD', 'git checkout -b fix && git pull origin feature', 'git checkout -b fix && git am fix.patch && git commit -m x'])
       shouldAllow(c);
   });
   it('keeps commit and merge refused on main', () => {

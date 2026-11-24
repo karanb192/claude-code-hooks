@@ -613,7 +613,9 @@ const BRANCH_RULES = { commit: 'commit-on-protected', merge: 'merge-on-protected
 // An option value (-m 1, -X theirs) is skipped, and any other long option,
 // a -- or an expansion keeps the call a commit: git accepts abbreviations,
 // so --main is --mainline and takes the next word as its value.
-const NO_COMMIT = { 'cherry-pick': /^(?:-n|--no-commit|--abort|--quit)$/, revert: /^(?:-n|--no-commit|--abort|--quit)$/, am: /^(?:--abort|--quit|--show-current-patch)$/ };
+const NO_COMMIT = { 'cherry-pick': /^(?:-n|--no-commit|--abort|--quit)$/, revert: /^(?:-n|--no-commit|--abort|--quit)$/, am: /^(?:--abort|--quit|--show-current-patch(?:=[a-z]+)?)$/ };
+// Long options that take no separate value and keep a no-commit call free.
+const PICK_FLAGS = /^--(?:no-)?(?:edit|signoff|rerere-autoupdate|gpg-sign)$|^--(?:allow-empty|keep-redundant-commits|reference)$/;
 const SHORT_VALUE = { 'cherry-pick': /^-[A-Za-z]*[mX]$/, revert: /^-[A-Za-z]*[mX]$/, am: /^-[A-Za-z]*[Cp]$/ };
 function commitFree(sub, words) {
   if (!NO_COMMIT[sub]) return false;
@@ -622,6 +624,7 @@ function commitFree(sub, words) {
     const w = words[i];
     if (w.dynamic) return false;
     if (NO_COMMIT[sub].test(w.value)) { free = true; continue; }
+    if (sub !== 'am' && PICK_FLAGS.test(w.value)) continue;
     if (w.value.startsWith('--')) return false;
     if (SHORT_VALUE[sub].test(w.value)) i++;
   }
@@ -630,22 +633,32 @@ function commitFree(sub, words) {
 
 // A pull that merges or rebases into the branch: --rebase (any value but
 // false), -r, --no-ff, or a branch other than main or master named after the
-// remote (git pull origin feature). A word git gets only when the shell runs
-// (an expansion, a glob or a brace list) may be any branch or option, so it
-// counts as one. A plain pull, git pull origin main, --ff-only, --no-rebase
-// and --rebase=false stay allowed.
-const PULL_VALUE = /^(?:-[A-Za-z]*[sXj]|--(?:depth|deepen|shallow-since|shallow-exclude|upload-pack|strategy|strategy-option|jobs|negotiation-tip|server-option|recurse-submodules|refmap|cleanup|gpg-sign))$/;
-function pullMerges(words) {
+// remote whose source is not the branch the pull lands on (on main,
+// git pull origin feature, origin master or origin HEAD). A word git gets only
+// when the shell runs (an expansion, a glob or a brace list) may be any branch
+// or option, so it counts as one. --dry-run changes nothing. A plain pull,
+// git pull origin main, --ff-only, --no-rebase and --rebase=false stay allowed.
+// Only options that always take a separate value skip one: reading a flag as
+// valued would shift the branch into the remote's place.
+const PULL_VALUE = /^(?:-[A-Za-z]*[sXjo]|--(?:depth|deepen|shallow-since|shallow-exclude|upload-pack|strategy|strategy-option|jobs|negotiation-tip|server-option|refmap))$/;
+function pullMerges(words, branch) {
   const pos = [];
+  let merges = false;
+  let dry = false;
   for (let i = 0; i < words.length; i++) {
     const a = words[i].value;
     if (words[i].dynamic || /[*?[]|\{[^}]*(?:,|\.\.)/.test(a)) return true;
     if (a === '--') { pos.push(...words.slice(i + 1)); break; }
-    if (/^(?:--no-ff|--rebase(?:=(?!false$).*)?|-[qvnfkpt46ae]*r[qvnfkpt46ae]*)$/.test(a)) return true;
-    if (PULL_VALUE.test(a)) { i++; continue; }
-    if (!a.startsWith('-')) pos.push(words[i]);
+    if (a === '--dry-run') dry = true;
+    else if (/^(?:--no-ff|--rebase(?:=(?!false$).*)?|-[qvnfkpt46ae]*r[qvnfkpt46ae]*)$/.test(a)) merges = true;
+    else if (PULL_VALUE.test(a)) i++;
+    else if (!a.startsWith('-')) pos.push(words[i]);
   }
-  return pos.slice(1).some(w => !/^\+?(?:(?:refs\/)?heads\/)?(?:main|master|HEAD)(?::.*)?$/.test(w.value));
+  for (const w of pos.slice(1)) {
+    const m = /^\+?(?:refs\/heads\/|heads\/)?([^:]*)(?::.*)?$/.exec(w.value);
+    if (!m || !branch || m[1] !== branch) merges = true;
+  }
+  return merges && !dry;
 }
 
 // The words after the subcommand of every git <sub> call in the views, and
@@ -672,11 +685,13 @@ function gitCalls(views, sub) {
 }
 
 // After its pattern matched: false when the call writes no commit after all.
-function writesCommit(p, views) {
+// Only a call read with certainty can be cleared: a wrapped git (env git,
+// sudo git) or a mention that is not a plain git call keeps the refusal.
+function writesCommit(p, views, branch) {
   if (!p.sub) return true;
   const { calls, sure } = gitCalls(views, p.sub);
-  if (p.sub === 'pull') return calls.some(pullMerges);
-  return !(sure && calls.length && calls.every(w => commitFree(p.sub, w)));
+  if (!sure || !calls.length) return true;
+  return p.sub === 'pull' ? calls.some(w => pullMerges(w, branch)) : !calls.every(w => commitFree(p.sub, w));
 }
 
 // Another repository the command names is not trusted yet (its config can name
@@ -816,11 +831,21 @@ function resolveBranches(cmd, sessionBranch) {
         if (dir && dir.length > 4096) dir = null;
         return;
       }
-      if (w.value !== 'git') { if (!STEADY.has(w.value)) known = false; return; }
+      // A wrapper (env, sudo, nice, timeout) still runs git: read the git it
+      // names, and the line's target branch is no longer certain.
+      let g = k;
+      if (w.value !== 'git') {
+        if (STEADY.has(w.value)) return;
+        known = false;
+        if (base(w.value) !== 'git') {
+          g = words.findIndex((x, i) => i > k && !x.dynamic && base(x.value) === 'git');
+          if (g < 0) return;
+        }
+      }
       if (!dir) { known = false; return; }
       let where = dir;
       let gitDirArg = null;
-      let j = k + 1;
+      let j = g + 1;
       for (; j < words.length && words[j].value.startsWith('-'); j++) {
         const v = words[j].value;
         const m = /^--(git-dir|work-tree)(?:=([\s\S]*))?$/.exec(v);
@@ -874,7 +899,7 @@ function resolveBranches(cmd, sessionBranch) {
       const id = BRANCH_RULES[sub.value];
       if (!id) return;
       const rest = words.slice(j + 1);
-      if (sub.value === 'pull' ? !pullMerges(rest) : commitFree(sub.value, rest)) return;
+      if (sub.value === 'pull' ? !pullMerges(rest, effective(switched.get(repo))) : commitFree(sub.value, rest)) return;
       const rec = switched.get(repo);
       out.ops.push({ id, branch: effective(rec), certain: !!rec && rec.branch !== null && made(rec) });
     };
@@ -964,11 +989,11 @@ function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL) {
     const view = (v) => (!p.segment ? v.text : REF_RULES.has(p.id) ? v.ref : v.masked);
     if (!views.some(v => p.regex.test(view(v)) || (p.plain && p.plain.test(v.masked)))) continue;
     if (p.flags && !views.some(v => p.flags.test(view(v)) || p.plainFlags.test(v.masked)) && plusIsPushOption(cmd)) continue;
-    if (!writesCommit(p, views)) continue;
 
     if (p.branchOnly) {
       if (!branch) branch = getCurrentBranch();
       if (!PROTECTED_BRANCHES.includes(branch)) continue;
+      if (!writesCommit(p, views, branch)) continue;
       // The session is on a protected branch, but every such call in the line
       // runs only after a switch to a branch that is not protected.
       const r = resolve();
