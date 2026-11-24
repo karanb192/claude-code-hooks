@@ -85,7 +85,7 @@ From 1.2.0, a guard that cannot finish its check refuses the call instead of all
 
 ## Data & privacy
 
-Logs decisions (pattern id, tool, truncated target, session id) to `~/.claude/hooks-logs/`. No network calls; everything stays on your local machine.
+Logs decisions (guard, pattern id, level, tool, session id and, for Bash, the command name) to `~/.claude/hooks-logs/`. No path or argument text is logged, so an inline token or password never reaches the log. No network calls; everything stays on your local machine.
 
 ## Uninstall
 
