@@ -766,11 +766,15 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
       return { blocked: true, pattern: p };
     }
   }
-  for (const text of texts) {
-    const pattern = secretFileAccess(text, safetyLevel);
-    if (pattern) return { blocked: true, pattern };
-  }
-  return { blocked: false, pattern: null };
+  const quotedGlobs = literalGlobs(texts[0]);
+  let hit = null;
+  texts.forEach((text, i) => { hit = stronger(hit, secretFileAccess(text, safetyLevel, i ? quotedGlobs : null)); });
+  return hit ? { blocked: true, pattern: hit } : { blocked: false, pattern: null };
+}
+
+// The more severe of two hits; the earlier one on a tie.
+function stronger(a, b) {
+  return !a || (b && LEVELS[b.level] < LEVELS[a.level]) ? b || a : a;
 }
 
 // The shell route to a file the file tools guard: each command's file
@@ -791,6 +795,10 @@ const FILE_READERS = new Set(['cat', 'tac', 'nl', 'head', 'tail', 'less', 'more'
 // The first operand is a pattern, script or filter unless a flag supplies one.
 const PATTERN_FIRST = /^(?:grep|egrep|fgrep|zgrep|rg|ag|ack|sed|awk|gawk|mawk|nawk|jq|yq|gojq)$/;
 const PATTERN_FLAG = /^(?:-[ef]|--(?:regexp|file|expression|from-file)\b)/;
+// grep's -e and sed's -e take the pattern or script as their value; it names no file.
+const PATTERN_VALUE = /^(?:grep|egrep|fgrep|zgrep|rg|sed)$/;
+const PATTERN_VALUE_OPT = /^(?:-[A-Za-z]*e|--(?:regexp|expression))$/;
+const PATTERN_VALUE_LONG = /^--(?:regexp|expression)=/;
 const FILE_COPIERS = new Set(['cp', 'mv', 'rm', 'ln', 'unlink', 'install', 'truncate', 'shred']);
 const FILE_SENDERS = new Set(['scp', 'rsync', 'sftp']);
 // Options whose next word is a value (an identity file is used, not sent).
@@ -801,7 +809,9 @@ const WRAPPERS = {
   stdbuf: /^-[ioe]$/, timeout: /^-[sk]$/, exec: /^-a$/, time: /^-[fo]$/, command: null, builtin: null, nohup: null,
 };
 const CURL_SHORT_VALUE = 'AbcCdDeEFHKmoPQrtTuUwxXyYz';
-const CURL_UPLOAD_LONG = /^--(?:data(?:-binary|-raw|-ascii|-urlencode)?|json|form|upload-file|url-query)$/;
+// --data-raw sends its value as typed: an @ there names no file.
+const CURL_UPLOAD_LONG = /^--(?:data(?:-binary|-ascii|-urlencode)?|json|form|upload-file|url-query)$/;
+const CURL_LITERAL_LONG = /^--data-raw$/;
 const WGET_UPLOAD_LONG = /^--(?:post|body)-file$/;
 const GLOB_SECRET = new RegExp('(?:^|\\/)' + SECRET_GLOB);
 const SECRET_DIRS = [
@@ -823,12 +833,36 @@ function unwrapCommand(words, k) {
   return k;
 }
 
-function secretPath(value, word, safetyLevel, dirs) {
+// A * or ? that the shell expands: outside quotes, escapes and substitutions.
+function activeGlob(word, src) {
+  for (let p = word.start; p < word.end; p++) {
+    if (src[p] !== '*' && src[p] !== '?') continue;
+    if (word.spans.some(s => p >= s.start && p < s.end)) continue;
+    if (word.parts.some(x => typeof x !== 'string' && p >= x.from && p <= x.to)) continue;
+    return true;
+  }
+  return false;
+}
+
+// Glob-shaped words of the typed command whose * or ? is quoted or escaped, by
+// value and count. The bash-split view drops those quotes, so it must not
+// expand them again; a program run by sh -c or eval adds words of its own.
+function literalGlobs(text) {
+  const out = new Map();
+  const read = readShell(text);
+  for (const f of read.frames) for (const cmd of f.cmds) for (const w of cmd.words) {
+    if (!w.op && /[*?]/.test(w.value) && GLOB_SECRET.test(w.value) && !activeGlob(w, text)) out.set(w.value, (out.get(w.value) || 0) + 1);
+  }
+  return out;
+}
+
+function secretPath(value, word, ctx, dirs) {
   if (!value) return null;
+  const { safetyLevel } = ctx;
   const file = checkFilePath(value, safetyLevel);
   if (file.blocked) return file.pattern;
   const threshold = LEVELS[safetyLevel] || 2;
-  if (word && !word.spans.length && /[*?]/.test(value) && GLOB_SECRET.test(value)) {
+  if (word && /[*?]/.test(value) && GLOB_SECRET.test(value) && activeGlob(word, ctx.src) && !ctx.literal.has(value)) {
     return { level: 'critical', reason: 'A glob that can match a secret file' };
   }
   if (dirs) return SECRET_DIRS.find(d => LEVELS[d.level] <= threshold && d.regex.test(value)) || null;
@@ -850,7 +884,10 @@ function uploadArgs(name, ops) {
     const long = /^(--[\w-]+)(?:=([\s\S]*))?$/.exec(v);
     if (long) {
       const upload = name === 'wget' ? WGET_UPLOAD_LONG.test(long[1]) : CURL_UPLOAD_LONG.test(long[1]);
-      if (!upload) continue;
+      if (!upload) {
+        if (name === 'curl' && CURL_LITERAL_LONG.test(long[1]) && long[2] === undefined) j++;
+        continue;
+      }
       const value = long[2] !== undefined ? long[2] : ops[++j]?.value;
       const kind = name === 'wget' || long[1] === '--upload-file' ? 'T' : long[1] === '--data-urlencode' ? 'urlencode' : 'body';
       out.push({ value, kind, word: ops[j] });
@@ -867,56 +904,66 @@ function uploadArgs(name, ops) {
   return out.map(u => ({ value: u.value && uploadedFile(u.value, u.kind), word: u.kind === 'T' ? u.word : null }));
 }
 
-function commandFileAccess(cmd, safetyLevel) {
+function commandFileAccess(cmd, ctx) {
   const found = (kind, file) => file && { id: FILE_ACCESS[kind].id, level: file.level, reason: `${FILE_ACCESS[kind].reason} (${file.reason})` };
+  // Every operand is checked and the most severe file wins, so operand order never lowers the level.
+  let best = null;
+  const take = (kind, file) => { best = stronger(best, found(kind, file)); };
   for (const w of cmd.words) {
     if (!w.target || w.target === '<&') continue;
     const kind = w.target === '<' ? 'read' : WRITE_REDIRECT.has(w.target) ? 'write' : null;
-    const hit = kind && found(kind, secretPath(w.value, w, safetyLevel));
-    if (hit) return hit;
+    if (kind) take(kind, secretPath(w.value, w, ctx));
   }
   const words = argv(cmd);
   const k = unwrapCommand(words, commandIndex(words));
-  if (!words[k] || words[k].dynamic) return null;
+  if (!words[k] || words[k].dynamic) return best;
   const name = base(words[k].value);
   const ops = words.slice(k + 1);
   if (name === 'curl' || name === 'wget') {
-    for (const u of uploadArgs(name, ops)) {
-      const hit = found('send', secretPath(u.value, u.word, safetyLevel));
-      if (hit) return hit;
-    }
-    return null;
+    for (const u of uploadArgs(name, ops)) take('send', secretPath(u.value, u.word, ctx));
+    return best;
   }
-  if (name === 'source' || name === '.') return found('source', ops[0] && secretPath(ops[0].value, ops[0], safetyLevel));
+  if (name === 'source' || name === '.') {
+    if (ops[0]) take('source', secretPath(ops[0].value, ops[0], ctx));
+    return best;
+  }
   const kind = FILE_READERS.has(name) ? 'read' : name === 'tee' ? 'write' : FILE_COPIERS.has(name) ? 'copy' : FILE_SENDERS.has(name) ? 'send' : null;
-  if (!kind) return null;
+  if (!kind) return best;
   let skipPattern = PATTERN_FIRST.test(name) && !ops.some(o => PATTERN_FLAG.test(o.value));
   for (let j = 0; j < ops.length; j++) {
     const v = ops[j].value;
     if (/^-./.test(v)) {
-      if (OPTION_VALUE[name] && OPTION_VALUE[name].test(v)) j++;
-      else if (kind === 'read' && v.includes('=')) {
-        const hit = found(kind, secretPath(v.slice(v.indexOf('=') + 1), null, safetyLevel));
-        if (hit) return hit;
-      }
+      if (PATTERN_VALUE.test(name) && PATTERN_VALUE_OPT.test(v)) { j++; skipPattern = false; }
+      else if (PATTERN_VALUE.test(name) && PATTERN_VALUE_LONG.test(v)) skipPattern = false;
+      else if (OPTION_VALUE[name] && OPTION_VALUE[name].test(v)) j++;
+      else if (kind === 'read' && v.includes('=')) take(kind, secretPath(v.slice(v.indexOf('=') + 1), null, ctx));
       continue;
     }
     if (skipPattern) { skipPattern = false; continue; }
     const value = name === 'dd' ? v.replace(/^(?:if|of)=/, '') : v;
-    const hit = found(kind, secretPath(value, ops[j], safetyLevel, kind === 'copy' || kind === 'send'));
-    if (hit) return hit;
+    take(kind, secretPath(value, ops[j], ctx, kind === 'copy' || kind === 'send'));
   }
-  return null;
+  return best;
 }
 
-function secretFileAccess(text, safetyLevel) {
-  for (const frame of readShell(text).frames) {
-    for (const cmd of frame.cmds) {
-      const hit = commandFileAccess(cmd, safetyLevel);
-      if (hit) return hit;
+// literal: the typed command's quoted glob words; a view that has no more
+// words of that value than the typed command has quoted ones does not expand them.
+function secretFileAccess(text, safetyLevel, literal) {
+  const read = readShell(text);
+  const skip = new Set();
+  if (literal && literal.size) {
+    const seen = new Map();
+    for (const f of read.frames) for (const cmd of f.cmds) for (const w of cmd.words) {
+      if (literal.has(w.value)) seen.set(w.value, (seen.get(w.value) || 0) + 1);
     }
+    for (const [value, count] of literal) if ((seen.get(value) || 0) <= count) skip.add(value);
   }
-  return null;
+  const ctx = { safetyLevel, src: text, literal: skip };
+  let best = null;
+  for (const frame of read.frames) {
+    for (const cmd of frame.cmds) best = stronger(best, commandFileAccess(cmd, ctx));
+  }
+  return best;
 }
 
 // Mask each allowlisted file name on its own; matching the allowlist against
