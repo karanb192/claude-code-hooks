@@ -594,10 +594,10 @@ const BRANCH_RULES = { commit: 'commit-on-protected', merge: 'merge-on-protected
 // Another repository the command names is not trusted yet (its config can name
 // programs git runs), so its branch is read from files and nothing is run there.
 // Only small regular files are read: a FIFO or device would hang the hook.
-function readSmall(file) {
+function readSmall(file, max = 4096) {
   try {
     const st = fs.statSync(file);
-    return st.isFile() && st.size <= 4096 ? fs.readFileSync(file, 'utf8') : null;
+    return st.isFile() && st.size <= max ? fs.readFileSync(file, 'utf8') : null;
   } catch {
     return null;
   }
@@ -626,52 +626,105 @@ function headBranch(gitDir) {
   return m ? m[1] : '';
 }
 
+// A local branch of that name exists: a loose ref or a packed-refs line, in
+// the git dir or, for a linked worktree, its common dir.
+function hasBranch(gitDir, name) {
+  if (!gitDir || !/^[\w./-]+$/.test(name) || /(?:^|\/)\.|\/$/.test(name)) return false;
+  const common = (readSmall(path.join(gitDir, 'commondir')) || '').trim();
+  for (const d of new Set([gitDir, common ? path.resolve(gitDir, common) : gitDir])) {
+    try { if (fs.statSync(path.join(d, 'refs', 'heads', name)).isFile()) return true; } catch {}
+    const packed = readSmall(path.join(d, 'packed-refs'), 1 << 20) || '';
+    if (packed.split('\n').some(l => l.endsWith(' refs/heads/' + name))) return true;
+  }
+  return false;
+}
+
+// A checkout that leaves the branch as it was, or moves only to a branch that
+// is not protected: git checkout -- file, git checkout main -- file, or a name
+// that may be a file, a tag or a new tracking branch.
+const KEEP = Symbol('keep');
+// git checkout - and @{-1}: back to the branch before the last switch.
+const BACK = Symbol('back');
+
 // The branch the target of a checkout or switch leaves checked out: the new
-// branch of -b/-c, '' for --detach, null when the call does not switch or the
-// branch cannot be told (git checkout -, git checkout main -- file).
-function switchTarget(sub, args) {
+// branch of -b/-c, '' for --detach, KEEP, BACK, or null for an older @{-N}.
+// A protected name in any letter case counts as protected: on a
+// case-insensitive disk, MAIN and main are one ref file.
+function switchTarget(sub, args, isBranch) {
+  const norm = (t) => (typeof t === 'string' && PROTECTED_BRANCHES.includes(t.toLowerCase()) ? t.toLowerCase() : t);
   const pos = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === '--') { if (sub === 'checkout' && i < args.length - 1) return null; break; }
+    if (a === '--') { if (sub === 'checkout' && i < args.length - 1) return KEEP; break; }
     const m = /^(?:-[bBcC]|--(?:create|force-create|orphan))(?:=(.*))?$/.exec(a);
-    if (m) return m[1] !== undefined ? m[1] : (args[i + 1] ?? null);
+    if (m) return norm(m[1] !== undefined ? m[1] : (args[i + 1] ?? KEEP));
     if (a === '--detach' || (sub === 'switch' && a === '-d')) return '';
-    if (!a.startsWith('-')) pos.push(a);
+    if (sub === 'checkout' && /^(?:-p|--patch|--pathspec-from-file(?:=.*)?)$/.test(a)) return KEEP;
+    if (a === '-' || !a.startsWith('-')) pos.push(a);
   }
-  return pos.length === 1 && pos[0] !== '-' ? pos[0] : null;
+  // Paths only, several names or none: git restores files, or fails, and stays put.
+  if (pos.length !== 1) return KEEP;
+  if (pos[0] === '-' || pos[0] === '@{-1}') return BACK;
+  if (/^@\{-\d+\}$/.test(pos[0])) return null;
+  // --track origin/main creates and checks out the local branch main.
+  if (args.some(a => /^(?:--track(?:=.*)?|-[A-Za-z]*t[A-Za-z]*)$/.test(a))) return norm(pos[0].replace(/^(?:refs\/)?(?:remotes\/)?[^/]+\//, ''));
+  const t = norm(pos[0]);
+  return sub === 'switch' || PROTECTED_BRANCHES.includes(t) || isBranch(t) ? t : KEEP;
 }
 
+// Commands a line may hold and still have its target branch known for
+// certain: they run nothing else and cannot move HEAD.
+const STEADY = new Set([...INERT, ...DATA_READERS].filter(c => c !== 'tee'));
+const STEADY_GIT = /^(?:add|status|diff|log|show|commit|merge|reset|push|fetch|pull|restore|rm|mv|tag|stash|cherry-pick|revert|checkout|switch|rebase)$/;
+const LIST_END = new Set([';', '\n']);
+
 // Commit, merge, rebase, reset and push reach the branch of the repository the
-// command runs in, not always the session's. An unknown branch adds nothing:
-// the session-branch patterns still apply. Walk each command list in order:
+// command runs in, not always the session's. Walk each command list in order:
 // cd and pushd move the directory, git -C, --git-dir and --work-tree name
 // another repository, and an earlier checkout or switch changes the branch.
-// A cd inside ( ) or { } ends with the group; a checkout changes the
-// repository and outlives it. Returns the first call that lands on a
-// protected branch.
-function reachedProtected(cmd, sessionBranch) {
-  if (!/\bgit\b/.test(cmd)) return null;
+// A cd ends with a ( ) subshell; { }, if and loop bodies run in the current
+// shell, so a cd there stays. A checkout changes the repository and outlives
+// any group. Returns every branch-rule call with the branch it reaches, and
+// known: false when anything in the line could run git out of sight, move
+// HEAD another way or name a directory that cannot be read.
+function resolveBranches(cmd, sessionBranch) {
+  const out = { ops: [], known: false };
+  if (!/\bgit\b/.test(cmd)) return out;
   const read = readShell(cmd);
   const session = process.cwd();
+  let known = read.sure && read.frames.length === 1 && !read.heredocs.length && !/\$\(|`|[<>]\(/.test(cmd);
   for (const f of read.frames) {
-    const dirs = [session];
+    let dir = session;
+    const groups = [];
     const switched = new Map();
-    for (const c of f.cmds) {
-      const g = c.group || 0;
-      while (dirs.length <= g) dirs.push(dirs[dirs.length - 1]);
-      dirs.length = g + 1;
-      const dir = dirs[g];
+    const before = new Map();
+    // A switch counts as made for a later call only when an && chain joins
+    // them and no || or pipe earlier in the same list can skip the switch.
+    let listClean = true;
+    let lastBreak = -1;
+    const close = (sub) => {
+      const top = groups[groups.length - 1];
+      if (!top || top.sub !== sub) return;
+      groups.pop();
+      if (sub) dir = top.dir;
+    };
+    const visit = (c, n) => {
+      if (c.op === '&' || c.words.some(x => x.target && WRITE_REDIRECT.has(x.target) && !SAFE_TARGET.test(x.value))) known = false;
       const words = argv(c);
       const k = commandIndex(words);
+      if (words.slice(0, k).some(x => /^[A-Za-z_]\w*\+?=/.test(x.lead || ''))) known = false;
       const w = words[k];
-      if (!w || w.dynamic || w.spans.length) continue;
+      if (!w) return;
+      if (w.dynamic || w.spans.length) { known = false; return; }
       if (w.value === 'cd' || w.value === 'pushd' || w.value === 'popd') {
         const t = words.slice(k + 1).find(x => !x.value.startsWith('-'));
-        dirs[g] = w.value !== 'popd' && dir && t && !t.dynamic && t.value !== '-' && !t.value.startsWith('~') ? path.resolve(dir, t.value) : null;
-        continue;
+        dir = w.value !== 'popd' && dir && t && !t.dynamic && t.value !== '-' && !t.value.startsWith('~') ? path.resolve(dir, t.value) : null;
+        // Past any real path length the directory is unknown, which keeps a long cd run linear.
+        if (dir && dir.length > 4096) dir = null;
+        return;
       }
-      if (w.value !== 'git' || !dir) continue;
+      if (w.value !== 'git') { if (!STEADY.has(w.value)) known = false; return; }
+      if (!dir) { known = false; return; }
       let where = dir;
       let gitDirArg = null;
       let j = k + 1;
@@ -684,27 +737,52 @@ function reachedProtected(cmd, sessionBranch) {
           const value = m && m[2] !== undefined ? m[2] : val.value;
           if (v === '-C') where = path.resolve(where, value);
           else if (m[1] === 'git-dir') gitDirArg = value;
-        } else if (/^(?:-c|--(?:namespace|super-prefix|config-env|attr-source))$/.test(v)) j++;
+        } else if (/^(?:-c|--(?:namespace|super-prefix|config-env|attr-source))$/.test(v)) { j++; known = false; }
+        else if (/^--(?:namespace|super-prefix|config-env|attr-source)=|^-c./.test(v)) known = false;
       }
       const sub = words[j];
-      if (!where || !sub || sub.dynamic) continue;
+      if (!where || !sub || sub.dynamic) { known = false; return; }
+      const args = words.slice(j + 1).map(x => x.value);
+      if (!STEADY_GIT.test(sub.value) || (sub.value === 'rebase' && (args.filter(a => !a.startsWith('-')).length > 1 || args.some(a => /^(?:-x|--exec|--onto|--root)/.test(a))))) known = false;
       // git resolves --git-dir against the directory every -C leads to.
       const own = where === session && gitDirArg === null;
       const gitDir = gitDirArg !== null ? path.resolve(where, gitDirArg) : findGitDir(where);
       const repo = gitDir || where;
       if (sub.value === 'checkout' || sub.value === 'switch') {
-        const t = switchTarget(sub.value, words.slice(j + 1).map(x => x.value));
-        if (t === null) switched.delete(repo); else switched.set(repo, t);
-        continue;
+        const t = switchTarget(sub.value, args, (name) => hasBranch(gitDir, name));
+        if (t === KEEP) return;
+        const cur = switched.has(repo) ? switched.get(repo) : null;
+        if (t === BACK && before.get(repo)) switched.set(repo, { branch: before.get(repo).branch, at: -1 });
+        else if (t === BACK || t === null) switched.delete(repo);
+        else switched.set(repo, { branch: t, at: listClean && !c.words.some(x => !x.op && !x.spans.length && x.value === '!') ? n : -1 });
+        before.set(repo, cur);
+        return;
       }
       const id = BRANCH_RULES[sub.value];
-      if (!id) continue;
-      const branch = switched.has(repo) ? switched.get(repo)
-        : own ? sessionBranch() : headBranch(gitDir);
-      if (PROTECTED_BRANCHES.includes(branch)) return { id, branch };
-    }
+      if (!id) return;
+      const rec = switched.get(repo);
+      const branch = rec ? rec.branch : own ? sessionBranch() : headBranch(gitDir);
+      out.ops.push({ id, branch, certain: !!rec && rec.at >= 0 && lastBreak < rec.at });
+    };
+    f.cmds.forEach((c, n) => {
+      let h = 0;
+      for (; h < c.words.length; h++) {
+        const x = c.words[h];
+        if (x.op === '(') groups.push({ sub: true, dir });
+        else if (!x.op && !x.target && !x.spans.length && !x.dynamic && KEYWORDS.has(x.value)) {
+          if (OPENERS.has(x.value)) groups.push({ sub: false });
+          else if (CLOSERS.has(x.value)) close(false);
+        } else break;
+      }
+      visit(c, n);
+      for (; h < c.words.length; h++) if (c.words[h].op === ')') close(true);
+      if (c.op !== '&&') lastBreak = n;
+      if (LIST_END.has(c.op)) listClean = true;
+      else if (c.op !== '&&') listClean = false;
+    });
   }
-  return null;
+  out.known = known;
+  return out;
 }
 
 function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL) {
@@ -712,6 +790,9 @@ function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL) {
   // bash removes a backslash-newline outright, joining the two lines.
   cmd = cmd.replace(/\\\r?\n/g, '');
   const views = shellViews(cmd);
+  const sessionBranch = () => (branch === null ? (branch = getCurrentBranch()) : branch);
+  let resolved = null;
+  const resolve = () => resolved || (resolved = resolveBranches(cmd, sessionBranch));
   for (const p of PATTERNS) {
     if (LEVELS[p.level] > threshold) continue;
     if (!views.some(v => p.regex.test(p.segment ? v.masked : v.text))) continue;
@@ -719,6 +800,11 @@ function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL) {
     if (p.branchOnly) {
       if (!branch) branch = getCurrentBranch();
       if (!PROTECTED_BRANCHES.includes(branch)) continue;
+      // The session is on a protected branch, but every such call in the line
+      // runs only after a switch to a branch that is not protected.
+      const r = resolve();
+      const mine = r.ops.filter(o => o.id === p.id);
+      if (r.known && mine.length && mine.every(o => o.certain && !PROTECTED_BRANCHES.includes(o.branch))) continue;
     }
 
     const reason = p.reason.replace('{branch}', branch || '');
@@ -726,7 +812,7 @@ function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL) {
   }
 
   if (LEVELS.high <= threshold) {
-    const hit = reachedProtected(cmd, () => (branch === null ? (branch = getCurrentBranch()) : branch));
+    const hit = resolve().ops.find(o => PROTECTED_BRANCHES.includes(o.branch));
     if (hit) {
       const p = PATTERNS.find(x => x.id === hit.id);
       return { blocked: true, pattern: p, reason: p.reason.replace('{branch}', hit.branch) };

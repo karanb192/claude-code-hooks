@@ -108,6 +108,63 @@ describe('a checkout or switch earlier in the line', () => {
   it('a file checkout from main does not switch branch', () => shouldAllow('git checkout main -- a.txt && git commit -m x'));
 });
 
+describe('a checkout that only restores files keeps the branch', () => {
+  it('blocks a commit after switching to main and restoring a file', () =>
+    shouldBlock('git checkout main && git checkout -- a.txt && git commit -m x', 'commit-on-protected'));
+  it('blocks the same after a file named without --, a patch checkout or a file from another branch', () => {
+    for (const c of [
+      'git checkout main && git checkout a.txt && git commit -m x',
+      'git switch main && git checkout -p && git commit -m x',
+      'git checkout main && git checkout feature a.txt && git commit -m x',
+    ]) shouldBlock(c, 'commit-on-protected');
+  });
+  it('git checkout - returns to the branch before the last switch', () => {
+    shouldAllow('git checkout main && git checkout - && git commit -m x');
+    shouldAllow('git checkout -b fix && git checkout main && git checkout - && git commit -m x');
+  });
+  it('a tracking checkout of origin/main lands on main', () =>
+    shouldBlock('git switch -t origin/main && git commit -m x', 'commit-on-protected'));
+});
+
+describe('a cd inside { } or an if body stays for the rest of the line', () => {
+  it('blocks a commit after cd in a brace group', () =>
+    shouldBlock('{ cd ../on-main; } && git commit -m x', 'commit-on-protected'));
+  it('blocks a commit after cd in an if body', () =>
+    shouldBlock('if true; then cd ../on-main; fi; git commit -m x', 'commit-on-protected'));
+  it('a cd inside a ( ) subshell still ends with it', () => {
+    for (const c of ['(cd ../on-main) && git commit -m x', '(cd ../on-main && git status); git commit -m x'])
+      shouldAllow(c);
+  });
+});
+
+describe('a session on main that switches to a new branch first', () => {
+  const onMain = (c) => checkCommand(c, 'main');
+  it('allows a commit chained after creating a new branch', () => {
+    for (const c of ['git checkout -b feature2 && git commit -m x', 'git switch -c fix && git commit -am x', 'git checkout -b fix && git push -u origin fix'])
+      assert.strictEqual(onMain(c).blocked, false, c);
+  });
+  it('blocks when the switch may not have happened or may be undone', () => {
+    for (const c of [
+      'git commit -m x',
+      'git checkout -b fix; git commit -m x',
+      'false || git checkout -b fix && git commit -m x',
+      '! git checkout -b fix && git commit -m x',
+      'git checkout -b fix | cat && git commit -m x',
+      'git checkout main & git checkout -b fix && git commit -m x',
+      'git checkout -b fix && git commit -m "$(git checkout main)"',
+      'git checkout -b fix && git branch -M main && git commit -m x',
+      'git checkout -b fix && echo "ref: refs/heads/main" > .git/HEAD && git commit -m x',
+      'git checkout -b fix && sh -c "git checkout main" && git commit -m x',
+      'git checkout -b fix && GIT_DIR=../on-main/.git git commit -m x',
+      'git checkout -b fix && git rebase origin/fix main && git commit -m x',
+      'git checkout -b fix && make && git commit -m x',
+      'git checkout -b fix && git commit -m x && git checkout main && git commit -m y',
+      'git checkout -b MAIN && git commit -m x',
+      'git checkout something && git commit -m x',
+    ]) assert.strictEqual(onMain(c).pattern?.id, 'commit-on-protected', c);
+  });
+});
+
 describe('another repository named by cd, git -C or --git-dir', () => {
   it('blocks the recorded inputs', () => {
     shouldBlock('git -C ../on-main commit -m "wip"', 'commit-on-protected');
