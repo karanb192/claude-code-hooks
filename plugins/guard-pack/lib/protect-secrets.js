@@ -115,10 +115,14 @@ const SINK_PREFIX = '(?:^|[|;&(`"\'!\\n]|\\b(?:do|then|else)\\b)\\s*'
   + '(?:(?:sudo|npx|uvx|bunx|pnpm\\s+dlx|command|time|exec|nice|nohup|env|timeout|xargs)\\b[^;|&\\n]*?\\s+)?'
   + '(?:[^\\s"\';|&]*\\/)?';
 const SINK_END = '(?=[\\s<]|$)';
+// /dev/null is the one input that is always empty; /dev/shm and /dev/fd hold real data.
+const NOT_DEV_NULL = '(?![\'"]?\\/dev\\/null[\'"]?(?![^\\s;|&<>()]))';
+// An input redirect written before the command: <file gemini.
+const LEAD_REDIRECT = '(?:^|[;&|({\\n])\\s*(?<!<)<(?![<(])\\s*' + NOT_DEV_NULL + '[^\\s;|&<>()]+\\s+(?:[^\\s"\';|&]*\\/)?';
 const SINK_CMD = SINK_PREFIX + SINK_CLI + SINK_END;
 const sinkCmd = (cli) => SINK_PREFIX + cli + SINK_END;
 // A segment with balanced quotes as opaque units: a name inside a quoted prompt is prose, not an operand.
-const SEG_QA = '(?:[^;|&\\n"\']|"[^"\\n]*"|\'[^\'\\n]*\')*?';
+const SEG_QA = '(?:[^;|&\\n"\']|"[^"]*"|\'[^\']*\')*?';
 // Commands whose stdout is the file they are given (ssh -i and kubectl --kubeconfig are not).
 const CONTENT_CMD = '\\b(?:cat|tac|head|tail|bat|more|less|sops|gpg|age|base64|xxd|od|rev|sed|awk|grep|jq|yq|strings|openssl\\s+enc|python3?|node|ruby|perl)\\b';
 const SINK_HOST = '(?:generativelanguage\\.googleapis\\.com|aiplatform\\.googleapis\\.com|api\\.openai\\.com|[\\w.-]+\\.openai\\.azure\\.com|api\\.anthropic\\.com|openrouter\\.ai|api\\.mistral\\.ai|api\\.groq\\.com|api\\.together\\.xyz|api\\.deepseek\\.com|api\\.x\\.ai|api\\.cohere\\.com|api\\.perplexity\\.ai|api\\.fireworks\\.ai|api\\.cerebras\\.ai|router\\.huggingface\\.co|bedrock-runtime(?:-fips)?\\.[\\w-]+\\.amazonaws\\.com|integrate\\.api\\.nvidia\\.com|api\\.deepinfra\\.com)';
@@ -157,12 +161,12 @@ const GREP_ANY = '(?:[^|;&\\n]|(?<=[<>])&|&(?=>))';
 // The same, stopping at a -- after which every word is an operand.
 const GREP_ARGS = '(?:(?!\\s--(?:\\s|$))' + GREP_ANY + ')';
 const GREP_TERM = '(?:password|secret|api.?key|token|credential)';
-// Not a heredoc, herestring, process substitution or /dev/*.
-const REDIRECT_IN = '(?<!<)<(?![<(])\\s*(?!\\/dev\\/)';
+// Not a heredoc, herestring, process substitution or /dev/null.
+const REDIRECT_IN = '(?<!<)<(?![<(])\\s*' + NOT_DEV_NULL;
 // -T as a whole flag: the patterns run case-insensitive, so a bare -T also matches --max-time.
-const UPLOAD_FLAG = '(?:(?<![\\w-])-T(?![A-Za-z0-9-])\\s*|--(?:upload|post|body)-file[=\\s]+)';
+const UPLOAD_FLAG = '(?:(?<![\\w-])-[A-Za-z]*T(?![A-Za-z0-9-])\\s*|--(?:upload|post|body)-file[=\\s]+)';
 const FILE_BODY = '(?:@|' + REDIRECT_IN + '|\\$\\(\\s*(?:cat|head|tail|<)\\s+|`\\s*(?:cat|head|tail)\\s+|' + UPLOAD_FLAG + ')';
-const SUBST_FILE = '(?:\\$\\(\\s*(?:cat|head|tail|<)\\s+|`\\s*(?:cat|head|tail)\\s+)["\']?[^\\s"\';|&<>()-]';
+const SUBST_FILE = '(?:\\$\\(\\s*(?:(?:cat|head|tail)\\s+|<\\s*)|`\\s*(?:cat|head|tail)\\s+)["\']?[^\\s"\';|&<>()-]';
 const BODY_FLAG = '(?:-d|--data(?:-binary|-raw|-urlencode|-ascii)?|--json|-F|--form(?:-string)?)';
 const API_BODY = '(?:' + BODY_FLAG + '\\s*=?\\s*["\']?(?:[\\w-]+=?)?(?:@|\\$\\(\\s*(?:cat|head|tail|<)\\s+|`\\s*cat\\s+)|' + REDIRECT_IN + '|' + UPLOAD_FLAG + ')';
 const HTTPIE_FILE_ITEM = '\\s(?:[\\w-]+:?=?)?@';
@@ -185,7 +189,45 @@ const SINK_FILE_FLAG = Object.entries(CLI_FILE_FLAGS)
   .concat([sinkCmd('(?:gemini(?:-cli)?|openai)') + '[^;|&\\n]*' + AT_PATH])
   .join('|');
 // A reader with a file operand, so `ps aux | head | llm` is a filter, not a read.
-const READER_CMD = '(?:\\b(?:cat|head|tail|bat|tac|more|less)\\b(?:\\s+-\\S+)*\\s+[^\\s|;&<>-]|\\bgit\\s+(?:diff|show)\\b)';
+// sed, awk, jq and grep take a script or pattern first, so they need a second operand.
+const OPERAND = '(?:\'[^\']*\'|"[^"]*"|[^\\s|;&<>\'"-])';
+// Short options whose value is the next word (sort -k 3, cut -d , -f 1), so the value is not read as a
+// file. The patterns match case-insensitively, so a letter is left out when its other case is a flag
+// without a value (sort -s, xxd -C, od -a). cat, head, tail and the other readers the rule read before
+// keep their earlier reading, so head -n 5 in a pipe still counts as reading a file.
+const READER_VALUE_OPTS = {
+  'cat|bat|more|less|rev|tac|head|tail': '', sort: 'kot', cut: 'bcdf', fold: 'w',
+  uniq: 'fsw', nl: 'bdfhilnsvw', paste: 'd', column: 'cos', strings: 'ent', xxd: 'glos', od: 'jnt',
+  hexdump: 'ens', base64: 'bw',
+};
+const LONG_VALUE_OPT = '--(?:key|lines|bytes|delimiter|fields|characters|field-separator|width|output|separator)';
+// A value is never another reader's name, so one reader's options cannot run on through the next.
+const OPT_VALUE = '(?!(?:' + Object.keys(READER_VALUE_OPTS).join('|') + ')(?:\\s|$))(?:\'[^\']*\'|"[^"]*"|[^\\s|;&<>\'"][^\\s|;&<>]*)';
+const readerOptions = (letters) => '(?:\\s+(?:'
+  + (letters ? '-[A-Za-z]*[' + letters + ']\\s+' + OPT_VALUE + '|' : '')
+  + LONG_VALUE_OPT + '\\s+' + OPT_VALUE
+  + '|-(?!-(?:key|lines|bytes|delimiter|fields|characters|field-separator|width|output|separator)(?:\\s|$))'
+  + (letters ? '(?![A-Za-z]*[' + letters + '](?:\\s|$))' : '') + '\\S+))*';
+const READER_CMD = '(?:' + Object.entries(READER_VALUE_OPTS)
+  .map(([cmds, letters]) => '\\b(?:' + cmds + ')\\b' + readerOptions(letters) + '\\s+' + OPERAND).join('|')
+  + '|\\b(?:sed|awk|gawk|jq|yq|grep|rg)\\b(?:\\s+-\\S+)*\\s+' + OPERAND + '\\S*(?:\\s+-\\S+)*\\s+' + OPERAND
+  + '|\\bdd\\b[^;|&\\n]*\\bif=|\\bgit\\s+(?:diff|show|blame|cat-file(?!\\s+-[est](?:\\s|$))|log\\b[^;|&\\n]*\\s(?:-p|--patch)\\b))';
+// curl and wget read a pipe only through a - or /dev/stdin argument (-d @-, -T -, -K -, -i -) or a
+// substitution that can read it. A - that is the value of an output or header option (-o -, -c -,
+// -w -, --stderr -) or sits inside a longer word ('X-Label: -') is not request input. The rules match
+// case-insensitively, so -D - stays counted: its letter is also -d.
+// HTTPie, xh and curlie send a piped stdin as the body by default.
+const OUTPUT_OPT = '(?:-[A-Za-z]*[ohcw]|--(?:output|dump-header|header|cookie-jar|stderr|write-out|output-document))';
+const STDIN_ARG = '(?:[@<]["\']?-["\']?(?=[\\s;|&)]|$)|(?<!(?:^|\\s)' + OUTPUT_OPT + ')[\\s=](?:"-"|\'-\'|-)(?=[\\s;|&)]|$)'
+  + '|(?<![\\w-])-(?![A-Za-z]*[ohcw]["\']?-)[A-Za-z]+["\']?-["\']?(?=[\\s;|&)]|$)'
+  + '|(?<![\\w-])-[A-Za-z]*T\\s*["\']?\\.["\']?(?=\\s|$)|--upload-file[=\\s]+["\']?\\.["\']?(?=\\s|$)|\\/dev\\/(?:stdin|fd\\/0)(?![\\w\\/])|\\/proc\\/self\\/fd\\/0(?![\\w\\/])|\\$\\(|`|<\\()';
+// The readers the rule read before still count with any HTTP command after them.
+const OLD_READER = '(?:\\b(?:cat|head|tail|bat|tac|more|less)\\b(?:\\s+-\\S+)*\\s+[^\\s|;&<>-]|\\bgit\\s+(?:diff|show)\\b)';
+const PIPE_HTTP = '(?:(?<=\\|\\s*)(?:curl|wget)(?=\\s)(?=[^;|&\\n]*' + STDIN_ARG + ')|(?<!\\|\\s*)' + HTTP_CMD + '|(?<=\\|\\s*)' + HTTPIE_CMD + '|(?<=\\|\\s*)curlie(?=\\s))';
+// Every branch of the two strict file rules names a sink CLI or a model API host. Testing for that name
+// first spares a command without one the large rule regexes, which V8 compiles on their first real use.
+const SINK_NAME = new RegExp(SINK_CLI, 'i');
+const SINK_HOST_NAME = new RegExp(SINK_HOST, 'i');
 
 // Bash patterns that expose or exfiltrate secrets
 const BASH_PATTERNS = [
@@ -242,8 +284,8 @@ const BASH_PATTERNS = [
   { level: 'strict', id: 'base64-secrets',       regex: new RegExp('\\bbase64\\b[^|;]*(?:\\.env|credentials|secrets|id_rsa|\\.pem|' + SECRET_OPERAND + ')', 'i'), also: base64ReadsSecret, reason: 'Base64 encoding secrets' },
 
   // STRICT - Delegation sinks (any file contents into an external model)
-  { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&\\n]*' + SINK_CMD + '|' + SINK_CMD + SEG_QA + REDIRECT_IN + FILE_TOKEN + '|' + SINK_CMD + '[^;|&\\n]*' + SUBST_FILE + '|' + SINK_FILE_FLAG, 'i'), reason: 'Piping file contents to an external model CLI' },
-  { level: 'strict', id: 'model-api-file-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + API_BODY + FILE_TOKEN + '|' + HTTPIE_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + HTTPIE_FILE_ITEM + '[\\w.~\\/]|' + READER_CMD + '[^;&\\n]*' + HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')', 'i'), reason: 'Sending file contents to a model API endpoint' },
+  { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&\\n]*' + SINK_CMD + '|' + SINK_CMD + SEG_QA + REDIRECT_IN + FILE_TOKEN + '|' + SINK_CMD + '[^;|&\\n]*' + SUBST_FILE + '|' + SINK_CMD + '[^;|&\\n]*(?:\\$\\(|`)\\s*' + READER_CMD + '|' + LEAD_REDIRECT + SINK_CLI + SINK_END + '|' + SINK_FILE_FLAG, 'i'), pre: SINK_NAME, reason: 'Piping file contents to an external model CLI' },
+  { level: 'strict', id: 'model-api-file-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + API_BODY + FILE_TOKEN + '|' + HTTPIE_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + HTTPIE_FILE_ITEM + '[\\w.~\\/]|' + OLD_READER + '[^;&\\n]*' + HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')|' + READER_CMD + '[^;&\\n]*' + PIPE_HTTP + '(?=[^;|&\\n]*' + SINK_HOST + ')', 'i'), pre: SINK_HOST_NAME, reason: 'Sending file contents to a model API endpoint' },
 ];
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
@@ -776,7 +818,7 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   // quoted: the rule also reads the copy where a quoted separator is blanked. also: a check in code.
   const quoted = views.concat(read.map(v => maskTemplates(v.masked)));
   const rule = BASH_PATTERNS.find(p => LEVELS[p.level] <= threshold
-    && ((p.quoted ? quoted : views).some(v => p.regex.test(v)) || (p.also && texts.some(t => p.also(t)))));
+    && ((p.quoted ? quoted : views).some(v => (!p.pre || p.pre.test(v)) && p.regex.test(v)) || (p.also && texts.some(t => p.also(t)))));
   const quotedGlobs = literalGlobs(texts[0]);
   let hit = null;
   texts.forEach((text, i) => { hit = stronger(hit, secretFileAccess(text, safetyLevel, i ? quotedGlobs : null)); });

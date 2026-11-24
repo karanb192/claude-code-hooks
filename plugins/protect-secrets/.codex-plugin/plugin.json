@@ -1,7 +1,7 @@
 {
   "name": "protect-secrets",
   "description": "Check shell commands and native patches for sensitive files and secret exposure in Codex CLI. Uses the same patterns as the Claude Code plugin; broad shell searches and open-shell input are outside coverage.",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "author": {
     "name": "Karan Bansal",
     "url": "https://github.com/karanb192"
