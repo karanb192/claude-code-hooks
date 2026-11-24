@@ -192,14 +192,17 @@ function redirectsInto(cmd, tokenRegex) {
 }
 
 // patch the program writes its target unless a --dry-run or --check follows
-// it before any `--`. git's --patch and --no-patch options only change what
-// diff, show and log print; on checkout, restore or stash they still write.
+// it before any `--`. A command that is git diff, show, log or whatchanged
+// only prints, so its --patch option and a pathspec named fix.patch do not
+// count; --patch on checkout, restore or stash still writes.
 const PATCH_OPTION = /(^|['"=])--?(?:no-)?patch\b/gi;
-const GIT_READ     = /\bgit\b(?:\s+-(?:[Cc]\s+[^\s-]\S*|[Cc]\S+|[^\sCc]\S*))*\s+(?:diff|show|log|whatchanged)\b/i;
+const GIT_READ     = /^\s*(?:\w+=\S*\s+)*(?:(?:sudo|command|nice|nohup|time|env)\s+)*git\b(?:\s+-(?:[Cc]\s+[^\s-]\S*|[Cc]\S+|[^\sCc]\S*))*\s+(?:diff|show|log|whatchanged)\b/i;
 function patchWrites(cmd) {
-  for (const seg of cmd.split(/[|;&\n#()`]/)) {
+  for (const piece of cmd.split(/[|;&\n#()`]/)) {
+    // A pager or config value before the subcommand can still run patch.
+    const git = GIT_READ.exec(piece);
+    const seg = git ? git[0] : piece;
     if (!/\bpatch\b/i.test(seg)) continue;
-    const readOnlyGit = GIT_READ.test(seg);
     const words = seg.trim().split(/\s+/);
     let dryRun = false;
     for (let i = words.length - 1; i >= 0; i--) {
@@ -207,7 +210,7 @@ function patchWrites(cmd) {
       if (w === '--') dryRun = false;
       else if (w === '--dry-run' || w === '--check') dryRun = true;
       if (!/\bpatch\b/i.test(w)) continue;
-      if (/\bpatch\b/i.test(w.replace(PATCH_OPTION, '$1')) ? !dryRun : !readOnlyGit) return true;
+      if (!/\bpatch\b/i.test(w.replace(PATCH_OPTION, '$1')) || !dryRun) return true;
     }
   }
   return false;
@@ -218,7 +221,7 @@ function patchWrites(cmd) {
 // appending writes the -f archive, and any mode writes the -g snapshot,
 // index and volume files, so those operands are checked instead.
 // --remove-files deletes what it archived.
-const TAR_RUN       = /(?<![\w.])(?:tar|bsdtar)\b([^|;&\n]*)/gi;
+const TAR_RUN       = /(?<![\w.])(?:tar|bsdtar)\b([\s\S]*)/i;
 const TAR_CD        = /\s-[a-zA-Z]*C|\s--(?:cd|directory)\b/;
 // Short options that take no argument, so a mode letter after them in one
 // cluster is still a mode letter. Long options count by prefix, as GNU tar
@@ -227,20 +230,90 @@ const TAR_NOARG     = 'ahijklmnopqvwyzABDEGJMOPQRSUWYZ';
 const TAR_EXTRACT   = new RegExp(`\\s-[a-zA-Z0-9]*x|\\s--(?:ext|ge)|^\\s+[a-zA-Z]*x`);
 const TAR_MODE      = new RegExp(`\\s-[${TAR_NOARG}]*[ctruA]|\\s--(?:create|list|append|update|catenate|concatenate|delete)\\b|^\\s+[a-zA-Z]*[ctruA]`);
 const TAR_ARCHIVING = new RegExp(`\\s-[${TAR_NOARG}]*[cruA]|\\s--(?:create|append|update|catenate|concatenate|delete)\\b|^\\s+[a-zA-Z]*[cruA]`);
-const TAR_ARCHIVE   = /\s-[a-zA-Z]*f\s*([^\s;|&]+)|\s--file(?:=|\s+)([^\s;|&]+)|^\s+[a-zA-Z]*f[a-zA-Z]*\s+([^\s;|&]+)/g;
-const TAR_SIDE_FILE = /\s-[a-zA-Z]*g\s*([^\s;|&]+)|\s--(?:listed-incremental|index-file|volno-file)(?:=|\s+)([^\s;|&]+)/g;
+// Shell words with quotes and backslashes resolved, so a quoted path with
+// spaces is judged whole. Unquoted separators end the list.
+function shellWords(text) {
+  const words = [];
+  let cur = '', quote = '', inWord = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === quote) quote = '';
+      else if (c === '\\' && quote === '"' && /["\\$`]/.test(text[i + 1] || '')) cur += text[++i];
+      else cur += c;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; inWord = true; continue; }
+    if (c === '\\') { cur += text[++i] || ''; inWord = true; continue; }
+    if (/\s/.test(c)) { if (inWord) words.push(cur); cur = ''; inWord = false; continue; }
+    cur += c; inWord = true;
+  }
+  if (inWord) words.push(cur);
+  return words;
+}
+
+// Split at ; | & and newlines that are not inside quotes.
+function unquotedSegments(cmd) {
+  const out = [];
+  let cur = '', quote = '';
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (quote) { if (c === quote) quote = ''; else if (c === '\\' && quote === '"') { cur += c + (cmd[i + 1] || ''); i++; continue; } cur += c; continue; }
+    if (c === '"' || c === "'") { quote = c; cur += c; continue; }
+    if (c === '\\') { cur += c + (cmd[i + 1] || ''); i++; continue; }
+    if (/[;&|\n]/.test(c)) { out.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  out.push(cur);
+  return out;
+}
+
+// The files a tar call writes besides its directory: the -f archive and the
+// -g, --listed-incremental, --index-file and --volno-file targets. A short
+// option takes the rest of its word, or the next word when nothing is left.
+function tarOutputs(args) {
+  const words = shellWords(args);
+  const archive = [], side = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    const long = w.match(/^--(file|listed-incremental|index-file|volno-file)(?:=(.*))?$/);
+    if (long) {
+      const v = long[2] !== undefined ? long[2] : words[i + 1];
+      if (v !== undefined) (long[1] === 'file' ? archive : side).push(v);
+      continue;
+    }
+    const dashless = i === 0 && /^[a-zA-Z]+$/.test(w) && !w.startsWith('-');
+    if (dashless) {
+      if (w.includes('f') && words[1] !== undefined) archive.push(words[1]);
+      continue;
+    }
+    if (!/^-[^-]/.test(w)) continue;
+    for (const [letter, list] of [['f', archive], ['g', side]]) {
+      const at = w.indexOf(letter, 1);
+      if (at < 0 || !/^[a-zA-Z]*$/.test(w.slice(1, at))) continue;
+      const rest = w.slice(at + 1);
+      const v = rest || words[i + 1];
+      if (v !== undefined) list.push(v);
+    }
+  }
+  return { archive, side };
+}
+
 function tarWrites(cmd, tokenRegex) {
   for (const seg of cmd.split(/[|;&]/)) {
     const m = /\b(?:tar|bsdtar)\b/i.exec(seg);
     if (m && /\s-[a-zA-Z]*[dx]\b/i.test(seg.slice(m.index + m[0].length))) return true;
   }
-  const named = (re, args) => [...args.matchAll(re)].some(f => tokenRegex.test(' ' + (f[1] || f[2] || f[3])));
-  for (const m of cmd.replace(/\\\r?\n/g, ' ').matchAll(TAR_RUN)) {
+  const named = (list) => list.some((v) => tokenRegex.test(' ' + v));
+  for (const seg of unquotedSegments(cmd.replace(/\\\r?\n/g, ' '))) {
+    const m = TAR_RUN.exec(seg);
+    if (!m) continue;
     const args = m[1];
     const extracts = TAR_EXTRACT.test(args);
     if (extracts ? TAR_CD.test(args) || /\s-[a-zA-Z]*c\b/i.test(args) : TAR_CD.test(args) && !TAR_MODE.test(args)) return true;
-    if (/\s--rem/.test(args) || named(TAR_SIDE_FILE, args)) return true;
-    if (!extracts && TAR_ARCHIVING.test(args) && named(TAR_ARCHIVE, args)) return true;
+    const { archive, side } = tarOutputs(args);
+    if (/\s--rem/.test(args) || named(side)) return true;
+    if (!extracts && TAR_ARCHIVING.test(args) && named(archive)) return true;
   }
   return false;
 }

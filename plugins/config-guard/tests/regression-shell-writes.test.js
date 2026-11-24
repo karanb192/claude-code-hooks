@@ -74,6 +74,26 @@ describe('Regression: shell write forms', () => {
     ]) bashBlocked(cmd, 'settings-file');
   });
 
+  it('allows pathspecs that name a patch file in git diff', () => {
+    for (const cmd of ['git diff -- .claude/settings.json fix.patch', 'git diff -- patch .claude/settings.json']) bashAllowed(cmd);
+  });
+
+  it('still denies patch run through a git pager or config value', () => {
+    for (const cmd of ['git -c core.pager=patch diff .claude/settings.json', 'GIT_PAGER=patch git diff .claude/settings.json',
+      'git apply --include=.claude/settings.json fix.patch']) bashBlocked(cmd, 'settings-file');
+  });
+
+  it('reads a quoted tar output path with spaces as one word', () => {
+    for (const cmd of [
+      'tar -cf "Example Project/.claude/settings.json" -C . x',
+      'tar -cf "Example Project/.claude/settings.json" x',
+      'tar -c -g "My Dir/.claude/settings.json" -f out.tar -C . x',
+      'tar --file="A B/.claude/settings.json" -c x',
+      'tar -cf A\\ B/.claude/settings.json -C . x',
+    ]) bashBlocked(cmd, 'settings-file');
+    bashAllowed('tar -cf "Example Project/out.tar" -C . .claude/settings.json');
+  });
+
   it('allows creating or listing an archive with tar -C', () => {
     for (const cmd of [
       'tar -cf backup.tar -C . .claude/settings.json',
