@@ -91,6 +91,11 @@ describe('Regression: git output options onto protected config', () => {
     for (const cmd of ['env printf git diff --output=.claude/settings.json', 'echo git diff --output=.claude/settings.json']) bashAllowed(cmd);
   });
 
+  it('keeps the plain reading of git named by a path after a cd', () => {
+    bashBlocked('cd ; rm\n/usr/bin/git .claude rev-parse settings.json');
+    bashBlocked('cd .claude && /usr/bin/git -C x rm settings.json', 'settings-file');
+  });
+
   it('allows a search pattern or message that reads --output=', () => {
     for (const cmd of [
       'git grep "--output=.claude/settings.json" README.md',

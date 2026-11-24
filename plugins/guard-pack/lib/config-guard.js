@@ -875,8 +875,18 @@ function prefixWords(seg, dir) {
   const wrap = seg.match(WRAPPERS)[0];
   const rest = seg.slice(wrap.length);
   const git = gitHead(rest);
-  const head = git ? rest.slice(0, git.end) : (rest.match(/^\S*/) || [''])[0];
-  return wrap + head + prefixArgs(rest.slice(head.length), dir);
+  const first = (rest.match(/^\S*/) || [''])[0];
+  const plain = wrap + first + prefixArgs(rest.slice(first.length), dir);
+  if (!git) return plain;
+  const withHead = wrap + rest.slice(0, git.end) + prefixArgs(rest.slice(git.end), dir);
+  // git named by a path keeps the plain reading too, so nothing the
+  // narrower reading misses goes unchecked.
+  return gitByPath(rest) ? `${plain} ; ${withHead}` : withHead;
+}
+
+function gitByPath(text) {
+  const first = rawWords(text)[0];
+  return !!first && !/^git$/i.test(first.value);
 }
 
 // git -C <dir> works like a cd for its own paths: drop the -C options and
@@ -968,6 +978,10 @@ function withCdTargets(cmd) {
         const r = rewriteGitDir(seg, d);
         if (r !== seg) changed = true;
         parts.push(r);
+      }
+      if (gitByPath(seg.slice(seg.match(WRAPPERS)[0].length))) {
+        if (dirs.includes('')) parts.push(seg);
+        for (const d of dirs) if (d !== '') { changed = true; parts.push(prefixWords(seg, d)); }
       }
       continue;
     }
