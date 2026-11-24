@@ -28,6 +28,13 @@ const REFUSED = [
   ['git diff HEAD~1:.env HEAD:.env', 'high'],
   ['git blame .env', 'high'],
   ['git show HEAD:.npmrc', 'high'],
+  // --exit-code and --check still print lines, and a patch flag wins over a stat.
+  ['git diff --exit-code -- .env', 'high'],
+  ['git diff --check -- .env', 'high'],
+  ['git diff --stat --patch -- .env', 'high'],
+  ['git log --stat --patch -- .npmrc', 'high'],
+  ['git grep -e TOKEN -- .npmrc', 'high'],
+  ['git grep -f .npmrc README.md', 'high'],
 ];
 
 const ALLOWED = [
@@ -40,6 +47,13 @@ const ALLOWED = [
   ['git diff --stat -- .env', 'high'],
   ['git log -p', 'high'],
   ['git diff main...feature -- src/', 'high'],
+  // A stat of two blobs prints no contents, and search text or an author is not a path.
+  ['git diff --stat HEAD:.env HEAD~1:.env', 'high'],
+  ['git diff --name-only HEAD~1:.npmrc HEAD:.npmrc', 'high'],
+  ['git grep -e .npmrc README.md', 'high'],
+  ['git grep --regexp .npmrc README.md', 'high'],
+  ['git log -p --author .npmrc', 'high'],
+  ['git log -p --grep .npmrc', 'high'],
 ];
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {
