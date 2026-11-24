@@ -15,19 +15,19 @@ const standalone = require('../protect-secrets.js');
 const bundled = require('../../guard-pack/lib/protect-secrets.js');
 
 const REFUSED = [
-  ["SEC-10", "cat /proc/self/task/1/environ", 'high'],
-  ["SEC-10-b", "cat /proc//self/environ", 'high'],
-  ["SEC-10-c", "cd /proc/self && cat environ", 'high'],
-  ["SEC-10-d", "tr \"\\0\" \"\\n\" < /proc/self/./environ", 'high'],
-  ["relative-cd", "cd /proc && cd self && cat environ", 'high'],
-  ["next-line", "cd /proc/self\ncat environ", 'high'],
-  ["substitution", "cd /proc/self && echo \"$(<environ)\"", 'high'],
+  ["cat /proc/self/task/1/environ", 'high'],
+  ["cat /proc//self/environ", 'high'],
+  ["cd /proc/self && cat environ", 'high'],
+  ["tr \"\\0\" \"\\n\" < /proc/self/./environ", 'high'],
+  ["cd /proc && cd self && cat environ", 'high'],
+  ["cd /proc/self\ncat environ", 'high'],
+  ["cd /proc/self && echo \"$(<environ)\"", 'high'],
   // A cd inside ( ... ) changes only that subshell's directory.
-  ["subshell-cd-out", "cd /proc/self && (cd /); cat environ", 'high'],
-  ["subshell-read", "(cd /proc/self; cat environ)", 'high'],
-  ["cd-option", "cd -P /proc/self && cat environ", 'high'],
-  ["cd-back", "cd /proc/self && cd - && cat environ", 'high'],
-  ["builtin-cd", "builtin cd /proc/self && cat environ", 'high'],
+  ["cd /proc/self && (cd /); cat environ", 'high'],
+  ["(cd /proc/self; cat environ)", 'high'],
+  ["cd -P /proc/self && cat environ", 'high'],
+  ["cd /proc/self && cd - && cat environ", 'high'],
+  ["builtin cd /proc/self && cat environ", 'high'],
 ];
 
 const ALLOWED = [
@@ -47,8 +47,8 @@ const ALLOWED = [
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {
   describe(`${name}: recorded inputs are refused`, () => {
-    for (const [id, command, level] of REFUSED) {
-      it(`${id} (${level}): ${JSON.stringify(command)}`, () => {
+    for (const [command, level] of REFUSED) {
+      it(`${level}: ${JSON.stringify(command)}`, () => {
         const r = mod.check('Bash', { command }, level);
         assert.strictEqual(r.blocked, true, `allowed: ${command}`);
       });

@@ -15,18 +15,18 @@ const standalone = require('../protect-secrets.js');
 const bundled = require('../../guard-pack/lib/protect-secrets.js');
 
 const REFUSED = [
-  ["PS-06", "echo $DB_PASS", 'high'],
-  ["PS-06.1", "echo $GH_PAT", 'high'],
-  ["SEC-06", "echo $S3_SECRET_KEY", 'high'],
-  ["SEC-06-b", "echo $K8S_TOKEN", 'high'],
-  ["SEC-06-c", "echo $B2_APPLICATION_KEY", 'high'],
-  ["SEC-06-d", "echo $R2_ACCESS_KEY_ID", 'high'],
-  ["SEC-06-e", "printf \"%s\\n\" \"$S3_SECRET_KEY\"", 'high'],
-  ["SEC-08", "echo $DB_PASS", 'high'],
-  ["SEC-08-b", "printf \"%s\" \"$DB_PASSWD\"", 'high'],
-  ["SEC-08-c", "echo $MYSQL_PWD", 'high'],
-  ["SEC-08-d", "echo $GH_PAT", 'high'],
-  ["SEC-08-e", "echo $GPG_PASSPHRASE", 'high'],
+  ["echo $DB_PASS", 'high'],
+  ["echo $GH_PAT", 'high'],
+  ["echo $S3_SECRET_KEY", 'high'],
+  ["echo $K8S_TOKEN", 'high'],
+  ["echo $B2_APPLICATION_KEY", 'high'],
+  ["echo $R2_ACCESS_KEY_ID", 'high'],
+  ["printf \"%s\\n\" \"$S3_SECRET_KEY\"", 'high'],
+  ["echo $DB_PASS", 'high'],
+  ["printf \"%s\" \"$DB_PASSWD\"", 'high'],
+  ["echo $MYSQL_PWD", 'high'],
+  ["echo $GH_PAT", 'high'],
+  ["echo $GPG_PASSPHRASE", 'high'],
 ];
 
 const ALLOWED = [
@@ -40,8 +40,8 @@ const ALLOWED = [
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {
   describe(`${name}: recorded inputs are refused`, () => {
-    for (const [id, command, level] of REFUSED) {
-      it(`${id} (${level}): ${JSON.stringify(command)}`, () => {
+    for (const [command, level] of REFUSED) {
+      it(`${level}: ${JSON.stringify(command)}`, () => {
         const r = mod.check('Bash', { command }, level);
         assert.strictEqual(r.blocked, true, `allowed: ${command}`);
       });

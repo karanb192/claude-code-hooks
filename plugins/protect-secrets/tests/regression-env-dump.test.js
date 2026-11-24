@@ -15,38 +15,38 @@ const standalone = require('../protect-secrets.js');
 const bundled = require('../../guard-pack/lib/protect-secrets.js');
 
 const REFUSED = [
-  ["PS-05", "export -p", 'high'],
-  ["PS-05.1", "env -0", 'high'],
-  ["SEC-05", "cd /app\nenv", 'high'],
-  ["SEC-05-b", "env\nls", 'high'],
-  ["SEC-05-c", "env > /tmp/e.txt", 'high'],
-  ["SEC-05-d", "env 2>&1", 'high'],
-  ["SEC-05-e", "/usr/bin/env", 'high'],
-  ["SEC-05-f", "command env", 'high'],
-  ["SEC-05-g", "if true; then env; fi", 'high'],
-  ["SEC-05-h", "{ env; }", 'high'],
-  ["SEC-05-i", "echo \"`env`\"", 'high'],
-  ["SEC-05-j", "export -p", 'high'],
-  ["SEC-05-k", "declare -p", 'high'],
-  ["SEC-05-l", "env -0", 'high'],
-  ["unset-cluster", "env -ui", 'high'],
-  ["command-p", "command -p env", 'high'],
+  ["export -p", 'high'],
+  ["env -0", 'high'],
+  ["cd /app\nenv", 'high'],
+  ["env\nls", 'high'],
+  ["env > /tmp/e.txt", 'high'],
+  ["env 2>&1", 'high'],
+  ["/usr/bin/env", 'high'],
+  ["command env", 'high'],
+  ["if true; then env; fi", 'high'],
+  ["{ env; }", 'high'],
+  ["echo \"`env`\"", 'high'],
+  ["export -p", 'high'],
+  ["declare -p", 'high'],
+  ["env -0", 'high'],
+  ["env -ui", 'high'],
+  ["command -p env", 'high'],
   // A wrapper's option value is not the command it runs.
-  ["exec-a", "exec -a NAME env", 'high'],
-  ["nice-n", "nice -n 5 env", 'high'],
-  ["sudo-u", "sudo -u root env", 'high'],
-  ["sudo-user", "sudo --user root env", 'high'],
-  ["timeout", "timeout 5 env", 'high'],
-  ["timeout-s", "timeout -s KILL 5 env", 'high'],
-  ["stdbuf-attached", "stdbuf -o0 env", 'high'],
-  ["stdbuf-separate", "stdbuf -o 0 env", 'high'],
-  ["time-p", "time -p env", 'high'],
+  ["exec -a NAME env", 'high'],
+  ["nice -n 5 env", 'high'],
+  ["sudo -u root env", 'high'],
+  ["sudo --user root env", 'high'],
+  ["timeout 5 env", 'high'],
+  ["timeout -s KILL 5 env", 'high'],
+  ["stdbuf -o0 env", 'high'],
+  ["stdbuf -o 0 env", 'high'],
+  ["time -p env", 'high'],
   // env runs the next word, which can be env again.
-  ["env-runs-env", "env -u FOO env", 'high'],
-  ["env-assign-env", "env FOO=1 env", 'high'],
+  ["env -u FOO env", 'high'],
+  ["env FOO=1 env", 'high'],
   // Still refused on purpose: main refuses every printenv by name, and this branch keeps that.
-  ["printenv-lookup", "command -v printenv", 'high'],
-  ["printenv-empty-env", "env -i printenv", 'high'],
+  ["command -v printenv", 'high'],
+  ["env -i printenv", 'high'],
 ];
 
 const ALLOWED = [
@@ -76,8 +76,8 @@ const ALLOWED = [
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {
   describe(`${name}: recorded inputs are refused`, () => {
-    for (const [id, command, level] of REFUSED) {
-      it(`${id} (${level}): ${JSON.stringify(command)}`, () => {
+    for (const [command, level] of REFUSED) {
+      it(`${level}: ${JSON.stringify(command)}`, () => {
         const r = mod.check('Bash', { command }, level);
         assert.strictEqual(r.blocked, true, `allowed: ${command}`);
       });
