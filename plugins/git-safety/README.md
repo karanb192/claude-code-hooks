@@ -34,18 +34,18 @@ Export configuration variables before launching Codex. An ask-mode match becomes
 
 Blocked at the default `high` level:
 
-- `git push` naming `main` or `master` as a ref (`origin main`, `HEAD:main`, `+main`, `refs/heads/main`; any flags). A branch that only contains the word, such as `my-main-feature`, is not blocked
-- `git branch -d` / `-D` / `--delete` on `main` or `master`
+- `git push` naming `main` or `master` as a ref (`origin main`, `HEAD:main`, `+main`, `refs/heads/main`, `heads/main`; any flags). A branch that only contains the word, such as `my-main-feature`, is not blocked
+- `git branch -d` / `-D` / `--delete` on `main` or `master`, with any other flags or branch names in the same call (`-d -f main`, `-Dq main`, `-D old main`)
 - `git commit`, `git merge`, `git rebase`, `git reset`, `git push` while the current branch **is** `main` or `master`
-- `gh pr merge`, `gh pr close`, `gh issue close`, `gh release delete`, `gh repo delete`
+- `gh pr merge`, `gh pr close`, `gh issue close`, `gh release delete`, `gh repo delete`, also with flags such as `-R owner/repo` between the two words
 
-`strict` adds any force-push (`--force` or `-f`; `--force-with-lease` stays allowed). `critical` applies no git-safety rules at all, deferring entirely to `block-dangerous-commands`.
+`strict` adds any force-push (`--force`, `-f` alone or clustered as in `-fu`, or a `+` refspec such as `origin +feature`; `--force-with-lease` stays allowed). `critical` applies no git-safety rules at all, deferring entirely to `block-dangerous-commands`.
 
 **Composition with `block-dangerous-commands`:** that hook already blocks force-push (any, and to main/master) and `git reset --hard` on any branch, so at `high` the two don't overlap. Run git-safety at `strict` if you use it on its own.
 
 ## How it reads a command
 
-It shares its command reader with [block-dangerous-commands](../block-dangerous-commands#how-it-reads-a-command), so quotes, escapes and variables do not change the verdict. `git 'push' origin main` and `g=git; $g push origin main` are refused, and so is `git "push" origin HEAD` while on main. Quoted commit messages, PR bodies and heredoc text that only mention a command are not matched, so `git commit -m "run gh pr merge after review"` is allowed on a feature branch.
+It shares its command reader with [block-dangerous-commands](../block-dangerous-commands#how-it-reads-a-command), so quotes, escapes and variables do not change the verdict. `git 'push' origin main` and `g=git; $g push origin main` are refused, and so is `git "push" origin HEAD` while on main. Global options before the subcommand do not hide it either, including values with quotes or escapes inside the word: `git -c user.name="Ada Lovelace" commit`, `git -C my\ repo commit` and `git --attr-source HEAD commit` are read as commits. Quoted commit messages, PR bodies and heredoc text that only mention a command are not matched, so `git commit -m "run gh pr merge after review"` is allowed on a feature branch.
 
 ### What it does not catch
 
