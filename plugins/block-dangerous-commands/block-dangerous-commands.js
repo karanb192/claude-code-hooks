@@ -116,8 +116,9 @@ const PATTERNS = [
   // download may arrive as a file, on stdin (< <(...), <<< "$(...)") or as -c
   // text, in $(...) or backticks.
   // The words are also read with the shell reader (downloadRunsAsCode), so a quoted or
-  // escaped program name ("bash" <(curl ...), \\bash -c "$(curl ...)") is the same program.
-  { level: 'high', id: 'curl-subst-sh',  regex: /(?:curl|wget)\b/, confirm: (t) => SUBST_SH.test(t) || downloadRunsAsCode(t), reason: 'running a downloaded script through process or command substitution (RCE risk)' },
+  // escaped program or downloader name ("bash" <(curl ...), \\bash <(cu''rl ...)) is the same
+  // program; the rule's prefilter is any substitution.
+  { level: 'high', id: 'curl-subst-sh',  regex: /\$\(|`|<\(/, confirm: (t) => SUBST_SH.test(t) || downloadRunsAsCode(t), reason: 'running a downloaded script through process or command substitution (RCE risk)' },
   // Flag and branch in either order, within one command segment; +main is a force refspec.
   // A bare --force-with-lease never matches the (?=\s|...) after --force, so it needs no exception.
   { level: 'high', id: 'git-force-main', segment: true, regex: new RegExp(GIT + 'push\\b(?=[^;&|\\n]*' + FORCE_FLAG + ')(?=[^;&|\\n]*' + MAIN_REF + ')|' + GIT + 'push\\b[^;&|\\n]*\\s["\']?\\+(?:[^\\s:]*:)?(?:refs\\/heads\\/)?(?:main|master)(?=$|[\\s;&|)<>"\'])'), reason: 'force push to main/master' },
@@ -885,75 +886,162 @@ function programWord(words) {
 }
 
 const DOWNLOADER = /^(?:curl|wget)$/;
-// Every word is a shell option (-x, +e, --, -o pipefail), so the next word is
-// the script; a word after the script is only an argument to it.
-function onlyOptions(words) {
-  for (let k = 0; k < words.length; k++) {
-    const w = words[k].value;
-    if (!/^[-+]./.test(w)) return false;
-    if (/^[-+][oO]$/.test(w)) k++;
-  }
-  return true;
-}
-const CODE_FLAG = /^-[A-Za-z]*c[A-Za-z]*$/;
+const SUBSTITUTION = /\$\(|`|<\(/;
 
-// The word a shell runs as its program after -c: the first word after the -c
-// option and any further options.
-function codeWord(words, from) {
-  let k = words.findIndex((w, j) => j > from && CODE_FLAG.test(w.value));
-  if (k < 0) return null;
-  for (k++; k < words.length && /^[-+]./.test(words[k].value); k++) {
-    if (/^[-+][oO]$/.test(words[k].value)) k++;
+// How a shell (or source, .) is run, reading its options once: -o, -O,
+// --rcfile and --init-file take a value, a cluster with c makes the first
+// operand the program text, one with s reads commands from stdin, and -- or -
+// ends the options. The first operand is otherwise the script.
+function shellInvocation(words, from, shell) {
+  let dashC = false;
+  let dashS = false;
+  let k = from + 1;
+  for (; k < words.length; k++) {
+    const w = words[k].value;
+    if (w === '--' || w === '-') { k++; break; }
+    if (!/^[-+]./.test(w)) break;
+    if (!shell) continue;
+    if (/^--(?:rcfile|init-file)$/.test(w)) { k++; continue; }
+    if (/^[-+][A-Za-z]+$/.test(w)) {
+      if (w[0] === '-' && w.includes('c')) dashC = true;
+      if (w[0] === '-' && w.includes('s')) dashS = true;
+      if (/[oO]$/.test(w)) k++;
+    }
   }
-  return words[k] || null;
+  const operand = k < words.length ? words[k] : null;
+  return {
+    code: dashC ? operand : null,
+    script: !dashC && !dashS ? operand : null,
+    readsStdin: !dashC && (dashS || !operand),
+  };
+}
+
+// The file descriptor a redirect right before this word acts on ('' is the
+// default), read from the source text, since the reader keeps only the operator.
+function redirectFd(src, word) {
+  const m = /(\d*)(?:<<<|&>>|&>|>>|>\||>&|<>|<&|<|>)\s*$/.exec(src.slice(Math.max(0, word.start - 64), word.start));
+  return m ? m[1] : null;
+}
+
+// stdout of this command goes to a file or another descriptor (> f, >> f, &> f, >&2).
+function stdoutRedirected(src, cmd) {
+  return cmd.words.some((w) => w.target && /^(?:>|>>|>\||>&|&>|&>>)$/.test(w.target) && (w.target[0] === '&' || ['', '1'].includes(redirectFd(src, w))) && w.value !== '/dev/stdout');
+}
+
+const CURL_SHORT_VALUE = 'AbcCdDeEFHKmPQrTuUwxXyYzt';
+// Whether curl or wget writes the download to stdout. wget saves to a file
+// unless -O names - or /dev/stdout. curl writes each URL to stdout unless an
+// -o (other than -) or -O claims it; a word whose role is unclear counts as a
+// URL, so the doubt falls on the side of stdout.
+function downloadToStdout(name, values) {
+  if (name === 'wget') {
+    for (let k = 0; k < values.length; k++) {
+      const w = values[k];
+      if (w === '--') break;
+      let v = null;
+      if (w.startsWith('--output-document')) v = w.includes('=') ? w.slice(w.indexOf('=') + 1) : values[k + 1];
+      else if (/^-[^-]/.test(w) && w.indexOf('O') > 0) v = w.indexOf('O') < w.length - 1 ? w.slice(w.indexOf('O') + 1) : values[k + 1];
+      if (v === '-' || v === '/dev/stdout') return true;
+    }
+    return false;
+  }
+  let urls = 0;
+  let files = 0;
+  for (let k = 0; k < values.length; k++) {
+    const w = values[k];
+    if (w === '--') { urls += values.length - k - 1; break; }
+    if (w.startsWith('--')) {
+      const eq = w.indexOf('=');
+      const opt = eq < 0 ? w.slice(2) : w.slice(2, eq);
+      if (opt === 'config') return true;
+      if (opt === 'remote-name-all') return false;
+      if (opt === 'remote-name') files++;
+      else if (opt === 'output') { const v = eq < 0 ? values[++k] : w.slice(eq + 1); if (v !== '-') files++; }
+      else if (opt === 'url') { urls++; if (eq < 0) k++; }
+      continue;
+    }
+    if (/^-./.test(w)) {
+      for (let j = 1; j < w.length; j++) {
+        if (w[j] === 'K') return true;
+        if (w[j] === 'O') { files++; continue; }
+        if (w[j] === 'o') { const v = j < w.length - 1 ? w.slice(j + 1) : values[++k]; if (v !== '-') files++; break; }
+        if (CURL_SHORT_VALUE.includes(w[j])) { if (j === w.length - 1) k++; break; }
+      }
+      continue;
+    }
+    urls++;
+  }
+  return urls > files;
 }
 
 // A curl or wget whose output the command around it runs as code, in
 // <(...), $(...) or backticks, directly or inside another substitution:
-// - a shell, source or . given it as the script (the first word after any options);
-// - a shell given it on stdin (< <(...), <<<) with no -c;
+// - a shell, source or . given it as the script;
+// - a shell given it on stdin (fd 0 of < <(...) or <<<) with no script and no -c;
 // - a shell given it anywhere in its -c text, unquoted or in double quotes: the
 //   outer shell expands it first, so the shell parses the downloaded text;
 // - eval given it in any argument.
+// A substitution carries the download only when the downloader's stdout
+// reaches its output (not with curl -o, wget without -O -, or > file).
 // The text of a -c program or of eval is read again the same way, so a single
 // quoted program that itself runs a download (bash -c 'eval "$(curl ...)"') is
 // caught too, while one that only prints it (bash -c 'echo $(curl ...)') is not.
 // The line is read with the shell reader, so quotes and escapes in a program
-// name do not hide it, and the program is found past wrappers such as sudo.
+// or downloader name do not hide it, and the program is found past wrappers.
 function downloadRunsAsCode(cmd, depth = 0) {
   const read = readShell(cmd);
-  // A frame carries a download when it runs curl or wget or holds a frame that
-  // does. A frame is created before the frames inside it, so one pass from the
-  // last frame to the first settles it.
+  const emits = (c) => {
+    const words = argv(c);
+    const program = programWord(words);
+    if (!program || program.dynamic || !DOWNLOADER.test(base(program.value))) return false;
+    return downloadToStdout(base(program.value), words.slice(words.indexOf(program) + 1).map((w) => w.value)) && !stdoutRedirected(cmd, c);
+  };
+  // A frame is created before the frames inside it, so one pass from the last
+  // frame to the first settles which ones carry a download.
+  const redirected = new Map();
+  const quiet = (c) => { if (!redirected.has(c)) redirected.set(c, stdoutRedirected(cmd, c)); return redirected.get(c); };
   const carries = new Set();
   for (let i = read.frames.length - 1; i >= 0; i--) {
     const f = read.frames[i];
-    if (!carries.has(f) && f.cmds.some((c) => { const w = programWord(argv(c)); return w && !w.dynamic && DOWNLOADER.test(base(w.value)); })) carries.add(f);
-    if (carries.has(f) && f.parent) carries.add(f.parent.cmd.frame);
+    if (!carries.has(f) && f.cmds.some(emits)) carries.add(f);
+    if (carries.has(f) && f.parent && !quiet(f.parent.cmd)) carries.add(f.parent.cmd.frame);
   }
+  // Words right after a < operator (< <(...)): input, not arguments.
+  const inputs = new Set();
+  for (const f of read.frames) {
+    for (const c of f.cmds) c.words.forEach((w, k) => { if (k > 0 && c.words[k - 1].op === '<') inputs.add(w); });
+  }
+  // Each command around a substitution is read once, however many it holds.
+  const seen = new Map();
+  const outerOf = (outer) => {
+    if (seen.has(outer)) return seen.get(outer);
+    const words = argv(outer).filter((w) => !inputs.has(w));
+    const program = programWord(words);
+    let info = null;
+    if (program && !program.dynamic) {
+      const name = base(program.value);
+      const shell = PIPE_SHELL.test(name);
+      const from = words.indexOf(program);
+      const index = new Map(words.map((w, k) => [w, k]));
+      info = { name, shell, from, index, run: shell || name === 'source' || name === '.' ? shellInvocation(words, from, shell) : null };
+    }
+    seen.set(outer, info);
+    return info;
+  };
   for (const f of read.frames) {
     if ((f.kind !== 'proc' && f.kind !== 'subst') || !f.parent || !carries.has(f)) continue;
     const { cmd: outer, word } = f.parent;
-    const words = argv(outer);
-    const program = programWord(words);
-    if (!program || program.dynamic) continue;
-    const name = base(program.value);
-    const shell = PIPE_SHELL.test(name);
-    const from = words.indexOf(program);
-    const at = words.indexOf(word);
-    if (name === 'eval') { if (at > from) return true; continue; }
-    if (!shell && name !== 'source' && name !== '.') continue;
-    const before = words.slice(from + 1, at < 0 ? words.length : at);
-    const dashC = shell && before.some((w) => CODE_FLAG.test(w.value));
+    const info = outerOf(outer);
+    if (!info) continue;
+    const { name, shell, from, index, run } = info;
+    if (name === 'eval') { if ((index.has(word) ? index.get(word) : -1) > from) return true; continue; }
+    if (!run) continue;
     const part = word.parts.find((x) => x.frame === f);
-    const k = outer.words.indexOf(word);
-    if (part && part.open === '<(') {
-      if (k > 0 && outer.words[k - 1].op === '<') { if (shell && !dashC) return true; continue; }
-      if (at > from && !dashC && onlyOptions(before)) return true;
-    } else if (shell) {
-      if (word.target === '<<<') { if (!dashC) return true; continue; }
-      if (dashC && word === codeWord(words, from)) return true;
-    }
+    const stdinFd = ['', '0'].includes(redirectFd(cmd, word));
+    if (part && part.open === '<(' && inputs.has(word)) { if (shell && run.readsStdin && stdinFd) return true; continue; }
+    if (word.target === '<<<') { if (shell && run.readsStdin && stdinFd) return true; continue; }
+    if (part && part.open === '<(' && word === run.script) return true;
+    if (shell && word === run.code) return true;
   }
   if (depth >= 3) return false;
   for (const f of read.frames) {
@@ -965,8 +1053,8 @@ function downloadRunsAsCode(cmd, depth = 0) {
       const from = words.indexOf(program);
       let text = null;
       if (name === 'eval') text = words.slice(from + 1).map((w) => w.value).join(' ');
-      else if (PIPE_SHELL.test(name)) { const w = codeWord(words, from); text = w && w.value; }
-      if (text && /(?:curl|wget)\b/.test(text) && downloadRunsAsCode(text, depth + 1)) return true;
+      else if (PIPE_SHELL.test(name)) { const code = shellInvocation(words, from, true).code; text = code && code.value; }
+      if (text && SUBSTITUTION.test(text) && downloadRunsAsCode(text, depth + 1)) return true;
     }
   }
   return false;
