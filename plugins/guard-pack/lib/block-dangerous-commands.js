@@ -73,16 +73,24 @@ const SUBST = '(?:\\$\\(|`)\\s*';
 // An option that takes a value never matches the plain-flag branch, so a long
 // option run stays linear. A value is one shell word: quoted parts and escapes
 // are part of it (--config "/my dir"), a short option may carry it attached
-// (-Htcp://h), and any long option may carry =value (--debug=true). A quote
-// that never closes runs to the next space, as a plain word does.
-const SHELL_WORD = '(?:[^\\s"\'\\\\]|\\\\[\\s\\S]|"[^"]*"|\'[^\']*\'|"(?![^"]*")\\S*|\'(?![^\']*\')\\S*)+';
+// (-Htcp://h), and any long option may carry =value (--debug=true). A double
+// quoted part may hold escaped quotes ("/my \"x dir"), and a quote that never
+// closes runs to the next space, as a plain word does. In a short cluster the
+// first option that takes a value takes the rest of the word (-papp) or, at the
+// end of the cluster, the next word (-Dc prod).
+const SHELL_WORD = '(?:[^\\s"\'\\\\]|\\\\[\\s\\S]|"(?:[^"\\\\]|\\\\[\\s\\S])*"|\'[^\']*\'|"(?![^"]*")\\S*|\'(?![^\']*\')\\S*)+';
 const DOCKER_VALUE = '(?:-[cHl]|--(?:context|host|config|log-level|tlscacert|tlscert|tlskey))';
-const DOCKER = '\\bdocker(?:\\s+(?:' + DOCKER_VALUE + '(?:=|\\s+)' + SHELL_WORD + '|--(?!(?:context|host|config|log-level|tlscacert|tlscert|tlskey)(?:[=\\s]|$))[\\w-]+(?:=' + SHELL_WORD + ')?|-(?![cHl](?:[=\\s]|$))[A-Za-z](?:' + SHELL_WORD + ')?))*\\s+';
+const DOCKER = '\\bdocker(?:\\s+(?:--(?:context|host|config|log-level|tlscacert|tlscert|tlskey)(?:=|\\s+)' + SHELL_WORD + '|-[A-GI-Za-bd-km-z]*[cHl](?:=|\\s+)' + SHELL_WORD + '|--(?!(?:context|host|config|log-level|tlscacert|tlscert|tlskey)(?:[=\\s]|$))[\\w-]+(?:=' + SHELL_WORD + ')?|-(?![A-GI-Za-bd-km-z]*[cHl](?:[=\\s]|$))[A-Za-z](?:' + SHELL_WORD + ')?))*\\s+';
 // docker compose with its own options before the subcommand, so down is the
 // subcommand and not a service name (docker compose run down ls -v). docker's
 // own global options may come before compose (docker --context prod compose).
 const COMPOSE_VALUE = '(?:file|project-name|project-directory|env-file|profile|ansi|progress|parallel|context|host|log-level|tlscacert|tlscert|tlskey)';
-const COMPOSE = '(?:\\bdocker-compose|' + DOCKER + 'compose)(?:\\s+(?:(?:-[fpcH]|--' + COMPOSE_VALUE + ')(?:=|\\s+)' + SHELL_WORD + '|--(?!' + COMPOSE_VALUE + '(?:[=\\s]|$))[\\w-]+(?:=' + SHELL_WORD + ')?|-(?![fpcH](?:[=\\s]|$))[A-Za-z](?:' + SHELL_WORD + ')?))*\\s+';
+const COMPOSE = '(?:\\bdocker-compose|' + DOCKER + 'compose)(?:\\s+(?:--' + COMPOSE_VALUE + '(?:=|\\s+)' + SHELL_WORD + '|-[A-GI-Za-bd-eg-oq-z]*[fpcH](?:=|\\s+)' + SHELL_WORD + '|--(?!' + COMPOSE_VALUE + '(?:[=\\s]|$))[\\w-]+(?:=' + SHELL_WORD + ')?|-(?![A-GI-Za-bd-eg-oq-z]*[fpcH](?:[=\\s]|$))[A-Za-z](?:' + SHELL_WORD + ')?))*\\s+';
+// The same fragments without short clusters that take a value, and with each
+// value read as a plain run of non-spaces: docker-vol-rm matches any of the three
+// readings, so a line an earlier reading refused stays refused.
+const DOCKER_FLAT = '\\bdocker(?:\\s+(?:' + DOCKER_VALUE + '(?:=|\\s+)' + SHELL_WORD + '|--(?!(?:context|host|config|log-level|tlscacert|tlscert|tlskey)(?:[=\\s]|$))[\\w-]+(?:=' + SHELL_WORD + ')?|-(?![cHl](?:[=\\s]|$))[A-Za-z](?:' + SHELL_WORD + ')?))*\\s+';
+const COMPOSE_FLAT = '(?:\\bdocker-compose|' + DOCKER_FLAT + 'compose)(?:\\s+(?:(?:-[fpcH]|--' + COMPOSE_VALUE + ')(?:=|\\s+)' + SHELL_WORD + '|--(?!' + COMPOSE_VALUE + '(?:[=\\s]|$))[\\w-]+(?:=' + SHELL_WORD + ')?|-(?![fpcH](?:[=\\s]|$))[A-Za-z](?:' + SHELL_WORD + ')?))*\\s+';
 // The same fragments with each value read as a plain run of non-spaces, kept
 // beside the shell-word reading so a line either one refuses stays refused.
 const DOCKER_PLAIN = '\\bdocker(?:\\s+(?:' + DOCKER_VALUE + '(?:=|\\s+)\\S+|--(?!(?:context|host|config|log-level|tlscacert|tlscert|tlskey)(?:[=\\s]|$))[\\w-]+|-(?![cHl](?:[=\\s]|$))[A-Za-z][\\w-]*))*\\s+';
@@ -133,7 +141,7 @@ const PATTERNS = [
   // 777 with a leading 0 or a special bit (0777, 1777), or rwx for everyone spelled symbolically (a+rwx), as the mode.
   { level: 'high', id: 'chmod-777',      regex: new RegExp('\\bchmod\\b.+\\b777\\b|' + CHMOD + '["\']?(?:0*[1-7]?777|(?:a|ugo|uog|gou|guo|ogu|oug)[+=](?=[rwxXst]*r)(?=[rwxXst]*w)(?=[rwxXst]*x)[rwxXst]+)["\']?(?=\\s|$|[;&|)<>])'), reason: 'chmod 777 is a security risk' },
   // docker volume rm|remove|prune after global options, compose down -v, system prune --volumes.
-  { level: 'high', id: 'docker-vol-rm',  regex: new RegExp(volumeRemoval(DOCKER, COMPOSE) + '|' + volumeRemoval(DOCKER_PLAIN, COMPOSE_PLAIN)), reason: 'docker volume deletion loses data' },
+  { level: 'high', id: 'docker-vol-rm',  regex: new RegExp(volumeRemoval(DOCKER, COMPOSE) + '|' + volumeRemoval(DOCKER_FLAT, COMPOSE_FLAT) + '|' + volumeRemoval(DOCKER_PLAIN, COMPOSE_PLAIN)), reason: 'docker volume deletion loses data' },
 
   // STRICT - Cautionary, context-dependent
   // A +ref refspec force-pushes that ref like --force does; pushForces reads

@@ -83,3 +83,14 @@ describe('docker global option values in every shell spelling', () => {
     for (const c of ['docker --config "/my dir" compose up -d', 'docker -Htcp://h ps', 'docker --debug=true compose run --rm down ls -v', 'docker --context prod compose down']) shouldAllow(c);
   });
 });
+
+describe('escaped quotes and short clusters that take a value', () => {
+  it('blocks a value with an escaped quote and a cluster that ends in a value option', () => {
+    for (const c of ['docker --config "/my \\"x dir" compose down -v', 'docker -Dc prod compose down -v', 'docker -Dc prod volume rm data', 'docker -DH tcp://h compose down -v', 'docker compose -df prod.yml down -v', 'docker compose -dp app down --volumes'])
+      shouldBlock(c, 'docker-vol-rm');
+  });
+  it('allows the same options before commands that keep volumes, and an attached value', () => {
+    for (const c of ['docker -Dc prod compose up -d', 'docker compose -df prod.yml up', 'docker --config "/my \\"x dir" compose down', 'docker compose -p"app" run --rm down ls -v']) shouldAllow(c);
+  });
+  it('still refuses down --volumes=false on purpose, as main does', () => shouldBlock('docker compose down --volumes=false', 'docker-vol-rm'));
+});
