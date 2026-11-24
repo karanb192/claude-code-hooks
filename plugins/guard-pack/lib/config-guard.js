@@ -641,27 +641,67 @@ function gitHead(text) {
 // and the other diff commands, -o and --output-directory on format-patch,
 // -o or --output on archive, and the file git bundle create writes. Paths
 // after git -C <dir> resolve there.
-// Subcommands that take none of these options, so a value such as a
-// search pattern or message that reads --output=... is data, not an option.
-const GIT_NO_OUTPUT = /^(?:grep|commit|add|rm|mv|status|checkout|switch|restore|branch|tag|fetch|pull|push|merge|rebase|reset|clone|init|config|remote|blame|cat-file|ls-files|ls-tree|rev-parse|show-ref|cherry-pick|revert|clean|gc|describe|notes)$/i;
+// Subcommands that reject --output as an unknown option (checked against
+// git 2.x), so a search pattern or message that reads --output=... is
+// data. blame, cherry-pick, revert, shortlog, reflog and rev-list do open
+// an --output file, so they are not listed.
+const GIT_NO_OUTPUT = /^(?:grep|commit|add|rm|mv|status|checkout|switch|restore|branch|tag|fetch|pull|push|merge|rebase|reset|clone|init|config|remote|cat-file|ls-files|ls-tree|rev-parse|show-ref|clean|gc|describe|notes)$/i;
 // Options of diff and log whose value is the next word.
 const GIT_TEXT_VALUE = /^(?:--grep|--author|--committer|--grep-reflog|-S|-G)$/;
-// A command run through sudo, env, an assignment or a similar wrapper: the
-// text from the first word that names git.
-function gitCommandText(seg) {
+// Wrappers that run the next command, with the options that take a value.
+// An option a wrapper is not known to have is tried both ways, as a flag
+// and as taking the next word, so the command after it is never missed.
+const WRAPPER_VALUE = {
+  sudo: /^-[ugpCDrtTURh]$|^--(?:user|group|prompt|close-from|chdir|role|type|command-timeout|other-user|chroot|host)$/,
+  doas: /^-[uC]$/,
+  env: /^-[uCPS]$|^--(?:unset|chdir|split-string)$/,
+  command: null,
+  exec: /^-a$/,
+  nice: /^-n$|^--adjustment$/,
+  nohup: null,
+  time: /^-[fo]$|^--(?:format|output)$/,
+  timeout: /^-[sk]$|^--(?:signal|kill-after)$/,
+  // -e, -i and -l take their value only when attached.
+  xargs: /^-[aEILnPsd]$|^--(?:arg-file|max-args|max-procs|max-chars|delimiter|process-slot-var)$/,
+};
+const WRAPPER_POSITIONAL = { timeout: 1 };
+function commandStarts(words, i = 0, budget = { n: 16 }) {
+  const out = [];
+  for (;;) {
+    while (i < words.length && /^[A-Za-z_]\w*=/.test(words[i].value)) i++;
+    if (i >= words.length) return out;
+    const name = path.posix.basename(words[i].value);
+    if (!(name in WRAPPER_VALUE)) { out.push(i); return out; }
+    const takes = WRAPPER_VALUE[name];
+    let j = i + 1;
+    while (j < words.length) {
+      const v = words[j].value;
+      if (v === '--') { j++; break; }
+      if (!v.startsWith('-') || v === '-') break;
+      if (v.includes('=') && v.startsWith('--')) { j++; continue; }
+      if (takes && takes.test(v)) { j += 2; continue; }
+      // An unknown option: also try it as taking a value, a bounded number
+      // of times; the path that reads it as a flag always continues.
+      if (budget.n-- > 0) out.push(...commandStarts(words, j + 2, budget));
+      j++;
+    }
+    i = j + (WRAPPER_POSITIONAL[name] || 0);
+  }
+}
+
+// The git commands a segment runs, each from its git word, after any
+// wrappers, their options and assignments.
+function gitCommandTexts(seg) {
   const words = rawWords(seg);
-  if (!words.length) return null;
-  if (/(?:^|\/)git$/i.test(words[0].value)) return seg.slice(words[0].start);
-  if (!/^(?:sudo|doas|env|command|exec|nice|nohup|time|xargs)$/.test(path.posix.basename(words[0].value)) && !/^[A-Za-z_]\w*=/.test(words[0].value)) return null;
-  const git = words.find((w) => /(?:^|\/)git$/i.test(w.value));
-  return git ? seg.slice(git.start) : null;
+  return [...new Set(commandStarts(words))]
+    .filter((k) => k < words.length && /(?:^|\/)git$/i.test(words[k].value))
+    .map((k) => seg.slice(words[k].start));
 }
 
 function gitOutputs(cmd) {
   const out = [];
-  for (const seg of unquotedSegments(cmd.replace(/\\\r?\n/g, ' '))) {
-    const rest = gitCommandText(seg.trim());
-    const git = rest && gitHead(rest);
+  for (const seg of unquotedSegments(cmd.replace(/\\\r?\n/g, ' '))) for (const rest of gitCommandTexts(seg.trim())) {
+    const git = gitHead(rest);
     if (!git || GIT_NO_OUTPUT.test(git.sub)) continue;
     let dir = '';
     for (const d of git.dirs) dir = joinDir(dir, d.value);

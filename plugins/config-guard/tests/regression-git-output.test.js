@@ -69,6 +69,28 @@ describe('Regression: git output options onto protected config', () => {
     ]) bashBlocked(cmd, 'settings-file');
   });
 
+  it('denies --output on blame, cherry-pick, revert, shortlog, reflog and rev-list', () => {
+    for (const cmd of [
+      'git blame --output=.claude/settings.json README.md',
+      'git cherry-pick --output=.claude/settings.json HEAD',
+      'git revert --output=.claude/settings.json HEAD',
+      'git shortlog --output=.claude/settings.json',
+      'git reflog --output=.claude/settings.json',
+      'git rev-list --output=.claude/settings.json HEAD',
+    ]) bashBlocked(cmd, 'settings-file');
+  });
+
+  it('finds git after wrapper options, not at the first word named git', () => {
+    for (const cmd of [
+      'sudo -u git git archive -o .claude/settings.json HEAD',
+      'sudo -u admin git archive -o .claude/settings.json HEAD',
+      'env -u X git diff --output=.claude/settings.json',
+      'timeout 5 git diff --output=.claude/settings.json',
+      'xargs -i git bundle create .claude/settings.json',
+    ]) bashBlocked(cmd, 'settings-file');
+    for (const cmd of ['env printf git diff --output=.claude/settings.json', 'echo git diff --output=.claude/settings.json']) bashAllowed(cmd);
+  });
+
   it('allows a search pattern or message that reads --output=', () => {
     for (const cmd of [
       'git grep "--output=.claude/settings.json" README.md',
