@@ -86,6 +86,8 @@ const CHMOD = '\\bchmod(?:\\s+(?:-[RfvchHLP]+|--(?:recursive|verbose|changes|sil
 const DISK = '\\/dev\\/(?:sd[a-z]|nvme|hd[a-z]|x?vd[a-z]|r?disk\\d|mmcblk\\d|disk\\/|mapper\\/)';
 const FORCE_FLAG = '\\s["\']?(?:--force|-[A-Za-np-z0-9]*f[A-Za-z0-9]*)["\']?(?=\\s|$|[;&|)<>"\'])';
 
+const SUBST_SH = new RegExp('(?:' + SHELL + SHELL_FLAGS + '|(?<![\\w.\\/-])source|(?:^|[;&|(]\\s*)\\.)\\s+(?:<\\s*)?<\\(\\s*' + FETCH + '|' + SHELL + SHELL_FLAGS + '\\s+<<<\\s*["\']?' + SUBST + FETCH + '|(?:' + SHELL + SHELL_FLAGS + '\\s+-[A-Za-z]*c[A-Za-z]*|(?<![\\w.\\/-])eval)\\s+["\']?' + SUBST + FETCH);
+
 const PATTERNS = [
   // CRITICAL - Catastrophic, unrecoverable
   // A trailing /. or /.. (~/., /Users/alice/..) still names the home directory or above;
@@ -113,7 +115,9 @@ const PATTERNS = [
   // Shell flags may come first (bash -x <(curl ...), bash -lc "$(curl ...)"); the
   // download may arrive as a file, on stdin (< <(...), <<< "$(...)") or as -c
   // text, in $(...) or backticks.
-  { level: 'high', id: 'curl-subst-sh',  regex: new RegExp('(?:' + SHELL + SHELL_FLAGS + '|(?<![\\w.\\/-])source|(?:^|[;&|(]\\s*)\\.)\\s+(?:<\\s*)?<\\(\\s*' + FETCH + '|' + SHELL + SHELL_FLAGS + '\\s+<<<\\s*["\']?' + SUBST + FETCH + '|(?:' + SHELL + SHELL_FLAGS + '\\s+-[A-Za-z]*c[A-Za-z]*|(?<![\\w.\\/-])eval)\\s+["\']?' + SUBST + FETCH), reason: 'running a downloaded script through process or command substitution (RCE risk)' },
+  // The words are also read with the shell reader (downloadRunsAsCode), so a quoted or
+  // escaped program name ("bash" <(curl ...), \\bash -c "$(curl ...)") is the same program.
+  { level: 'high', id: 'curl-subst-sh',  regex: /(?:curl|wget)\b/, confirm: (t) => SUBST_SH.test(t) || downloadRunsAsCode(t), reason: 'running a downloaded script through process or command substitution (RCE risk)' },
   // Flag and branch in either order, within one command segment; +main is a force refspec.
   // A bare --force-with-lease never matches the (?=\s|...) after --force, so it needs no exception.
   { level: 'high', id: 'git-force-main', segment: true, regex: new RegExp(GIT + 'push\\b(?=[^;&|\\n]*' + FORCE_FLAG + ')(?=[^;&|\\n]*' + MAIN_REF + ')|' + GIT + 'push\\b[^;&|\\n]*\\s["\']?\\+(?:[^\\s:]*:)?(?:refs\\/heads\\/)?(?:main|master)(?=$|[\\s;&|)<>"\'])'), reason: 'force push to main/master' },
@@ -878,6 +882,56 @@ function programWord(words) {
     }
   }
   return words[k];
+}
+
+const DOWNLOADER = /^(?:curl|wget)$/;
+// Every word is a shell option (-x, +e, --, -o pipefail), so the next word is
+// the script; a word after the script is only an argument to it.
+function onlyOptions(words) {
+  for (let k = 0; k < words.length; k++) {
+    const w = words[k].value;
+    if (!/^[-+]./.test(w)) return false;
+    if (/^[-+][oO]$/.test(w)) k++;
+  }
+  return true;
+}
+const CODE_FLAG = /^-[A-Za-z]*c[A-Za-z]*$/;
+// A curl or wget inside <(...), $(...) or backticks whose output the command
+// around it runs as code: a shell, source or . given it as the script (the
+// first word after any options), a shell
+// given it on stdin (< <(...), <<<) with no -c, a shell given it as the whole
+// text right after -c, or eval. The
+// line is read with the shell reader, so quotes and escapes in the program
+// name do not hide it, and the program is found past wrappers such as sudo.
+function downloadRunsAsCode(cmd) {
+  const read = readShell(cmd);
+  for (const f of read.frames) {
+    if ((f.kind !== 'proc' && f.kind !== 'subst') || !f.parent) continue;
+    if (!f.cmds.some((c) => { const w = programWord(argv(c)); return w && !w.dynamic && DOWNLOADER.test(base(w.value)); })) continue;
+    const { cmd: outer, word } = f.parent;
+    const words = argv(outer);
+    const program = programWord(words);
+    if (!program || program.dynamic) continue;
+    const name = base(program.value);
+    const shell = PIPE_SHELL.test(name);
+    const from = words.indexOf(program);
+    const at = words.indexOf(word);
+    if (name === 'eval') { if (at > from) return true; continue; }
+    if (!shell && name !== 'source' && name !== '.') continue;
+    const before = words.slice(from + 1, at < 0 ? words.length : at);
+    const dashC = shell && before.some((w) => CODE_FLAG.test(w.value));
+    const part = word.parts.find((x) => x.frame === f);
+    const k = outer.words.indexOf(word);
+    if (part && part.open === '<(') {
+      if (k > 0 && outer.words[k - 1].op === '<') { if (shell && !dashC) return true; continue; }
+      if (at > from && !dashC && onlyOptions(before)) return true;
+    } else if (shell) {
+      if (word.target === '<<<') { if (!dashC) return true; continue; }
+      const whole = word.parts.every((x) => x === part || x === '');
+      if (whole && at > from && before.length && CODE_FLAG.test(before[before.length - 1].value)) return true;
+    }
+  }
+  return false;
 }
 
 // The line with each * or ? that an rm argument holds inside quotes or after a
