@@ -1001,6 +1001,8 @@ const INTERPRETER = /^(?:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|ruby|per
 // Bounded lengths keep the scan linear on a long run of unclosed openers.
 const CODE_QUOTED = /(['"`])((?:\\[\s\S]|(?!\1)[^\\\n]){0,512})\1|%[qQ]?([(\[{<])([^)\]}>]{0,512})[)\]}>]|\bq{1,2}([(\[{<])([^)\]}>]{0,512})[)\]}>]/g;
 const CODE_FILE_API = /\b(?:open\w*|read\w*|load\w*|Path|path\w*|File\w*|fs|require|import|__import__|IO|io|stream\w*|cat|copy\w*|move|exec\w*|system|subprocess|spawn\w*|popen\w*|eval|getattr|compile|os|sys|shutil|pathlib|glob\w*|fopen|file\w*|slurp|include\w*|source|dofile|loadfile|Deno|Bun|fetch|http\w*|url\w*|socket|send|write\w*|ARGV|ARGF|argv|STDIN|stdin|qx|Kernel|public_send|method|instance_eval|class_eval|binding|globals|vars|builtins|ctypes|mmap|codecs|pickle|marshal|dotenv|environ|getenv|ENV|curl|Get-Content|gc|type|do)\b|`|<\w*>|%x/;
+// PowerShell cmdlet and alias names are case-insensitive.
+const CODE_FILE_API_PWSH = /\b(?:get-content|set-content|add-content|out-file|copy-item|move-item|invoke-expression|iex|start-process|invoke-webrequest|iwr|invoke-restmethod|irm|import-module|select-string|gc|type|cat)\b|\[(?:system\.)?io\.file\]/i;
 function codeLiterals(code) {
   const parts = [];
   for (const m of code.matchAll(CODE_QUOTED)) parts.push({ v: m[2] ?? m[4] ?? m[6] ?? '', from: m.index, to: m.index + m[0].length });
@@ -1021,7 +1023,7 @@ function codeLiterals(code) {
 // Ruby eval and instance_eval; Perl eval; PHP eval) is code too, so the literals inside it count.
 const CODE_EVAL = /\b(?:exec|eval|compile|Function|runIn\w*Context|runInThisContext|instance_eval|class_eval|module_eval)\b/;
 function codeReads(code, take, ctx) {
-  if (!CODE_FILE_API.test(code) && !CODE_EVAL.test(code)) return false;
+  if (!CODE_FILE_API.test(code) && !CODE_FILE_API_PWSH.test(code) && !CODE_EVAL.test(code)) return false;
   const evaluates = CODE_EVAL.test(code);
   const seen = new Set();
   const check = (text, depth) => {
@@ -1038,24 +1040,50 @@ function codeReads(code, take, ctx) {
   check(code, 0);
   return true;
 }
-// The words an interpreter runs as code: python -c, node -e/-p/--eval/--print, ruby and perl -e
-// (also in a cluster such as -ne), php -r, lua, Rscript, osascript and julia -e, pwsh -c, deno eval.
+// The operations that open or run something named by the program's own arguments.
+const CODE_OPENS = /\b(?:open\w*|read\w*|load\w*|Path|File\w*|fs|IO|stream\w*|cat|copy\w*|move|exec\w*|system|subprocess|spawn\w*|popen\w*|eval|fopen|file\w*|slurp|include\w*|source|dofile|loadfile|ARGF|Get-Content|gc|type)\b|`|<\w*>|%x/i;
+
+// The words an interpreter runs as code: python -c, node -e/-p/--eval/--print, ruby -e, perl -e/-E
+// (also in a cluster such as -ne), php -r, lua, Rscript, osascript and julia -e, pwsh -c or -Command,
+// deno eval. Each interpreter's options that take a value consume it first (python -W once, -Wonce,
+// -X; perl -I, -M; node -r ...), so a letter inside a value is never read as a flag. pwsh parameters
+// are case-insensitive and may be abbreviated.
+const INTERP_OPTIONS = [
+  [/^(?:python|pypy)/, { code: 'c', value: 'WXQm' }],
+  [/^(?:node|nodejs|bun)$/, { code: 'ep', value: 'rC', long: /^--(?:require|import|loader|experimental-loader|conditions|input-type|title|env-file)$/ }],
+  [/^ruby$/, { code: 'e', value: 'IrCEFx' }],
+  [/^perl$/, { code: 'eE', value: 'IMmxil0CdD' }],
+  [/^php$/, { code: 'r', value: 'cdfzt' }],
+  [/^(?:lua|luajit)/, { code: 'e', value: 'l' }],
+  [/^osascript$/, { code: 'e', value: 'ls' }],
+  [/^julia$/, { code: 'eE', value: 'LJCpt' }],
+  [/./, { code: 'e', value: '' }],
+];
 function codeWords(name, ops) {
   const code = new Set();
-  const letters = /^python|^pypy/.test(name) ? 'c' : /^(?:ruby|perl)$/.test(name) ? 'eE' : name === 'php' ? 'r' : /^(?:node|nodejs|bun)$/.test(name) ? 'ep' : name === 'pwsh' ? 'c' : 'eE';
+  const spec = INTERP_OPTIONS.find(([re]) => re.test(name))[1];
   for (let j = 0; j < ops.length; j++) {
     const v = ops[j].value;
-    if (name === 'deno' && v === 'eval' && ops[j + 1]) { code.add(j + 1); break; }
-    if (/^--(?:eval|print|expr|command)$/i.test(v) || /^-command$/i.test(v)) { if (ops[j + 1]) code.add(++j); continue; }
-    if (/^--(?:eval|print|expr)=/.test(v)) { code.add(j); continue; }
-    if (!/^-[A-Za-z]/.test(v)) continue;
-    for (let c = 1; c < v.length; c++) {
-      if (!letters.includes(v[c])) continue;
-      if (c + 1 < v.length) code.add(j); else if (ops[j + 1]) code.add(++j);
-      break;
+    if (name === 'deno') { if (v === 'eval' && ops[j + 1]) code.add(j + 1); continue; }
+    if (name === 'pwsh') {
+      if (/^-(?:c|com|comm|comma|comman|command)$/i.test(v)) { if (ops[j + 1]) code.add(++j); }
+      continue;
     }
+    if (/^--(?:eval|print|expr)$/.test(v)) { if (ops[j + 1]) code.add(++j); continue; }
+    if (/^--(?:eval|print|expr)=/.test(v)) { code.add(j); continue; }
+    if (spec.long && spec.long.test(v)) { j++; continue; }
+    if (/^--/.test(v)) continue;
+    // A script name ends the interpreter's options; what follows is the script's argv.
+    if (!/^-[A-Za-z0-9]/.test(v)) { if (code.size || /^(?:python|pypy|node|nodejs|bun|ruby|perl|php)/.test(name)) break; continue; }
+    let stop = false;
+    for (let c = 1; c < v.length; c++) {
+      if (spec.stop && spec.stop.includes(v[c])) { stop = true; break; }
+      if (spec.code.includes(v[c])) { if (c + 1 < v.length) code.add(j); else if (ops[j + 1]) code.add(++j); break; }
+      if (spec.value.includes(v[c])) { if (c + 1 === v.length) j++; break; }
+    }
+    if (stop) break;
     // python -c ends option parsing: what follows is the program's argv.
-    if (/^python|^pypy/.test(name) && code.size) break;
+    if (/^(?:python|pypy)/.test(name) && code.size) break;
   }
   return code;
 }
@@ -1087,8 +1115,8 @@ function commandFileAccess(cmd, ctx) {
       if (codeReads(/^-[A-Za-z]|^--[\w-]+=/.test(v) ? v.replace(/^--[\w-]+=|^-[A-Za-z]*?[cepr]/i, '') : v, take, ctx)) opens = true;
     }
     for (const h of ctx.heredocs || []) if (h.cmd === cmd && codeReads(ctx.src.slice(h.bodyStart, h.bodyEnd), take, ctx)) opens = true;
-    // Code that can open files may take the name as an argument.
-    if (opens) ops.forEach((w, j) => { if (!code.has(j) && !/^-/.test(w.value)) take('read', secretPath(w.value, w, ctx)); });
+    // Code that opens, runs or reads a file may take the name as an argument.
+    if (opens && [...code].some(j => CODE_OPENS.test(ops[j].value))) ops.forEach((w, j) => { if (!code.has(j) && !/^-/.test(w.value)) take('read', secretPath(w.value, w, ctx)); });
     // perl -n or -p and ruby -n or -p read their file operands line by line, like sed.
     if (/^(?:perl|ruby)$/.test(name) && ops.some(w => /^-[A-Za-z]*[np]/.test(w.value))) {
       for (const w of ops) if (!/^-/.test(w.value)) take('read', secretPath(w.value, w, ctx));

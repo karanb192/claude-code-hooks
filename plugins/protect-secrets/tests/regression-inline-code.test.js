@@ -42,6 +42,20 @@ const REFUSED = [
   [`node -e "new Function('return require(\\"fs\\").readFileSync(\\".npmrc\\")')()"`, 'high'],
   [`ruby -e 'eval("puts File.read(%q(.env))")'`, 'high'],
   [`perl -e 'eval q{open F, "<.env"; print <F>}'`, 'high'],
+  // An interpreter option's value is consumed before the code option is looked for.
+  [`python3 -Wonce -c "print(open('.env').read())"`, 'high'],
+  [`python3 -W once -c "print(open('.env').read())"`, 'high'],
+  [`python3 -X dev -c "print(open('.env').read())"`, 'high'],
+  [`python3 -m mod -c "print(open('.env').read())"`, 'high'],
+  [`perl -Mstrict -e 'open F, "<.env"; print <F>'`, 'high'],
+  [`ruby -E utf-8 -e 'puts File.read(".env")'`, 'high'],
+  [`node -r ./x.js -e "require('fs').readFileSync('.env')"`, 'high'],
+  // PowerShell names are case-insensitive, and its parameters may be shortened.
+  [`pwsh -c "get-content '.env'"`, 'high'],
+  [`pwsh -com "GET-CONTENT '.env'"`, 'high'],
+  // Code that reads its arguments as files.
+  [`ruby -e 'puts ARGF.read' .env`, 'high'],
+  [`perl -e 'print <>' .env`, 'high'],
 ];
 
 const ALLOWED = [
@@ -59,6 +73,10 @@ const ALLOWED = [
   [`node fmt.js '{"label":".env"}'`, 'high'],
   [`python3 -c 'print(1)' .env`, 'high'],
   [`python3 -c "print(eval('1+1'))"`, 'high'],
+  // Code that only prints its argument opens nothing.
+  [`python3 -c "import sys; print(sys.argv[1])" .env`, 'high'],
+  [`node -e "console.log(process.argv[1])" .env`, 'high'],
+  [`perl -Mfeature=say -E 'say 1'`, 'high'],
 ];
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {
