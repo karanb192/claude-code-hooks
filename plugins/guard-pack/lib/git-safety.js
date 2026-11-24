@@ -8,7 +8,8 @@
  *   default. Prefer the env var over editing this file: plugin updates
  *   overwrite installed files.
  *   critical - no git-safety rules apply (defer entirely to block-dangerous-commands.js)
- *   high     - branch-aware guardrails (commit/merge/rebase/reset/push while on a
+ *   high     - branch-aware guardrails (commit/merge/rebase/reset/push,
+ *              cherry-pick/revert/am and a merging or rebasing pull while on a
  *              protected branch), protected-branch deletion, direct pushes to
  *              main/master by name, and destructive gh CLI operations
  *   strict   - + force-push, so this hook is self-sufficient standalone
@@ -84,6 +85,12 @@ const PATTERNS = [
   { level: 'high', id: 'rebase-on-protected',       regex: new RegExp(GIT + 'rebase\\b'),                                reason: 'Rebasing {branch} is not allowed', branchOnly: true },
   { level: 'high', id: 'reset-on-protected',        regex: new RegExp(GIT + 'reset\\b'),                                 reason: 'Resetting {branch} is not allowed', branchOnly: true },
   { level: 'high', id: 'push-on-protected',         regex: new RegExp(GIT + 'push\\b'),                                  reason: 'Pushing from {branch} is not allowed', branchOnly: true },
+  // Other calls that write commits on the branch. -n/--no-commit and --abort/--quit write none (see commitFree).
+  { level: 'high', id: 'cherry-pick-on-protected',  regex: new RegExp(GIT + 'cherry-pick\\b'),                           reason: 'Cherry-picking onto {branch} is not allowed', branchOnly: true, sub: 'cherry-pick' },
+  { level: 'high', id: 'revert-on-protected',       regex: new RegExp(GIT + 'revert\\b'),                                reason: 'Reverting commits on {branch} is not allowed', branchOnly: true, sub: 'revert' },
+  { level: 'high', id: 'am-on-protected',           regex: new RegExp(GIT + 'am\\b'),                                    reason: 'Applying patches with git am on {branch} is not allowed', branchOnly: true, sub: 'am' },
+  // A plain pull (git pull, git pull origin main, --ff-only) stays allowed; see pullMerges.
+  { level: 'high', id: 'pull-merge-on-protected',   regex: new RegExp(GIT + 'pull\\b'),                                  reason: 'Merging or rebasing into {branch} with git pull is not allowed', branchOnly: true, sub: 'pull' },
 
   // Block destructive gh CLI operations
   { level: 'high', id: 'gh-pr-merge',               regex: gh('pr', 'merge'),                                 reason: 'Merging PRs via gh CLI is not allowed' },
@@ -599,7 +606,93 @@ function shellViews(cmd) {
 }
 // <<< shell-reading
 
-const BRANCH_RULES = { commit: 'commit-on-protected', merge: 'merge-on-protected', rebase: 'rebase-on-protected', reset: 'reset-on-protected', push: 'push-on-protected' };
+const BRANCH_RULES = { commit: 'commit-on-protected', merge: 'merge-on-protected', rebase: 'rebase-on-protected', reset: 'reset-on-protected', push: 'push-on-protected', 'cherry-pick': 'cherry-pick-on-protected', revert: 'revert-on-protected', am: 'am-on-protected', pull: 'pull-merge-on-protected' };
+
+// cherry-pick or revert with -n/--no-commit only stages the change, and
+// --abort or --quit (also for am) ends the operation: none writes a commit.
+// An option value (-m 1, -X theirs) is skipped, and any other long option,
+// a -- or an expansion keeps the call a commit: git accepts abbreviations,
+// so --main is --mainline and takes the next word as its value.
+const NO_COMMIT = { 'cherry-pick': /^(?:-n|--no-commit|--abort|--quit)$/, revert: /^(?:-n|--no-commit|--abort|--quit)$/, am: /^(?:--abort|--quit|--show-current-patch(?:=[a-z]+)?)$/ };
+// Long options that take no separate value and keep a no-commit call free.
+const PICK_FLAGS = /^--(?:no-)?(?:edit|signoff|rerere-autoupdate|gpg-sign)$|^--(?:allow-empty|keep-redundant-commits|reference)$/;
+const SHORT_VALUE = { 'cherry-pick': /^-[A-Za-z]*[mX]$/, revert: /^-[A-Za-z]*[mX]$/, am: /^-[A-Za-z]*[Cp]$/ };
+function commitFree(sub, words) {
+  if (!NO_COMMIT[sub]) return false;
+  let free = false;
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (w.dynamic) return false;
+    if (NO_COMMIT[sub].test(w.value)) { free = true; continue; }
+    if (sub !== 'am' && PICK_FLAGS.test(w.value)) continue;
+    if (w.value.startsWith('--')) return false;
+    if (SHORT_VALUE[sub].test(w.value)) i++;
+  }
+  return free;
+}
+
+// A pull that merges or rebases into the branch: --rebase (any value but
+// false), -r, --no-ff, or a branch other than main or master named after the
+// remote whose source is not the branch the pull lands on (on main,
+// git pull origin feature, origin master or origin HEAD). A word git gets only
+// when the shell runs (an expansion, a glob or a brace list) may be any branch
+// or option, so it counts as one. --dry-run changes nothing. A plain pull,
+// git pull origin main, --ff-only, --no-rebase and --rebase=false stay allowed.
+// Only options that always take a separate value skip one: reading a flag as
+// valued would shift the branch into the remote's place.
+const PULL_VALUE = /^(?:-[A-Za-z]*[sXjo]|--(?:depth|deepen|shallow-since|shallow-exclude|upload-pack|strategy|strategy-option|jobs|negotiation-tip|server-option|refmap))$/;
+function pullMerges(words, branch) {
+  const pos = [];
+  let merges = false;
+  let dry = false;
+  for (let i = 0; i < words.length; i++) {
+    const a = words[i].value;
+    if (words[i].dynamic || /[*?[]|\{[^}]*(?:,|\.\.)/.test(a)) return true;
+    if (a === '--') { pos.push(...words.slice(i + 1)); break; }
+    if (a === '--dry-run') dry = true;
+    else if (/^(?:--no-ff|--rebase(?:=(?!false$).*)?|-[qvnfkpt46ae]*r[qvnfkpt46ae]*)$/.test(a)) merges = true;
+    else if (PULL_VALUE.test(a)) i++;
+    else if (!a.startsWith('-')) pos.push(words[i]);
+  }
+  for (const w of pos.slice(1)) {
+    const m = /^\+?(?:refs\/heads\/|heads\/)?([^:]*)(?::.*)?$/.exec(w.value);
+    if (!m || !branch || m[1] !== branch) merges = true;
+  }
+  return merges && !dry;
+}
+
+// The words after the subcommand of every git <sub> call in the views, and
+// whether every mention of <sub> was read as one of those calls.
+function gitCalls(views, sub) {
+  const calls = [];
+  let sure = true;
+  for (const v of views) {
+    const read = readShell(v.text);
+    let found = 0;
+    sure = sure && read.sure;
+    for (const f of read.frames) for (const c of f.cmds) {
+      const words = argv(c);
+      const k = commandIndex(words);
+      if (!words[k] || words[k].dynamic || base(words[k].value) !== 'git') continue;
+      let j = k + 1;
+      while (j < words.length && words[j].value.startsWith('-')) j += GIT_VALUE_OPTS.has(words[j].value) || words[j].value === '--attr-source' ? 2 : 1;
+      if (words[j] && words[j].value === sub) { calls.push(words.slice(j + 1)); found++; }
+    }
+    const mentions = v.text.match(new RegExp('(?<![\\w-])' + sub + '(?![\\w-])', 'g')) || [];
+    if (mentions.length !== found) sure = false;
+  }
+  return { calls, sure };
+}
+
+// After its pattern matched: false when the call writes no commit after all.
+// Only a call read with certainty can be cleared: a wrapped git (env git,
+// sudo git) or a mention that is not a plain git call keeps the refusal.
+function writesCommit(p, views, branch) {
+  if (!p.sub) return true;
+  const { calls, sure } = gitCalls(views, p.sub);
+  if (!sure || !calls.length) return true;
+  return p.sub === 'pull' ? calls.some(w => pullMerges(w, branch)) : !calls.every(w => commitFree(p.sub, w));
+}
 
 // Another repository the command names is not trusted yet (its config can name
 // programs git runs), so its branch is read from files and nothing is run there.
@@ -690,8 +783,10 @@ function switchTarget(sub, args, isBranch) {
 // Commands a line may hold and still have its target branch known for
 // certain: they run nothing else and cannot move HEAD.
 const STEADY = new Set([...INERT, ...DATA_READERS].filter(c => c !== 'tee'));
-const STEADY_GIT = /^(?:add|status|diff|log|show|commit|merge|reset|push|fetch|pull|restore|rm|mv|tag|stash|cherry-pick|revert|checkout|switch|rebase)$/;
+const STEADY_GIT = /^(?:add|status|diff|log|show|commit|merge|reset|push|fetch|pull|restore|rm|mv|tag|stash|cherry-pick|revert|am|checkout|switch|rebase)$/;
 const LIST_END = new Set([';', '\n']);
+const PLAIN_GIT = /^(?:git|\/(?:usr\/(?:local\/)?bin|bin|opt\/homebrew\/bin)\/git)$/;
+const WRAPPERS = new Set(['env', 'sudo', 'doas', 'nice', 'nohup', 'timeout', 'command', 'exec', 'stdbuf', 'ionice', 'xargs', 'caffeinate']);
 
 // Commit, merge, rebase, reset and push reach the branch of the repository the
 // command runs in, not always the session's. Walk each command list in order:
@@ -703,7 +798,7 @@ const LIST_END = new Set([';', '\n']);
 // known: false when anything in the line could run git out of sight, move
 // HEAD another way or name a directory that cannot be read.
 function resolveBranches(cmd, sessionBranch) {
-  const out = { ops: [], known: false };
+  const out = { ops: [], known: false, pulls: 0 };
   if (!/\bgit\b/.test(cmd)) return out;
   const read = readShell(cmd);
   const session = process.cwd();
@@ -738,11 +833,29 @@ function resolveBranches(cmd, sessionBranch) {
         if (dir && dir.length > 4096) dir = null;
         return;
       }
-      if (w.value !== 'git') { if (!STEADY.has(w.value)) known = false; return; }
+      // Only plain git moves the branch. A wrapper that runs its arguments
+      // (env, sudo, nice, timeout) or another program named git still counts
+      // for the refusals, but its checkout or switch never moves the branch off
+      // main: the guard cannot be sure what it ran. Words handed to any other
+      // program (logger git switch x) are text, not a call.
+      let g = k;
+      let wrapped = false;
+      if (w.value !== 'git') {
+        if (STEADY.has(w.value)) return;
+        known = false;
+        if (!PLAIN_GIT.test(w.value)) {
+          if (base(w.value) !== 'git' && !WRAPPERS.has(w.value)) return;
+          wrapped = true;
+          if (base(w.value) !== 'git') {
+            g = words.findIndex((x, i) => i > k && !x.dynamic && base(x.value) === 'git');
+            if (g < 0) return;
+          }
+        }
+      }
       if (!dir) { known = false; return; }
       let where = dir;
       let gitDirArg = null;
-      let j = k + 1;
+      let j = g + 1;
       for (; j < words.length && words[j].value.startsWith('-'); j++) {
         const v = words[j].value;
         const m = /^--(git-dir|work-tree)(?:=([\s\S]*))?$/.exec(v);
@@ -779,8 +892,13 @@ function resolveBranches(cmd, sessionBranch) {
         // An expansion, glob, brace list or ~ in any operand is known only when
         // the shell runs, so the branch may become anything, main included: a
         // protected branch already reached stays, and nothing counts as certain.
-        if (words.slice(j + 1).some(x => x.dynamic || /[*?[~]|\{[^}]*(?:,|\.\.)/.test(x.value))) {
-          if (from) switched.set(repo, { branch: from, at: -1, from: null });
+        const unresolved = words.slice(j + 1).some(x => x.dynamic || /[*?[~]|\{[^}]*(?:,|\.\.)/.test(x.value));
+        if (wrapped || unresolved) {
+          // A wrapped switch may still reach a protected branch it names.
+          let maybe = unresolved ? null : switchTarget(sub.value, args, (name) => hasBranch(gitDir, name));
+          if (maybe === BACK) maybe = before.get(repo);
+          const onto = from || (typeof maybe === 'string' && PROTECTED_BRANCHES.includes(maybe) ? maybe : null);
+          if (onto) switched.set(repo, { branch: onto, at: -1, from: null });
           else switched.delete(repo);
           before.set(repo, now);
           known = false;
@@ -795,6 +913,9 @@ function resolveBranches(cmd, sessionBranch) {
       }
       const id = BRANCH_RULES[sub.value];
       if (!id) return;
+      if (sub.value === 'pull') out.pulls++;
+      const rest = words.slice(j + 1);
+      if (sub.value === 'pull' ? !pullMerges(rest, effective(switched.get(repo))) : commitFree(sub.value, rest)) return;
       const rec = switched.get(repo);
       out.ops.push({ id, branch: effective(rec), certain: !!rec && rec.branch !== null && made(rec) });
     };
@@ -888,11 +1009,16 @@ function checkCommand(cmd, branch = null, safetyLevel = SAFETY_LEVEL) {
     if (p.branchOnly) {
       if (!branch) branch = getCurrentBranch();
       if (!PROTECTED_BRANCHES.includes(branch)) continue;
+      if (!writesCommit(p, views, branch)) continue;
       // The session is on a protected branch, but every such call in the line
       // runs only after a switch to a branch that is not protected.
       const r = resolve();
       const mine = r.ops.filter(o => o.id === p.id);
       if (r.known && mine.length && mine.every(o => o.certain && !PROTECTED_BRANCHES.includes(o.branch))) continue;
+      // A pull judged by the branch it reaches (git switch master && git pull
+      // origin master): the line was read with certainty, every mention of pull
+      // is a plain git pull the reader judged, and none merges there.
+      if (p.sub === 'pull' && r.known && !mine.length && r.pulls && r.pulls === (cmd.match(/(?<![\w-])pull(?![\w-])/g) || []).length) continue;
     }
 
     const reason = p.reason.replace('{branch}', branch || '');
