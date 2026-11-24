@@ -35,6 +35,13 @@ const REFUSED = [
   // Code that opens a file named as its argument.
   [`python3 -c "import sys;print(open(sys.argv[1]).read())" .env`, 'high'],
   [`perl -e '@ARGV=(".env"); print <>'`, 'high'],
+  // A string the code evaluates is code too.
+  [`python3 -c "exec('print(open(\\".env\\").read())')"`, 'high'],
+  [`python3 -c "eval(compile('open(\\".env\\").read()','x','eval'))"`, 'high'],
+  [`node -e "eval('require(\\"fs\\").readFileSync(\\".env\\")')"`, 'high'],
+  [`node -e "new Function('return require(\\"fs\\").readFileSync(\\".npmrc\\")')()"`, 'high'],
+  [`ruby -e 'eval("puts File.read(%q(.env))")'`, 'high'],
+  [`perl -e 'eval q{open F, "<.env"; print <F>}'`, 'high'],
 ];
 
 const ALLOWED = [
@@ -51,6 +58,7 @@ const ALLOWED = [
   [`node -e "console.log(JSON.stringify({label: '.env'}))"`, 'high'],
   [`node fmt.js '{"label":".env"}'`, 'high'],
   [`python3 -c 'print(1)' .env`, 'high'],
+  [`python3 -c "print(eval('1+1'))"`, 'high'],
 ];
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {

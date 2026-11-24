@@ -1005,6 +1005,7 @@ function codeLiterals(code) {
   const parts = [];
   for (const m of code.matchAll(CODE_QUOTED)) parts.push({ v: m[2] ?? m[4] ?? m[6] ?? '', from: m.index, to: m.index + m[0].length });
   const out = parts.map(p => p.v);
+  out.parts = parts.length;
   // Adjacent literals, or literals joined by +, make one string.
   for (let i = 0; i < parts.length; i++) {
     let joined = parts[i].v;
@@ -1016,12 +1017,25 @@ function codeLiterals(code) {
   }
   return out;
 }
+// A string the code evaluates (Python exec, eval, compile; JavaScript eval, Function, vm.runIn*;
+// Ruby eval and instance_eval; Perl eval; PHP eval) is code too, so the literals inside it count.
+const CODE_EVAL = /\b(?:exec|eval|compile|Function|runIn\w*Context|runInThisContext|instance_eval|class_eval|module_eval)\b/;
 function codeReads(code, take, ctx) {
-  if (!CODE_FILE_API.test(code)) return false;
-  for (const lit of codeLiterals(code)) {
-    const v = lit.replace(/^[+<>]+\s*/, '').trim();
-    if (v && v.length < 512) take('read', secretPath(v, null, ctx));
-  }
+  if (!CODE_FILE_API.test(code) && !CODE_EVAL.test(code)) return false;
+  const evaluates = CODE_EVAL.test(code);
+  const seen = new Set();
+  const check = (text, depth) => {
+    const lits = codeLiterals(text);
+    lits.forEach((lit, i) => {
+      if (seen.has(lit)) return;
+      seen.add(lit);
+      const v = lit.replace(/^[+<>]+\s*/, '').trim();
+      if (v && v.length < 512) take('read', secretPath(v, null, ctx));
+      // A single literal that can hold another literal is read again as code.
+      if (evaluates && depth < 2 && i < lits.parts && /['"`%q]/.test(lit)) check(lit.replace(/\\(['"`\\])/g, '$1'), depth + 1);
+    });
+  };
+  check(code, 0);
   return true;
 }
 // The words an interpreter runs as code: python -c, node -e/-p/--eval/--print, ruby and perl -e
