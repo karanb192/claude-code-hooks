@@ -1,0 +1,114 @@
+#!/usr/bin/env node
+/**
+ * Regression: code given to an interpreter on the command line or in a heredoc that names a
+ * protected file in a string literal, and perl or ruby -n/-p over a protected file, are refused.
+ *
+ * Run: node --test plugins/protect-secrets/tests/regression-inline-code.test.js
+ */
+
+const { describe, it } = require('node:test');
+const assert = require('node:assert');
+
+const standalone = require('../protect-secrets.js');
+const bundled = require('../../guard-pack/lib/protect-secrets.js');
+
+const REFUSED = [
+  [`python3 -c "print(open('.env').read())"`, 'high'],
+  [`python3 -c 'print(open(".env").read())'`, 'high'],
+  [`python -c 'import os;print(open(os.path.expanduser("~/.aws/credentials")).read())'`, 'high'],
+  [`sudo python3 -c "print(open('/root/.ssh/id_rsa').read())"`, 'high'],
+  [`node -e "console.log(require('fs').readFileSync('.env','utf8'))"`, 'high'],
+  [`node -p "require('fs').readFileSync('.npmrc','utf8')"`, 'high'],
+  [`ruby -e 'puts File.read(".env")'`, 'high'],
+  [`perl -e 'open F, "<.env"; print <F>'`, 'high'],
+  [`php -r 'echo file_get_contents(".env");'`, 'high'],
+  [`python3 - <<'EOF'\nprint(open(".env").read())\nEOF`, 'high'],
+  ['perl -ne print .env', 'high'],
+  [`perl -pe 's/x/y/' .npmrc`, 'high'],
+  [`ruby -ne 'puts $_' .env`, 'high'],
+  // Adjacent or joined literals and the %q, %Q and q() forms make the same constant name.
+  [`python3 -c "print(open('.e' 'nv').read())"`, 'high'],
+  [`python3 -c "print(open('.e' + 'nv').read())"`, 'high'],
+  [`ruby -e 'puts File.read(%q(.env))'`, 'high'],
+  [`ruby -e 'puts File.read(%Q{.env})'`, 'high'],
+  [`perl -e 'open F, q(<.env); print <F>'`, 'high'],
+  // Code that opens a file named as its argument.
+  [`python3 -c "import sys;print(open(sys.argv[1]).read())" .env`, 'high'],
+  [`perl -e '@ARGV=(".env"); print <>'`, 'high'],
+  // A string the code evaluates is code too.
+  [`python3 -c "exec('print(open(\\".env\\").read())')"`, 'high'],
+  [`python3 -c "eval(compile('open(\\".env\\").read()','x','eval'))"`, 'high'],
+  [`node -e "eval('require(\\"fs\\").readFileSync(\\".env\\")')"`, 'high'],
+  [`node -e "new Function('return require(\\"fs\\").readFileSync(\\".npmrc\\")')()"`, 'high'],
+  [`ruby -e 'eval("puts File.read(%q(.env))")'`, 'high'],
+  [`perl -e 'eval q{open F, "<.env"; print <F>}'`, 'high'],
+  // An interpreter option's value is consumed before the code option is looked for.
+  [`python3 -Wonce -c "print(open('.env').read())"`, 'high'],
+  [`python3 -W once -c "print(open('.env').read())"`, 'high'],
+  [`python3 -X dev -c "print(open('.env').read())"`, 'high'],
+  [`python3 -m mod -c "print(open('.env').read())"`, 'high'],
+  [`perl -Mstrict -e 'open F, "<.env"; print <F>'`, 'high'],
+  [`ruby -E utf-8 -e 'puts File.read(".env")'`, 'high'],
+  [`node -r ./x.js -e "require('fs').readFileSync('.env')"`, 'high'],
+  // PowerShell names are case-insensitive, and its parameters may be shortened.
+  [`pwsh -c "get-content '.env'"`, 'high'],
+  [`pwsh -com "GET-CONTENT '.env'"`, 'high'],
+  // Code that reads its arguments as files.
+  [`ruby -e 'puts ARGF.read' .env`, 'high'],
+  [`perl -e 'print <>' .env`, 'high'],
+  // Code that evaluates a string may evaluate its own argument.
+  [`python3 -c "import sys; exec(sys.argv[1])" "print(open('.env').read())"`, 'high'],
+  [`node -e "eval(process.argv[1])" "require('fs').readFileSync('.env')"`, 'high'],
+  [`ruby -e 'eval(ARGV[0])' 'puts File.read(".env")'`, 'high'],
+  // PowerShell takes paths as bare words after its file cmdlets and aliases.
+  ['pwsh -c "get-content .env"', 'high'],
+  ['pwsh -c "Get-Content .env"', 'high'],
+  ['powershell -Command "Get-Content .env"', 'high'],
+  ['pwsh -c "gc .env"', 'high'],
+  ['pwsh -c "type .npmrc"', 'high'],
+  ['pwsh -c "$x = (Get-Content -Path .env -Raw); $x"', 'high'],
+];
+
+const ALLOWED = [
+  [`python3 -c "import json;print(json.load(open('package.json')))"`, 'high'],
+  [`node -e "console.log(1+1)"`, 'high'],
+  [`python3 -c "print('.env.example')"`, 'high'],
+  ['python3 manage.py runserver', 'high'],
+  ['python3 -m json.tool data.json', 'high'],
+  [`ruby -e 'puts 1'`, 'high'],
+  [`perl -e 'print 1' data.txt`, 'high'],
+  ['perl -ne print data.txt', 'high'],
+  // Code that only prints or formats the name opens nothing.
+  [`python3 -c "print('.env')"`, 'high'],
+  [`node -e "console.log(JSON.stringify({label: '.env'}))"`, 'high'],
+  [`node fmt.js '{"label":".env"}'`, 'high'],
+  [`python3 -c 'print(1)' .env`, 'high'],
+  [`python3 -c "print(eval('1+1'))"`, 'high'],
+  // Code that only prints its argument opens nothing.
+  [`python3 -c "import sys; print(sys.argv[1])" .env`, 'high'],
+  [`node -e "console.log(process.argv[1])" .env`, 'high'],
+  [`perl -Mfeature=say -E 'say 1'`, 'high'],
+  [`python3 -c "import sys; exec(sys.argv[1])" "print(1)"`, 'high'],
+  ['pwsh -c "Get-Content README.md"', 'high'],
+  ['pwsh -c "Write-Output .env"', 'high'],
+];
+
+for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {
+  describe(`${name}: interpreter code that opens a protected file is refused`, () => {
+    for (const [command, level] of REFUSED) {
+      it(`${level}: ${JSON.stringify(command)}`, () => {
+        const r = mod.check('Bash', { command }, level);
+        assert.strictEqual(r.blocked, true, `allowed: ${command}`);
+      });
+    }
+  });
+
+  describe(`${name}: neighbouring commands stay allowed`, () => {
+    for (const [command, level] of ALLOWED) {
+      it(`${level}: ${JSON.stringify(command)}`, () => {
+        const r = mod.check('Bash', { command }, level);
+        assert.strictEqual(r.blocked, false, `refused as ${r.pattern && r.pattern.id}: ${command}`);
+      });
+    }
+  });
+}
