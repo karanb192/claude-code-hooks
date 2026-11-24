@@ -61,6 +61,27 @@ describe('Regression: in-place edit spellings', () => {
     ]) bashBlocked(cmd, 'settings-file');
   });
 
+  it('allows a separate -I value and file names after --', () => {
+    for (const cmd of [
+      'perl -I -include -ne print .claude/settings.json',
+      'ruby -I -include -ne print .claude/settings.json',
+      'perl -ne print -- -input.txt .claude/settings.json',
+      'ruby -ne print -- -ifoo .claude/settings.json',
+    ]) bashAllowed(cmd);
+  });
+
+  it('still denies -i after a separate value, a quoted -i, and clusters perl does not end early', () => {
+    for (const cmd of [
+      'perl -I lib -pi -e s/a/b/ .claude/settings.json',
+      'perl -C -i -pe x .claude/settings.json',
+      'perl -e x -i .claude/settings.json',
+      'perl "-i" -pe x .claude/settings.json',
+      'perl -0x1Fi -pe x .claude/settings.json',
+      'sed "-i" s/a/b/ .claude/settings.json',
+      'sed \\-i s/a/b/ .claude/settings.json',
+    ]) bashBlocked(cmd, 'settings-file');
+  });
+
   it('still allows reading with sed, perl and awk', () => {
     for (const cmd of ["sed -n p .claude/settings.json", "sed -e 's/x/y/' .claude/settings.json", 'perl -ne print .claude/settings.json', "awk '{print}' .claude/settings.json"]) bashAllowed(cmd);
   });

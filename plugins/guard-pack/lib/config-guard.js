@@ -142,11 +142,56 @@ const WRITE_VERB     = /\b(tee|truncate|dd)\b/i;
 // Short flags cluster (-Ei, -ni), GNU spells it --in-place, ruby takes -pi
 // like perl, and GNU awk is often installed as plain awk. BSD sed's -I is
 // in-place too, so sed stays case-insensitive.
-const INPLACE_EDIT   = /\b(?:sed|gsed)\b[^|;&]*\s(?:-[a-zA-Z]*i|--in-place)\b|\bg?awk\b[^|;&]*\s-i\s*inplace\b/i;
+// A quote or backslash before the flag ("-i", \-i) does not change it.
+const INPLACE_EDIT   = /\b(?:sed|gsed)\b[^|;&]*\s["'\\]*(?:-[a-zA-Z]*i|--in-place)\b|\bg?awk\b[^|;&]*\s["'\\]*-i["']?\s*["']?inplace\b/i;
 // For perl and ruby only lowercase -i edits in place: -I is the library path.
-// A switch that takes an argument (-I, -M, -e, -r, ...) swallows the rest of
-// its cluster, so -Ilib or -MList::Util is not an -i.
-const SCRIPT_INPLACE = /\b(?:[pP][eE][rR][lL]|[rR][uU][bB][yY])\b[^|;&]*\s-[abcdfghijklnopqstuvwyzABDGHJLNOPQRSTUWXYZ0-9]*i/;
+// A switch that takes a value (-I, -M, -e, ruby's -r, ...) swallows the rest
+// of its cluster, and with nothing left in the cluster -e, -E and -I (and
+// ruby's -r and -C) take the next word. Words after `--` are files, not
+// switches. Any other letter, known or not, lets the cluster go on.
+const SCRIPT_VALUE     = { perl: 'eEIMmxF', ruby: 'eEIrCxF' };
+const SCRIPT_SEPARATE  = { perl: 'eEI', ruby: 'eEIrC' };
+function scriptWords(text) {
+  const words = [];
+  let cur = '', quote = '', inWord = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) { if (c === quote) quote = ''; else cur += c; continue; }
+    if (c === '"' || c === "'") { quote = c; inWord = true; continue; }
+    if (c === '\\') { cur += text[++i] || ''; inWord = true; continue; }
+    if (/\s/.test(c)) { if (inWord) words.push(cur); cur = ''; inWord = false; continue; }
+    cur += c; inWord = true;
+  }
+  if (inWord) words.push(cur);
+  return words;
+}
+function scriptInplace(cmd) {
+  for (const piece of cmd.split(/[|;&\n]/)) {
+    if (!/\b(?:perl|ruby)\b/i.test(piece)) continue;
+    const words = scriptWords(piece);
+    let interp = null, switches = false;
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i];
+      const name = w.match(/\b(perl|ruby)\b/i);
+      if (name) { interp = name[1].toLowerCase(); switches = true; continue; }
+      if (!interp || !switches) continue;
+      if (w === '--') { switches = false; continue; }
+      if (!/^-[a-zA-Z0-9]/.test(w)) continue;
+      for (let k = 1; k < w.length; k++) {
+        const ch = w[k];
+        if (ch === 'i') return true;
+        if (!/[a-zA-Z0-9]/.test(ch)) break;
+        // perl's -0 takes octal digits or x and hex digits, then goes on.
+        if (ch === '0' && interp === 'perl' && w[k + 1] === 'x') { k++; while (/[0-9a-fA-F]/.test(w[k + 1] || '')) k++; continue; }
+        if (SCRIPT_VALUE[interp].includes(ch)) {
+          if (k === w.length - 1 && SCRIPT_SEPARATE[interp].includes(ch)) i++;
+          break;
+        }
+      }
+    }
+  }
+  return false;
+}
 
 // CLI commands that rewrite agent config without naming a settings path.
 // `claude plugin install` registers arbitrary hooks and skills, so it is a
@@ -407,7 +452,7 @@ function checkBashCommand(rawCmd = '', safetyLevel = SAFETY_LEVEL, cwd = process
     if (LEVELS[t.level] > threshold || !t.regex.test(cmd)) continue;
     if (redirectsInto(cmd, t.regex))
       return { blocked: true, id: t.id, level: t.level, reason: `shell redirect into protected config: ${t.reason}` };
-    if (INPLACE_EDIT.test(cmd) || SCRIPT_INPLACE.test(cmd))
+    if (INPLACE_EDIT.test(cmd) || scriptInplace(cmd))
       return { blocked: true, id: t.id, level: t.level, reason: `in-place edit of protected config: ${t.reason}` };
     if (DELETE_VERB.test(cmd))
       return { blocked: true, id: t.id, level: t.level, reason: `deleting protected config: ${t.reason}` };
