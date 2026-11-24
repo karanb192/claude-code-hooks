@@ -180,6 +180,17 @@ const SINK_FILE_FLAG = Object.entries(CLI_FILE_FLAGS)
 // A reader with a file operand, so `ps aux | head | llm` is a filter, not a read.
 const READER_CMD = '(?:\\b(?:cat|head|tail|bat|tac|more|less)\\b(?:\\s+-\\S+)*\\s+[^\\s|;&<>-]|\\bgit\\s+(?:diff|show)\\b)';
 
+// What precedes a secret variable fed to a reader by <<<. Escapes are read as pairs, so a \\$ never
+// starts a variable. A ; | & < > or paren glued to the word ends the herestring, but the next command
+// can still run or print the variable, so the scan goes on, except through a command that is only an
+// assignment, such as ;label=$TOKEN, which prints nothing; (?=(...))\\k<asg> takes it whole.
+const HS_QUOTED = '"(?:[^"\\\\\\n]|\\\\[\\s\\S])*"|\'[^\']*\'';
+const HS_CHAR = '[^\\s\'"\\\\;|&<>()]|\\\\[\\s\\S]';
+const HS_ASSIGN = '\\s*[A-Za-z_]\\w*=(?:' + HS_QUOTED + '|' + HS_CHAR + ')*(?=\\s*(?:[;|&\\n]|$))';
+const HERESTRING_LEAD = '(?:' + HS_QUOTED + '|' + HS_CHAR
+  + '|(?=(?<asg>[;|&]' + HS_ASSIGN + '))\\k<asg>'
+  + '|[;|&](?!' + HS_ASSIGN + ')|[<>()])*?(?:"(?:[^"\\\\\\n]|\\\\[\\s\\S])*?)?';
+
 // Bash patterns that expose or exfiltrate secrets
 const BASH_PATTERNS = [
   // CRITICAL
@@ -198,7 +209,7 @@ const BASH_PATTERNS = [
   { level: 'high', id: 'cat-netrc',              regex: /\b(cat|less|head|tail|more)\s+[^|;]*\.netrc/i,                    reason: 'Reading .netrc credentials' },
   { level: 'high', id: 'source-env',             regex: /\bsource\s+[^|;]*\.env\b|(?:^|[;&|]\s*)\.\s+[^|;]*\.env\b|^\.\s+[^|;]*\.env\b/i, reason: 'Sourcing .env loads secrets' },
   { level: 'high', id: 'export-cat-env',         regex: /export\s+.*\$\(cat\s+[^)]*\.env/i,                                reason: 'Exporting secrets from .env' },
-  { level: 'high', id: 'herestring-secret-var',  regex: new RegExp('\\b(?:cat|tac|tee|head|tail|nl|rev|base64|base32|xxd|od|hexdump|sed|awk|tr|cut|sort|uniq|fold|jq)\\b[^;|&\\n]*<<<\\s*(?:"(?:[^"\\\\\\n]|\\\\[\\s\\S])*?|(?:[^\\s\'"\\\\]|\\\\[\\s\\S])*?)' + SECRET_VAR, 'i'), reason: 'Printing secret variable' },
+  { level: 'high', id: 'herestring-secret-var',  regex: new RegExp('\\b(?:cat|tac|tee|head|tail|nl|rev|base64|base32|xxd|od|hexdump|sed|awk|tr|cut|sort|uniq|fold|jq)\\b[^;|&\\n]*<<<\\s*' + HERESTRING_LEAD + SECRET_VAR, 'i'), reason: 'Printing secret variable' },
 
   // HIGH - Exfiltration
   { level: 'high', id: 'curl-upload-env',        regex: /\bcurl\b[^;|&]*(-d\s*@|-F\s*[^=]+=@|--data[^=]*=@|--data[-a-z]*\s+@|(?<![\w-])-T(?![A-Za-z0-9-])\s*|--upload-file[=\s]+)[^;|&]*(\.env|credentials|secrets|id_rsa|\.pem|\.key)/i, reason: 'Uploading secrets via curl' },

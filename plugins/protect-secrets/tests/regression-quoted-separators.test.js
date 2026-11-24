@@ -25,6 +25,10 @@ const REFUSED = [
   ["SEC-16-d", "llm \"x | $GH_PAT\"", 'high'],
   ["escaped-backslash", "cat <<< \"\\\\$SECRET_KEY\"", 'high'],
   ["quoted-separator-then-secret", "echo \"$USER;$API_KEY\"", 'high'],
+  // After the herestring, the next command can still run or print the variable.
+  ["herestring-then-run", "cat <<< x;$SECRET_KEY", 'high'],
+  ["herestring-assign-then-run", "cat <<< x;label=$A_TOKEN;$B_TOKEN", 'high'],
+  ["herestring-assign-prefix", "cat <<< x;label=$TOKEN env", 'high'],
 ];
 
 const ALLOWED = [
@@ -38,6 +42,9 @@ const ALLOWED = [
   // An escaped dollar sign is literal text, not an expansion.
   ['cat <<< "\\$DEMO_TOKEN"', 'high'],
   ['cat <<< \\$DEMO_TOKEN', 'high'],
+  // A command that is only an assignment after the herestring prints nothing.
+  ['cat <<< saved\\ text;label=$DEMO_TOKEN', 'high'],
+  ['cat <<< x&&label=$DEMO_TOKEN', 'high'],
 ];
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {
