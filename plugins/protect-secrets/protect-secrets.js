@@ -115,10 +115,14 @@ const SINK_PREFIX = '(?:^|[|;&(`"\'!\\n]|\\b(?:do|then|else)\\b)\\s*'
   + '(?:(?:sudo|npx|uvx|bunx|pnpm\\s+dlx|command|time|exec|nice|nohup|env|timeout|xargs)\\b[^;|&\\n]*?\\s+)?'
   + '(?:[^\\s"\';|&]*\\/)?';
 const SINK_END = '(?=[\\s<]|$)';
+// /dev/null is the one input that is always empty; /dev/shm and /dev/fd hold real data.
+const NOT_DEV_NULL = '(?![\'"]?\\/dev\\/null[\'"]?(?![^\\s;|&<>()]))';
+// An input redirect written before the command: <file gemini.
+const LEAD_REDIRECT = '(?:^|[;&|({\\n])\\s*(?<!<)<(?![<(])\\s*' + NOT_DEV_NULL + '[^\\s;|&<>()]+\\s+(?:[^\\s"\';|&]*\\/)?';
 const SINK_CMD = SINK_PREFIX + SINK_CLI + SINK_END;
 const sinkCmd = (cli) => SINK_PREFIX + cli + SINK_END;
 // A segment with balanced quotes as opaque units: a name inside a quoted prompt is prose, not an operand.
-const SEG_QA = '(?:[^;|&\\n"\']|"[^"\\n]*"|\'[^\'\\n]*\')*?';
+const SEG_QA = '(?:[^;|&\\n"\']|"[^"]*"|\'[^\']*\')*?';
 // Commands whose stdout is the file they are given (ssh -i and kubectl --kubeconfig are not).
 const CONTENT_CMD = '\\b(?:cat|tac|head|tail|bat|more|less|sops|gpg|age|base64|xxd|od|rev|sed|awk|grep|jq|yq|strings|openssl\\s+enc|python3?|node|ruby|perl)\\b';
 const SINK_HOST = '(?:generativelanguage\\.googleapis\\.com|aiplatform\\.googleapis\\.com|api\\.openai\\.com|[\\w.-]+\\.openai\\.azure\\.com|api\\.anthropic\\.com|openrouter\\.ai|api\\.mistral\\.ai|api\\.groq\\.com|api\\.together\\.xyz|api\\.deepseek\\.com|api\\.x\\.ai|api\\.cohere\\.com|api\\.perplexity\\.ai|api\\.fireworks\\.ai|api\\.cerebras\\.ai|router\\.huggingface\\.co|bedrock-runtime(?:-fips)?\\.[\\w-]+\\.amazonaws\\.com|integrate\\.api\\.nvidia\\.com|api\\.deepinfra\\.com)';
@@ -146,16 +150,24 @@ const floatingNames = secretFiles.filter(p => !p.regex.source.startsWith(PATH_AN
 const SECRET_GLOB = '(?:\\.[A-Za-z]{0,3}[*?]|\\.(?:ssh|aws|kube|gnupg|azure|docker|config\\/gcloud)\\/[^\\s"\']*[*?])';
 const SECRET_NAME = '(?:' + FILE_DIR + '(?:' + anchoredNames.join('|') + '|' + SECRET_GLOB + ')|' + FILE_ANY + '(?:' + floatingNames.join('|') + '))(?![A-Za-z0-9])';
 const SECRET_FILE = '(?:^|[\\s"\'=<@(])\\s*' + SECRET_NAME;
+// The whole operand: a backup copy (.npmrc.bak) still counts, a different file (.npmrc.md) does not.
+const SECRET_OPERAND = SECRET_FILE + '(?:\\.(?:bak|backup|old|orig|save|tmp)|~)?(?![^\\s"\'`;|&<>()])';
 const SECRET_WORD = '(?:SECRETS?|KEY|TOKEN|PASSWORD|PASSWD|PASSW|PASSPHRASE|PASS|CREDENTIALS?|API_KEY|APIKEY|PAT)';
 // Whole name segments, so $AUTHOR and $TOKENS_USED stay clean; AUTH and PRIVATE only as the last segment.
 const SECRET_TAIL = '(?:_(?:ID|FILE|PATH|VALUE|VAL|STR|STRING|B64|BASE64|JSON|PEM|DATA|CONTENT|TEXT|RAW|HEX|PROD|PRODUCTION|DEV|STAGING|TEST|OLD|NEW|[0-9]+))*';
-const SECRET_VAR = '\\$\\{?!?(?:(?:[A-Z0-9]+_)*' + SECRET_WORD + SECRET_TAIL + '|(?:[A-Z0-9]+_)*(?:AUTH|PRIVATE))\\}?(?![A-Za-z0-9_])';
-// Not a heredoc, herestring, process substitution or /dev/*.
-const REDIRECT_IN = '(?<!<)<(?![<(])\\s*(?!\\/dev\\/)';
+// PWD only after a prefix (MYSQL_PWD): a bare $PWD is the working directory.
+const SECRET_VAR = '\\$\\{?!?(?:(?:[A-Z0-9]+_)*' + SECRET_WORD + SECRET_TAIL + '|(?:[A-Z0-9]+_)*(?:AUTH|PRIVATE)|(?:[A-Z0-9]+_)+PWD)\\}?(?![A-Za-z0-9_])';
+// One grep's words: & only inside a redirection such as 2>&1 or &>, so && and a newline end it.
+const GREP_ANY = '(?:[^|;&\\n]|(?<=[<>])&|&(?=>))';
+// The same, stopping at a -- after which every word is an operand.
+const GREP_ARGS = '(?:(?!\\s--(?:\\s|$))' + GREP_ANY + ')';
+const GREP_TERM = '(?:password|secret|api.?key|token|credential)';
+// Not a heredoc, herestring, process substitution or /dev/null.
+const REDIRECT_IN = '(?<!<)<(?![<(])\\s*' + NOT_DEV_NULL;
 // -T as a whole flag: the patterns run case-insensitive, so a bare -T also matches --max-time.
-const UPLOAD_FLAG = '(?:(?<![\\w-])-T(?![A-Za-z0-9-])\\s*|--(?:upload|post|body)-file[=\\s]+)';
+const UPLOAD_FLAG = '(?:(?<![\\w-])-[A-Za-z]*T(?![A-Za-z0-9-])\\s*|--(?:upload|post|body)-file[=\\s]+)';
 const FILE_BODY = '(?:@|' + REDIRECT_IN + '|\\$\\(\\s*(?:cat|head|tail|<)\\s+|`\\s*(?:cat|head|tail)\\s+|' + UPLOAD_FLAG + ')';
-const SUBST_FILE = '(?:\\$\\(\\s*(?:cat|head|tail|<)\\s+|`\\s*(?:cat|head|tail)\\s+)["\']?[^\\s"\';|&<>()-]';
+const SUBST_FILE = '(?:\\$\\(\\s*(?:(?:cat|head|tail)\\s+|<\\s*)|`\\s*(?:cat|head|tail)\\s+)["\']?[^\\s"\';|&<>()-]';
 const BODY_FLAG = '(?:-d|--data(?:-binary|-raw|-urlencode|-ascii)?|--json|-F|--form(?:-string)?)';
 const API_BODY = '(?:' + BODY_FLAG + '\\s*=?\\s*["\']?(?:[\\w-]+=?)?(?:@|\\$\\(\\s*(?:cat|head|tail|<)\\s+|`\\s*cat\\s+)|' + REDIRECT_IN + '|' + UPLOAD_FLAG + ')';
 const HTTPIE_FILE_ITEM = '\\s(?:[\\w-]+:?=?)?@';
@@ -178,7 +190,56 @@ const SINK_FILE_FLAG = Object.entries(CLI_FILE_FLAGS)
   .concat([sinkCmd('(?:gemini(?:-cli)?|openai)') + '[^;|&\\n]*' + AT_PATH])
   .join('|');
 // A reader with a file operand, so `ps aux | head | llm` is a filter, not a read.
-const READER_CMD = '(?:\\b(?:cat|head|tail|bat|tac|more|less)\\b(?:\\s+-\\S+)*\\s+[^\\s|;&<>-]|\\bgit\\s+(?:diff|show)\\b)';
+// sed, awk, jq and grep take a script or pattern first, so they need a second operand.
+const OPERAND = '(?:\'[^\']*\'|"[^"]*"|[^\\s|;&<>\'"-])';
+// Short options whose value is the next word (sort -k 3, cut -d , -f 1), so the value is not read as a
+// file. The patterns match case-insensitively, so a letter is left out when its other case is a flag
+// without a value (sort -s, xxd -C, od -a). cat, head, tail and the other readers the rule read before
+// keep their earlier reading, so head -n 5 in a pipe still counts as reading a file.
+const READER_VALUE_OPTS = {
+  'cat|bat|more|less|rev|tac|head|tail': '', sort: 'kot', cut: 'bcdf', fold: 'w',
+  uniq: 'fsw', nl: 'bdfhilnsvw', paste: 'd', column: 'cos', strings: 'ent', xxd: 'glos', od: 'jnt',
+  hexdump: 'ens', base64: 'bw',
+};
+const LONG_VALUE_OPT = '--(?:key|lines|bytes|delimiter|fields|characters|field-separator|width|output|separator)';
+// A value is never another reader's name, so one reader's options cannot run on through the next.
+const OPT_VALUE = '(?!(?:' + Object.keys(READER_VALUE_OPTS).join('|') + ')(?:\\s|$))(?:\'[^\']*\'|"[^"]*"|[^\\s|;&<>\'"][^\\s|;&<>]*)';
+const readerOptions = (letters) => '(?:\\s+(?:'
+  + (letters ? '-[A-Za-z]*[' + letters + ']\\s+' + OPT_VALUE + '|' : '')
+  + LONG_VALUE_OPT + '\\s+' + OPT_VALUE
+  + '|-(?!-(?:key|lines|bytes|delimiter|fields|characters|field-separator|width|output|separator)(?:\\s|$))'
+  + (letters ? '(?![A-Za-z]*[' + letters + '](?:\\s|$))' : '') + '\\S+))*';
+const READER_CMD = '(?:' + Object.entries(READER_VALUE_OPTS)
+  .map(([cmds, letters]) => '\\b(?:' + cmds + ')\\b' + readerOptions(letters) + '\\s+' + OPERAND).join('|')
+  + '|\\b(?:sed|awk|gawk|jq|yq|grep|rg)\\b(?:\\s+-\\S+)*\\s+' + OPERAND + '\\S*(?:\\s+-\\S+)*\\s+' + OPERAND
+  + '|\\bdd\\b[^;|&\\n]*\\bif=|\\bgit\\s+(?:diff|show|blame|cat-file(?!\\s+-[est](?:\\s|$))|log\\b[^;|&\\n]*\\s(?:-p|--patch)\\b))';
+// curl and wget read a pipe only through a - or /dev/stdin argument (-d @-, -T -, -K -, -i -) or a
+// substitution that can read it. A - that is the value of an output or header option (-o -, -c -,
+// -w -, --stderr -) or sits inside a longer word ('X-Label: -') is not request input. The rules match
+// case-insensitively, so -D - stays counted: its letter is also -d.
+// HTTPie, xh and curlie send a piped stdin as the body by default.
+const OUTPUT_OPT = '(?:-[A-Za-z]*[ohcw]|--(?:output|dump-header|header|cookie-jar|stderr|write-out|output-document))';
+const STDIN_ARG = '(?:[@<]["\']?-["\']?(?=[\\s;|&)]|$)|(?<!(?:^|\\s)' + OUTPUT_OPT + ')[\\s=](?:"-"|\'-\'|-)(?=[\\s;|&)]|$)'
+  + '|(?<![\\w-])-(?![A-Za-z]*[ohcw]["\']?-)[A-Za-z]+["\']?-["\']?(?=[\\s;|&)]|$)'
+  + '|(?<![\\w-])-[A-Za-z]*T\\s*["\']?\\.["\']?(?=\\s|$)|--upload-file[=\\s]+["\']?\\.["\']?(?=\\s|$)|\\/dev\\/(?:stdin|fd\\/0)(?![\\w\\/])|\\/proc\\/self\\/fd\\/0(?![\\w\\/])|\\$\\(|`|<\\()';
+// The readers the rule read before still count with any HTTP command after them.
+const OLD_READER = '(?:\\b(?:cat|head|tail|bat|tac|more|less)\\b(?:\\s+-\\S+)*\\s+[^\\s|;&<>-]|\\bgit\\s+(?:diff|show)\\b)';
+const PIPE_HTTP = '(?:(?<=\\|\\s*)(?:curl|wget)(?=\\s)(?=[^;|&\\n]*' + STDIN_ARG + ')|(?<!\\|\\s*)' + HTTP_CMD + '|(?<=\\|\\s*)' + HTTPIE_CMD + '|(?<=\\|\\s*)curlie(?=\\s))';
+// Every branch of the two strict file rules names a sink CLI or a model API host. Testing for that name
+// first spares a command without one the large rule regexes, which V8 compiles on their first real use.
+const SINK_NAME = new RegExp(SINK_CLI, 'i');
+const SINK_HOST_NAME = new RegExp(SINK_HOST, 'i');
+
+// What precedes a secret variable fed to a reader by <<<. Escapes are read as pairs, so a \\$ never
+// starts a variable. A ; | & < > or paren glued to the word ends the herestring, but the next command
+// can still run or print the variable, so the scan goes on, except through a command that is only an
+// assignment, such as ;label=$TOKEN, which prints nothing; (?=(...))\\k<asg> takes it whole.
+const HS_QUOTED = '"(?:[^"\\\\\\n]|\\\\[\\s\\S])*"|\'[^\']*\'';
+const HS_CHAR = '[^\\s\'"\\\\;|&<>()]|\\\\[\\s\\S]';
+const HS_ASSIGN = '\\s*[A-Za-z_]\\w*=(?:' + HS_QUOTED + '|' + HS_CHAR + ')*(?=\\s*(?:[;|&\\n]|$))';
+const HERESTRING_LEAD = '(?:' + HS_QUOTED + '|' + HS_CHAR
+  + '|(?=(?<asg>[;|&]' + HS_ASSIGN + '))\\k<asg>'
+  + '|[;|&](?!' + HS_ASSIGN + ')|[<>()])*?(?:"(?:[^"\\\\\\n]|\\\\[\\s\\S])*?)?';
 
 // Bash patterns that expose or exfiltrate secrets
 const BASH_PATTERNS = [
@@ -192,12 +253,14 @@ const BASH_PATTERNS = [
 
   // HIGH - Environment exposure
   { level: 'high', id: 'env-dump',               regex: /\bprintenv\b|(?:^|[;&|(]\s*)(?:env|set|export|declare\s+-x)\s*(?:$|[;&|)])/, reason: 'Environment dump may expose secrets' },
-  { level: 'high', id: 'echo-secret-var',        regex: /\becho\b[^;|&]*\$\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\}?/i, reason: 'Echoing secret variable' },
-  { level: 'high', id: 'printf-secret-var',      regex: /\bprintf\b[^;|&]*\$\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\}?/i, reason: 'Printing secret variable' },
+  // The keyword anywhere in a letters-only name, or a whole-segment SECRET_VAR (S3_SECRET_KEY, DB_PASS, GH_PAT).
+  { level: 'high', id: 'echo-secret-var',        regex: new RegExp('\\becho\\b[^;|&]*(?:\\$\\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\\}?|' + SECRET_VAR + ')', 'i'), reason: 'Echoing secret variable' },
+  { level: 'high', id: 'printf-secret-var',      regex: new RegExp('\\bprintf\\b[^;|&]*(?:\\$\\{?[A-Za-z_]*(?:SECRET|KEY|TOKEN|PASSWORD|PASSW|CREDENTIAL|API_KEY|AUTH|PRIVATE)[A-Za-z_]*\\}?|' + SECRET_VAR + ')', 'i'), reason: 'Printing secret variable' },
   { level: 'high', id: 'cat-secrets-file',       regex: /\b(cat|less|head|tail|more)\s+[^|;]*(credentials?|secrets?)\.(json|ya?ml|toml)/i, reason: 'Reading secrets file' },
   { level: 'high', id: 'cat-netrc',              regex: /\b(cat|less|head|tail|more)\s+[^|;]*\.netrc/i,                    reason: 'Reading .netrc credentials' },
   { level: 'high', id: 'source-env',             regex: /\bsource\s+[^|;]*\.env\b|(?:^|[;&|]\s*)\.\s+[^|;]*\.env\b|^\.\s+[^|;]*\.env\b/i, reason: 'Sourcing .env loads secrets' },
   { level: 'high', id: 'export-cat-env',         regex: /export\s+.*\$\(cat\s+[^)]*\.env/i,                                reason: 'Exporting secrets from .env' },
+  { level: 'high', id: 'herestring-secret-var',  regex: new RegExp('\\b(?:cat|tac|tee|head|tail|nl|rev|base64|base32|xxd|od|hexdump|sed|awk|tr|cut|sort|uniq|fold|jq)\\b[^;|&\\n]*<<<\\s*' + HERESTRING_LEAD + SECRET_VAR, 'i'), reason: 'Printing secret variable' },
 
   // HIGH - Exfiltration
   { level: 'high', id: 'curl-upload-env',        regex: /\bcurl\b[^;|&]*(-d\s*@|-F\s*[^=]+=@|--data[^=]*=@|--data[-a-z]*\s+@|(?<![\w-])-T(?![A-Za-z0-9-])\s*|--upload-file[=\s]+)[^;|&]*(\.env|credentials|secrets|id_rsa|\.pem|\.key)/i, reason: 'Uploading secrets via curl' },
@@ -222,17 +285,23 @@ const BASH_PATTERNS = [
   { level: 'high', id: 'truncate-secrets',       regex: /\btruncate\b.*\.(env|pem|key)\b|(?:^|[;&|]\s*)>\s*\.env\b/i,      reason: 'Truncating secrets file' },
 
   // HIGH - Process environ
-  { level: 'high', id: 'proc-environ',           regex: /\/proc\/[^/]*\/environ/,                                          reason: 'Reading process environment' },
+  // A relative environ read after cd or pushd into /proc is judged by procEnvironRead, which tracks the
+  // directory per shell scope.
+  { level: 'high', id: 'proc-environ',           regex: /\/proc\/+(?:[^/\s]+\/+)*environ\b/, also: procEnvironRead, reason: 'Reading process environment' },
   { level: 'high', id: 'xargs-cat-env',          regex: /xargs.*cat|\.env.*xargs/i,                                         reason: 'Reading .env via xargs' },
   { level: 'high', id: 'find-exec-cat-env',      regex: /find\b.*\.env.*-exec|find\b.*-exec.*(cat|less)/i,                 reason: 'Finding and reading .env files' },
 
   // STRICT
-  { level: 'strict', id: 'grep-password',        regex: /\bgrep\b[^|;]*(-r|--recursive)[^|;]*(password|secret|api.?key|token|credential)/i, reason: 'Grep for secrets may expose them' },
-  { level: 'strict', id: 'base64-secrets',       regex: /\bbase64\b[^|;]*(\.env|credentials|secrets|id_rsa|\.pem)/i,       reason: 'Base64 encoding secrets' },
+  // The recursive flag may come after the pattern or the path, or sit in a cluster (-rn, -iR).
+  // It must belong to the same grep (no && or newline in between) and come before a -- that ends the options.
+  // quoted: also read the copy where a quoted & or newline is blanked, so grep -r "a&token" still counts.
+  // (?=(...))\1 takes the first flag or term and never retries a later one, which keeps the match linear.
+  { level: 'strict', id: 'grep-password',        regex: new RegExp('\\bgrep\\b(?=(' + GREP_ARGS + '*?(?:-r|--recursive|\\s-[A-Za-z]*r)))\\1' + GREP_ANY + '*?' + GREP_TERM + '|\\bgrep\\b(?=(' + GREP_ARGS + '*?' + GREP_TERM + '))\\2' + GREP_ARGS + '*?\\s(?:-[A-Za-z]*r[A-Za-z]*|--(?:dereference-)?recursive)(?![\\w-])', 'i'), quoted: true, reason: 'Grep for secrets may expose them' },
+  { level: 'strict', id: 'base64-secrets',       regex: new RegExp('\\bbase64\\b[^|;]*(?:\\.env|credentials|secrets|id_rsa|\\.pem|' + SECRET_OPERAND + ')', 'i'), also: base64ReadsSecret, reason: 'Base64 encoding secrets' },
 
   // STRICT - Delegation sinks (any file contents into an external model)
-  { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&\\n]*' + SINK_CMD + '|' + SINK_CMD + SEG_QA + REDIRECT_IN + FILE_TOKEN + '|' + SINK_CMD + '[^;|&\\n]*' + SUBST_FILE + '|' + SINK_FILE_FLAG, 'i'), reason: 'Piping file contents to an external model CLI' },
-  { level: 'strict', id: 'model-api-file-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + API_BODY + FILE_TOKEN + '|' + HTTPIE_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + HTTPIE_FILE_ITEM + '[\\w.~\\/]|' + READER_CMD + '[^;&\\n]*' + HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')', 'i'), reason: 'Sending file contents to a model API endpoint' },
+  { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&\\n]*' + SINK_CMD + '|' + SINK_CMD + SEG_QA + REDIRECT_IN + FILE_TOKEN + '|' + SINK_CMD + '[^;|&\\n]*' + SUBST_FILE + '|' + SINK_CMD + '[^;|&\\n]*(?:\\$\\(|`)\\s*' + READER_CMD + '|' + LEAD_REDIRECT + SINK_CLI + SINK_END + '|' + SINK_FILE_FLAG, 'i'), pre: SINK_NAME, reason: 'Piping file contents to an external model CLI' },
+  { level: 'strict', id: 'model-api-file-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + API_BODY + FILE_TOKEN + '|' + HTTPIE_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + HTTPIE_FILE_ITEM + '[\\w.~\\/]|' + OLD_READER + '[^;&\\n]*' + HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')|' + READER_CMD + '[^;&\\n]*' + PIPE_HTTP + '(?=[^;|&\\n]*' + SINK_HOST + ')', 'i'), pre: SINK_HOST_NAME, reason: 'Sending file contents to a model API endpoint' },
 ];
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
@@ -755,13 +824,29 @@ function checkFilePath(filePath, safetyLevel = SAFETY_LEVEL) {
   return { blocked: false, pattern: null };
 }
 
+// The shared mask writes _ for a quoted ; | or &, which can join two words into a
+// variable name the shell never expands: "$USER;KEY" is $USER, not $USER_KEY.
+// A control character keeps the words apart without ending the segment.
+function maskSeparatorsApart(text) {
+  return maskQuotedSeparators(text.replace(/_/g, '\u0002')).replace(/_/g, '\u0001').replace(/\u0002/g, '_');
+}
+
 function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   if (!cmd) return { blocked: false, pattern: null };
   cmd = cmd.replace(/\\\r?\n\s*/g, ' ');
   const threshold = LEVELS[safetyLevel] || 2;
-  const texts = shellViews(cmd).map(v => v.text);
-  const views = texts.map(maskTemplates);
-  const rule = BASH_PATTERNS.find(p => LEVELS[p.level] <= threshold && views.some(v => p.regex.test(v)));
+  const read = shellViews(cmd);
+  const texts = read.map(v => v.text);
+  // Each view is read as is and with a ; | & or newline inside quotes blanked, so quoted text before a
+  // secret variable does not end a match early. quoted: the rule also reads the shared masked copy.
+  // also: a check in code.
+  const views = texts.flatMap(t => [maskTemplates(t), maskTemplates(maskSeparatorsApart(t))]);
+  const quoted = views.concat(read.map(v => maskTemplates(v.masked)));
+  let rule = BASH_PATTERNS.find(p => LEVELS[p.level] <= threshold
+    && ((p.quoted ? quoted : views).some(v => (!p.pre || p.pre.test(v)) && p.regex.test(v)) || (p.also && texts.some(t => p.also(t)))));
+  // env-dump also reads each command in code, so a dump anywhere in the line counts.
+  const dump = BASH_PATTERNS.find(p => p.id === 'env-dump');
+  if (!rule && LEVELS[dump.level] <= threshold && texts.some(dumpsEnvironment)) rule = dump;
   const quotedGlobs = literalGlobs(texts[0]);
   let hit = null;
   texts.forEach((text, i) => { hit = stronger(hit, secretFileAccess(text, safetyLevel, i ? quotedGlobs : null)); });
@@ -982,6 +1067,157 @@ function secretFileAccess(text, safetyLevel, literal) {
     for (const cmd of frame.cmds) best = stronger(best, commandFileAccess(cmd, ctx));
   }
   return best;
+}
+
+// base64 given a file the file tools refuse, judged on the whole name as they judge it, so a name the
+// pattern's word list does not spell out (.azure/accessTokens.json) still counts. A backup suffix
+// (.bak, .backup, .old, .orig, .save, .tmp, ~) is the same file.
+const BACKUP_SUFFIX = /(?:\.(?:bak|backup|old|orig|save|tmp)|~)$/i;
+function base64ReadsSecret(text) {
+  const named = (v) => {
+    const parts = [v, ...v.split(/[=@<(]/).slice(1)];
+    if (/^-[A-Za-z]./.test(v)) parts.push(v.slice(2));
+    return parts.some(p => p && (checkFilePath(p, 'high').blocked || checkFilePath(p.replace(BACKUP_SUFFIX, ''), 'high').blocked));
+  };
+  if (!/base64/.test(text)) return false;
+  for (const f of readShell(text).frames) {
+    for (const cmd of f.cmds) {
+      const at = cmd.words.findIndex(w => !w.op && !w.target && base(w.value) === 'base64');
+      if (at < 0) continue;
+      if (cmd.words.slice(at + 1).some(w => !w.op && named(w.value))) return true;
+      if (cmd.words.some(w => w.target && named(w.value))) return true;
+    }
+  }
+  return false;
+}
+
+// Reading /proc/<pid>/environ by a relative name after cd or pushd into /proc. The directory is
+// tracked per shell scope: a cd inside ( ... ) does not change the parent's directory. echo, printf
+// and test only name the file. A cd to an unknown place ($DIR) keeps the last known directory.
+const PROC_NAMES_ONLY = new Set(['echo', 'printf', 'test', '[', '[[']);
+// A directory is kept as its first component and its depth, which is all that decides whether a
+// relative name lands under /proc; this keeps long chains of cd linear.
+function resolveDir(dir, to) {
+  let { head, len } = to.startsWith('/') || !dir ? { head: null, len: 0 } : dir;
+  for (const part of to.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') { if (len > 0) len--; if (len === 0) head = null; }
+    else { if (len === 0) head = part; len++; }
+  }
+  return { head, len };
+}
+const inProc = (dir) => !!dir && dir.head === 'proc';
+function procEnvironRead(text) {
+  if (!/environ/.test(text)) return false;
+  const read = readShell(text);
+  let state = { dir: null, prev: null, stack: [] };
+  const saved = [];
+  const names = (w) => !w.dynamic && /(?:^|\/)environ$/.test(w.value) && !w.value.startsWith('/');
+  // A word of code (python3 -c, node -e) or an expanding heredoc body that names environ may open it.
+  const mentions = (t) => /(?<![\w.\/-])(?:[^\s\/'"`]+\/+)*environ(?![\w.-])/.test(t);
+  const hits = (st, w) => names(w) && inProc(st.dir) && inProc(resolveDir(st.dir, w.value));
+  const visit = (cmd, st) => {
+    for (const w of cmd.words) for (const f of w.frames || []) for (const c of f.cmds) if (visit(c, { ...st, stack: [...st.stack] })) return true;
+    if (cmd.words.some(w => w.target === '<' && hits(st, w))) return true;
+    const words = argv(cmd);
+    let k = commandIndex(words);
+    for (const w of words.slice(0, k < 0 ? words.length : k)) {
+      const m = /^[A-Za-z_]\w*\+?=([\s\S]*)$/.exec(w.value);
+      if (m && !w.dynamic && hits(st, { value: m[1], dynamic: false })) return true;
+    }
+    while (k >= 0 && words[k] && !words[k].dynamic && /^(?:builtin|command)$/.test(words[k].value) && words[k + 1] && !/^-/.test(words[k + 1].value)) k++;
+    // A command word that is not plain text may be any reader.
+    if (k < 0 || !words[k] || words[k].dynamic) return words.some(w => hits(st, w));
+    const name = base(words[k].value);
+    const ops = words.slice(k + 1).filter(w => !/^-./.test(w.value));
+    if (name === 'cd' || name === 'pushd') {
+      const to = ops[0];
+      const from = st.dir;
+      if (name === 'pushd') st.stack.push(from);
+      if (!to) { if (name === 'cd') st.dir = null; else st.dir = st.stack.length > 1 ? st.stack.splice(-2, 1)[0] : st.dir; }
+      else if (to.dynamic) { /* unknown target: keep the last known directory */ }
+      // cd - returns to a directory this line may not show; keep the current one when it is unknown.
+      else if (to.value === '-') st.dir = st.prev !== null ? st.prev : st.dir;
+      else if (to.value.startsWith('~')) st.dir = null;
+      else if (to.value.startsWith('/')) { const d = resolveDir(null, to.value); st.dir = inProc(d) ? d : null; }
+      else if (st.dir !== null) { const d = resolveDir(st.dir, to.value); st.dir = inProc(d) ? d : null; }
+      st.prev = from;
+      return false;
+    }
+    if (name === 'popd') { st.prev = st.dir; st.dir = st.stack.length ? st.stack.pop() : null; return false; }
+    if (PROC_NAMES_ONLY.has(name)) return false;
+    if (inProc(st.dir) && words.slice(k + 1).some(w => mentions(w.value))) return true;
+    if (inProc(st.dir) && read.heredocs.some(h => h.cmd === cmd && !h.quoted && /[$`]/.test(text.slice(h.bodyStart, h.bodyEnd)) && mentions(text.slice(h.bodyStart, h.bodyEnd)))) return true;
+    return words.slice(k + 1).some(w => hits(st, w) || hits(st, { value: w.value.replace(/^[^=]*=/, ''), dynamic: w.dynamic }));
+  };
+  for (const cmd of read.top.cmds) {
+    for (const w of cmd.words) if (w.op === '(') saved.push({ ...state, stack: [...state.stack] });
+    if (visit(cmd, state)) return true;
+    for (const w of cmd.words) if (w.op === ')' && saved.length) state = saved.pop();
+  }
+  return false;
+}
+
+// A command that prints the whole environment, wherever it sits in the line:
+// after a newline, a keyword or a brace, behind a wrapper or a path, with its
+// output redirected or inside a substitution.
+const DECLARATIONS = new Set(['export', 'declare', 'typeset', 'readonly', 'local']);
+// Wrappers that run the command after them, with the options whose value is the next word.
+const DUMP_WRAPPERS = {
+  sudo: /^(?:-[ugpCDhrRtTU]|--(?:user|group|other-user|prompt|close-from|chdir|role|type|host))$/,
+  doas: /^-[uC]$/, nice: /^(?:-n|--adjustment)$/, ionice: /^(?:-[cnpP]|--(?:class|classdata|pid|pgid|uid))$/,
+  stdbuf: /^(?:-[ioe]|--(?:input|output|error))$/, timeout: /^(?:-[sk]|--(?:signal|kill-after))$/,
+  exec: /^-a$/, time: /^(?:-[fo]|--(?:format|output))$/, command: null, builtin: null, nohup: null,
+};
+// env options that take a value; -S runs the command in its value, so it is no dump.
+const ENV_VALUE_OPT = /^(?:-[uC]|--(?:unset|chdir))$/;
+
+function commandDumpsEnvironment(cmd) {
+  const words = argv(cmd);
+  let k = 0;
+  while (k < words.length && !words[k].spans.length
+    && ((KEYWORDS.has(words[k].value) && !DECLARATIONS.has(words[k].value)) || /^[A-Za-z_]\w*\+?=/.test(words[k].lead || ''))) k++;
+  // The time keyword's -p only changes the timing format.
+  if (k > 0 && words[k - 1].value === 'time') while (words[k] && words[k].value === '-p') k++;
+  for (;;) {
+    while (k < words.length && !words[k].dynamic && Object.hasOwn(DUMP_WRAPPERS, base(words[k].value))) {
+      const wrapper = base(words[k].value);
+      const takesValue = DUMP_WRAPPERS[wrapper];
+      for (k++; k < words.length && /^-./.test(words[k].value); k++) {
+        if (words[k].value === '--') { k++; break; }
+        // command -v and -V look the name up without running it.
+        if (wrapper === 'command' && /^-[A-Za-z]*[vV]/.test(words[k].value)) return false;
+        if (takesValue && takesValue.test(words[k].value)) k++;
+      }
+      if (wrapper === 'timeout') k++;
+    }
+    const w = words[k];
+    if (!w || w.dynamic) return false;
+    const name = base(w.value);
+    const ops = words.slice(k + 1).map(o => o.value);
+    if (name === 'env') {
+      let j = 0;
+      for (; j < ops.length && /^-/.test(ops[j]); j++) {
+        if (/^(?:-S|--split-string)/.test(ops[j])) return false;
+        // An emptied environment, help or version text prints none of the caller's variables.
+        if (/^(?:-[0v]*i[0iv]*|-|--ignore-environment|--help|--version)$/.test(ops[j])) return false;
+        if (ENV_VALUE_OPT.test(ops[j])) j++;
+      }
+      while (j < ops.length && /^[A-Za-z_]\w*=/.test(ops[j])) j++;
+      if (j >= ops.length) return true;
+      // env runs the next word as a command, which may itself print the environment.
+      k += 1 + j;
+      continue;
+    }
+    if (name === 'export') return ops.every(o => o === '-p');
+    if (name === 'declare' || name === 'typeset') return ops.every(o => /^[-+][a-eg-zA-EG-Z]+$/.test(o));
+    if (name === 'set') return ops.length === 0;
+    return false;
+  }
+}
+
+function dumpsEnvironment(text) {
+  return readShell(text).frames.some(f => f.cmds.some(commandDumpsEnvironment));
 }
 
 // Mask each allowlisted file name on its own; matching the allowlist against
