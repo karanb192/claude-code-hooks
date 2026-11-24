@@ -1035,14 +1035,25 @@ function downloadRunsAsCode(cmd, depth = 0) {
   };
   // <(...) as the value of BASH_ENV= or ENV= on a shell's command line: the
   // shell runs that file as code before anything else.
-  const positions = new Map();
+  // Per command, once: the words that are such a value, and whether the program
+  // left after taking out every such pair is a shell.
+  const startup = new Map();
   const startupFile = (outer, word) => {
-    if (!positions.has(outer)) positions.set(outer, new Map(outer.words.map((w, k) => [w, k])));
-    const k = positions.get(outer).get(word);
-    const prev = k > 0 ? outer.words[k - 1] : null;
-    if (!prev || prev.op || !/^(?:BASH_ENV|ENV)=$/.test(prev.value) || prev.end !== word.start) return false;
-    const program = programWord(argv(outer).filter((w) => w !== word && w !== prev && !inputs.has(w)));
-    return !!program && !program.dynamic && PIPE_SHELL.test(base(program.value));
+    if (!startup.has(outer)) {
+      const values = new Set();
+      const pairs = new Set();
+      outer.words.forEach((w, k) => {
+        const prev = k > 0 ? outer.words[k - 1] : null;
+        if (prev && !prev.op && /^(?:BASH_ENV|ENV)=$/.test(prev.value) && prev.end === w.start && w.parts.some((x) => x.frame && x.open === '<(')) {
+          values.add(w);
+          pairs.add(w).add(prev);
+        }
+      });
+      const program = values.size ? programWord(argv(outer).filter((w) => !pairs.has(w) && !inputs.has(w))) : null;
+      startup.set(outer, { values, shell: !!program && !program.dynamic && PIPE_SHELL.test(base(program.value)) });
+    }
+    const info = startup.get(outer);
+    return info.shell && info.values.has(word);
   };
   for (const f of read.frames) {
     if ((f.kind !== 'proc' && f.kind !== 'subst') || !f.parent || !carries.has(f)) continue;
