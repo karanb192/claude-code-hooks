@@ -300,8 +300,8 @@ const BASH_PATTERNS = [
   { level: 'strict', id: 'base64-secrets',       regex: new RegExp('\\bbase64\\b[^|;]*(?:\\.env|credentials|secrets|id_rsa|\\.pem|' + SECRET_OPERAND + ')', 'i'), also: base64ReadsSecret, reason: 'Base64 encoding secrets' },
 
   // STRICT - Delegation sinks (any file contents into an external model)
-  { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&\\n]*' + SINK_CMD + '|' + SINK_CMD + SEG_QA + REDIRECT_IN + FILE_TOKEN + '|' + SINK_CMD + '[^;|&\\n]*' + SUBST_FILE + '|' + SINK_CMD + '[^;|&\\n]*(?:\\$\\(|`)\\s*' + READER_CMD + '|' + LEAD_REDIRECT + SINK_CLI + SINK_END + '|' + SINK_FILE_FLAG, 'i'), pre: SINK_NAME, reason: 'Piping file contents to an external model CLI' },
-  { level: 'strict', id: 'model-api-file-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + API_BODY + FILE_TOKEN + '|' + HTTPIE_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + HTTPIE_FILE_ITEM + '[\\w.~\\/]|' + OLD_READER + '[^;&\\n]*' + HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')|' + READER_CMD + '[^;&\\n]*' + PIPE_HTTP + '(?=[^;|&\\n]*' + SINK_HOST + ')', 'i'), pre: SINK_HOST_NAME, reason: 'Sending file contents to a model API endpoint' },
+  { level: 'strict', id: 'model-cli-file-input',  regex: new RegExp(READER_CMD + '[^;&\\n]*' + SINK_CMD + '|' + SINK_CMD + SEG_QA + REDIRECT_IN + FILE_TOKEN + '|' + SINK_CMD + '[^;|&\\n]*' + SUBST_FILE + '|' + SINK_CMD + '[^;|&\\n]*(?:\\$\\(|`)\\s*' + READER_CMD + '|' + LEAD_REDIRECT + SINK_CLI + SINK_END + '|' + SINK_FILE_FLAG, 'i'), pre: SINK_NAME, stdinGrep: true, also: (t) => recursiveGrepMatch('model-cli-file-input', t), reason: 'Piping file contents to an external model CLI' },
+  { level: 'strict', id: 'model-api-file-body',   regex: new RegExp(HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + API_BODY + FILE_TOKEN + '|' + HTTPIE_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')' + SEG_QA + HTTPIE_FILE_ITEM + '[\\w.~\\/]|' + OLD_READER + '[^;&\\n]*' + HTTP_CMD + '(?=[^;|&\\n]*' + SINK_HOST + ')|' + READER_CMD + '[^;&\\n]*' + PIPE_HTTP + '(?=[^;|&\\n]*' + SINK_HOST + ')', 'i'), pre: SINK_HOST_NAME, stdinGrep: true, also: (t) => recursiveGrepMatch('model-api-file-body', t), reason: 'Sending file contents to a model API endpoint' },
 ];
 
 const LEVELS = { critical: 1, high: 2, strict: 3 };
@@ -831,6 +831,167 @@ function maskSeparatorsApart(text) {
   return maskQuotedSeparators(text.replace(/_/g, '\u0002')).replace(/_/g, '\u0001').replace(/\u0002/g, '_');
 }
 
+// The strict file rules read grep with its first two words as a pattern and a file, but grep -A 3 foo
+// gives -A the value 3 and reads stdin. stdinGrep: when a grep in the command is shown to read only
+// stdin, the rule must still match with that grep set aside. Shown means every option is one this
+// list knows, spelled in full and with a literal value, nothing recurses, and every operand after the
+// pattern is -. Anything else keeps the grep counted as a reader. Case is kept, since -a takes no
+// value where -A does.
+const GREP_FAMILY = new Set(['grep', 'egrep', 'fgrep', 'zgrep']);
+const GREP_SHORT_FLAG = 'EFGPiyvwxcLloqsbHhnTZzUaIu';
+const GREP_SHORT_VALUE = 'ABCmdDe';
+const GREP_LONG_FLAG = new Set(['--extended-regexp', '--fixed-strings', '--basic-regexp', '--perl-regexp', '--ignore-case',
+  '--no-ignore-case', '--invert-match', '--word-regexp', '--line-regexp', '--count', '--color', '--colour',
+  '--files-with-matches', '--files-without-match', '--only-matching', '--quiet', '--silent', '--no-messages',
+  '--byte-offset', '--with-filename', '--no-filename', '--line-number', '--initial-tab', '--null', '--null-data',
+  '--text', '--binary', '--line-buffered']);
+const GREP_LONG_VALUE = new Set(['--after-context', '--before-context', '--context', '--max-count', '--regexp', '--label',
+  '--devices', '--directories', '--binary-files', '--color', '--colour']);
+// -d and -D change what grep does with a directory or device operand; only read and skip are plain.
+const grepPlainValue = (letter, v) => !/^(?:d|D|--devices|--directories)$/.test(letter) || /^(?:read|skip)$/.test(v);
+function grepStdinOnly(ops) {
+  let patternGiven = false;
+  const operands = [];
+  let options = true;
+  for (let j = 0; j < ops.length; j++) {
+    const w = ops[j];
+    const v = w.value;
+    if (w.dynamic) return false;
+    if (options && v === '--') { options = false; continue; }
+    if (options && /^--./.test(v)) {
+      const eq = v.indexOf('=');
+      const name = eq < 0 ? v : v.slice(0, eq);
+      if (eq < 0 && GREP_LONG_FLAG.has(name)) continue;
+      if (!GREP_LONG_VALUE.has(name)) return false;
+      let value;
+      if (eq >= 0) value = v.slice(eq + 1);
+      else { const next = ops[++j]; if (!next || next.dynamic) return false; value = next.value; }
+      if (!grepPlainValue(name, value)) return false;
+      if (name === '--regexp') patternGiven = true;
+      continue;
+    }
+    if (options && /^-./.test(v)) {
+      for (let c = 1; c < v.length; c++) {
+        if (GREP_SHORT_FLAG.includes(v[c])) continue;
+        if (/[0-9]/.test(v[c])) continue;
+        if (!GREP_SHORT_VALUE.includes(v[c])) return false;
+        let value;
+        if (c + 1 < v.length) value = v.slice(c + 1);
+        else { const next = ops[++j]; if (!next || next.dynamic) return false; value = next.value; }
+        if (!grepPlainValue(v[c], value)) return false;
+        if (v[c] === 'e') patternGiven = true;
+        break;
+      }
+      continue;
+    }
+    operands.push(v);
+  }
+  const files = operands.slice(patternGiven ? 0 : 1);
+  return files.every(f => f === '-');
+}
+// The grep word of a command, past an env wrapper that only sets or clears variables.
+function grepWordIndex(words) {
+  let k = commandIndex(words);
+  if (k < 0 || !words[k] || words[k].dynamic) return -1;
+  if (base(words[k].value) === 'env' && !words[k].spans.length) {
+    for (k++; k < words.length; k++) {
+      const v = words[k].value;
+      if (words[k].dynamic) return -1;
+      if (v === '-i' || v === '-' || v === '--ignore-environment' || /^[A-Za-z_]\w*=/.test(v)) continue;
+      if (v === '-u' || v === '--unset') { k++; continue; }
+      if (/^--unset=/.test(v)) continue;
+      break;
+    }
+  }
+  return k < words.length ? k : -1;
+}
+function expandsToMany(word, src) {
+  for (let p = word.start; p < word.end; p++) {
+    if (!/[*?[{]/.test(src[p])) continue;
+    if (word.spans.some(s => p >= s.start && p < s.end)) continue;
+    return true;
+  }
+  return false;
+}
+function setAsideStdinGrep(text) {
+  if (!/grep/.test(text)) return text;
+  const spots = [];
+  for (const f of readShell(text).frames) {
+    for (const cmd of f.cmds) {
+      const words = argv(cmd);
+      const k = grepWordIndex(words);
+      const w = words[k];
+      if (!w || w.dynamic || w.spans.length || !GREP_FAMILY.has(base(w.value))) continue;
+      // An input redirect makes stdin a file, so such a grep still reads one.
+      if (cmd.words.some(x => x.target && /^<(?:&|>)?$/.test(x.target))) continue;
+      // A glob or brace the shell expands can turn one word into several file operands.
+      if (words.some(x => expandsToMany(x, text))) continue;
+      if (grepStdinOnly(words.slice(k + 1))) spots.push([w.start, w.end]);
+    }
+  }
+  let out = text;
+  for (const [a, b] of spots.sort((x, y) => y[0] - x[0])) out = out.slice(0, a) + 'stdin_filter' + out.slice(b);
+  return out;
+}
+// A recursive grep with no file operand searches the working directory, so it reads files: grep -r,
+// -R or a cluster holding either, any abbreviation of --recursive or --dereference-recursive,
+// -d recurse or --directories=recurse, and rgrep. Such a grep is read as cat for the strict rules.
+function grepRecurses(ops) {
+  for (let j = 0; j < ops.length; j++) {
+    const v = ops[j].value;
+    if (v === '--') return false;
+    if (/^--./.test(v)) {
+      const name = v.replace(/=[\s\S]*$/, '');
+      if (name.length >= 3 && ('--recursive'.startsWith(name) || '--dereference-recursive'.startsWith(name))) return true;
+      if (name.length >= 4 && '--directories'.startsWith(name)) {
+        const value = v.includes('=') ? v.slice(v.indexOf('=') + 1) : ops[++j]?.value;
+        if (/^recurse$/.test(value || '')) return true;
+      }
+      continue;
+    }
+    if (!/^-./.test(v)) continue;
+    for (let c = 1; c < v.length; c++) {
+      if (v[c] === 'r' || v[c] === 'R') return true;
+      if (!'ABCmdDef'.includes(v[c])) continue;
+      const value = c + 1 < v.length ? v.slice(c + 1) : ops[++j]?.value;
+      if ((v[c] === 'd' || v[c] === 'D') && /^recurse$/.test(value || '')) return true;
+      break;
+    }
+  }
+  return false;
+}
+function recursiveGrepAsReader(text) {
+  if (!/grep/.test(text)) return text;
+  const spots = [];
+  for (const f of readShell(text).frames) {
+    for (const cmd of f.cmds) {
+      const words = argv(cmd);
+      const k = grepWordIndex(words);
+      const w = words[k];
+      if (!w || w.dynamic || w.spans.length) continue;
+      const name = base(w.value);
+      if (name === 'rgrep' || (GREP_FAMILY.has(name) && grepRecurses(words.slice(k + 1)))) spots.push([w.start, w.end]);
+    }
+  }
+  let out = text;
+  for (const [a, b] of spots.sort((x, y) => y[0] - x[0])) out = out.slice(0, a) + 'cat' + out.slice(b);
+  return out;
+}
+function recursiveGrepMatch(id, text) {
+  const p = BASH_PATTERNS.find(x => x.id === id);
+  // The rule needs a sink name, so a command without one is not parsed again.
+  if (p.pre && !p.pre.test(text)) return false;
+  const t = recursiveGrepAsReader(text);
+  if (t === text) return false;
+  return [maskTemplates(t), maskTemplates(maskSeparatorsApart(t))].some(v => (!p.pre || p.pre.test(v)) && p.regex.test(v));
+}
+
+function stdinGrepMatch(p, texts) {
+  const aside = texts.map(setAsideStdinGrep);
+  if (aside.every((t, i) => t === texts[i])) return true;
+  return aside.flatMap(t => [maskTemplates(t), maskTemplates(maskSeparatorsApart(t))]).some(v => (!p.pre || p.pre.test(v)) && p.regex.test(v));
+}
+
 // The bash-split view writes a quoted ; | or & as _, so "$USER;TOKEN" reads as $USER_TOKEN although
 // the shell expands only $USER. spaced: the print rules must also match the command with each quoted
 // separator written as a space, which keeps the words apart.
@@ -865,6 +1026,7 @@ function checkBashCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   const quoted = views.concat(read.map(v => maskTemplates(v.masked)));
   let rule = BASH_PATTERNS.find(p => LEVELS[p.level] <= threshold
     && ((p.quoted ? quoted : views).some(v => (!p.pre || p.pre.test(v)) && p.regex.test(v)) || (p.also && texts.some(t => p.also(t))))
+    && (!p.stdinGrep || stdinGrepMatch(p, texts))
     && (!p.spaced || spacedMatch(p, cmd)));
   // env-dump also reads each command in code, so a dump anywhere in the line counts.
   const dump = BASH_PATTERNS.find(p => p.id === 'env-dump');
