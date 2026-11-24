@@ -138,9 +138,10 @@ const PATTERNS = [
 
   // HIGH - Significant risk, data loss, security
   // The regex finds a fetch; fetchThenPipe finds a pipe after it on the same
-  // line and pipesToShell walks the stages. A path before curl never changes
-  // whether a line matches, so the rule starts at the name and stays linear.
-  { level: 'high', id: 'curl-pipe-sh',   regex: FETCH_NAME, confirm: (t) => fetchThenPipe(t) && pipesToShell(t), reason: 'piping URL to shell (RCE risk)' },
+  // line, then pipesToShell walks the stages for a shell and pipesToInterpreter
+  // for an interpreter. A path before curl never changes whether a line
+  // matches, so the rule starts at the name and stays linear.
+  { level: 'high', id: 'curl-pipe-sh',   regex: FETCH_NAME, confirm: (t, line) => fetchThenPipe(t) && (pipesToShell(t) || pipesToInterpreter(t) || pipesToInterpreter(line)), reason: 'piping URL to shell (RCE risk)' },
   // Shell flags may come first (bash -x <(curl ...), bash -lc "$(curl ...)"); the
   // download may arrive as a file, on stdin (< <(...), <<< "$(...)") or as -c
   // text, in $(...) or backticks.
@@ -736,7 +737,8 @@ function firstCommand(stage) {
     if (ch === '\\' && q !== "'") { i++; continue; }
     if (q) { if (ch === q) q = ''; continue; }
     if (ch === '"' || ch === "'") q = ch;
-    else if (/[;&<>()\n]/.test(ch)) return stage.slice(0, i);
+    else if (/[<>]/.test(ch)) return stage.slice(0, i).replace(/(^|\s)\d+$/, '$1');
+    else if (/[;&()\n]/.test(ch)) return stage.slice(0, i);
   }
   return stage;
 }
@@ -789,6 +791,115 @@ function stageCommands(stage) {
   return out;
 }
 
+// Interpreters that run a program read on stdin when they get no script and
+// no code option (python3, perl, node, curl ... | python3 -). Per interpreter:
+// short options that carry the program (code), ones that only print or check
+// and exit (exit; perl -c is not one, since it runs BEGIN blocks), ones that
+// take a value in the rest of their word or the next word (value), ones that
+// take only the rest of their word (attached), and long options of each kind.
+// node's long options that take a separate value (node --max-http-header-size 16384 app.js).
+const NODE_VALUE = ['require', 'import', 'loader', 'experimental-loader', 'input-type', 'conditions', 'env-file', 'env-file-if-exists', 'title',
+  'max-http-header-size', 'max-old-space-size', 'max-semi-space-size', 'stack-size', 'stack-trace-limit', 'inspect-port', 'debug-port',
+  'icu-data-dir', 'openssl-config', 'tls-cipher-list', 'tls-keylog', 'diagnostic-dir', 'report-dir', 'report-directory',
+  'report-filename', 'report-signal', 'heapsnapshot-signal', 'heapsnapshot-near-heap-limit', 'secure-heap', 'secure-heap-min',
+  'unhandled-rejections', 'dns-result-order', 'disable-proto', 'disable-warning', 'redirect-warnings', 'trace-event-categories',
+  'trace-event-file-pattern', 'cpu-prof-dir', 'cpu-prof-name', 'cpu-prof-interval', 'heap-prof-dir', 'heap-prof-name', 'heap-prof-interval',
+  'policy-integrity', 'experimental-policy', 'experimental-sea-config', 'experimental-default-type', 'watch-path', 'test-name-pattern',
+  'test-skip-pattern', 'test-reporter', 'test-reporter-destination', 'test-shard', 'test-timeout', 'test-concurrency',
+  'test-coverage-include', 'test-coverage-exclude', 'test-coverage-branches', 'test-coverage-functions', 'test-coverage-lines',
+  'snapshot-blob', 'localstorage-file', 'use-largepages', 'network-family-autoselection-attempt-timeout', 'experimental-config-file'];
+const INTERPRETERS = [
+  [/^(?:python|pypy)(?:\d+(?:\.\d+)*)?$/, { code: 'cm', exit: 'hV', value: 'WX', attached: '', longCode: ['help', 'help-all', 'help-env', 'help-xoptions', 'version'], longValue: ['check-hash-based-pycs'] }],
+  [/^(?:node|nodejs)$/, { code: 'ep', exit: 'hvc', value: 'rC', attached: '', longCode: ['eval', 'print', 'run', 'help', 'version', 'check', 'v8-options'], longValue: NODE_VALUE }],
+  [/^perl(?:\d+(?:\.\d+)*)?$/, { code: 'eE', exit: 'hvV', value: 'I', attached: 'MmxlC0idD', longCode: ['help', 'version'], longValue: [] }],
+  [/^ruby(?:\d+(?:\.\d+)*)?$/, { code: 'e', exit: 'hvc', value: 'rICE', attached: 'xF0KTW', longCode: ['help', 'version'], longValue: [] }],
+  [/^irb$/, { code: '', exit: 'v', value: 'rI', attached: '', longCode: ['help', 'version'], longValue: [] }],
+  [/^php(?:\d+(?:\.\d+)*)?(?:-cli)?$/, { code: 'rRBEFf', exit: 'hvilms', value: 'cdzt', attached: '', longCode: ['help', 'version'], longValue: [] }],
+  [/^(?:lua(?:\d+(?:\.\d+)*)?|luajit)$/, { code: 'e', exit: 'v', value: 'lj', attached: 'O', longCode: [], longValue: [] }],
+  [/^tclsh(?:\d+(?:\.\d+)*)?$/, { code: '', exit: '', value: '', attached: '', longCode: [], longValue: [], word: ['-encoding'] }],
+  [/^osascript$/, { code: 'e', exit: '', value: 'ls', attached: '', longCode: [], longValue: [] }],
+];
+
+// The interpreter's own words: true when it gets neither a script nor a code
+// or exit option, or names stdin as its script (-, /dev/stdin, /dev/fd/0,
+// /proc/self/fd/0).
+const STDIN_NAME = /^(?:-|\/dev\/stdin|\/dev\/fd\/0|\/proc\/[^/]+\/fd\/0)$/;
+function readsCodeFromStdin(spec, words) {
+  for (let k = 0; k < words.length; k++) {
+    const w = words[k];
+    if (STDIN_NAME.test(w)) return true;
+    if (w === '--') return k + 1 >= words.length || STDIN_NAME.test(words[k + 1]);
+    if ((spec.word || []).includes(w)) { k++; continue; }
+    if (w.startsWith('--')) {
+      const name = w.slice(2).split('=')[0];
+      if (spec.longCode.includes(name)) return false;
+      if (spec.longValue.includes(name) && !w.includes('=')) k++;
+      continue;
+    }
+    if (w.startsWith('-')) {
+      for (let j = 1; j < w.length; j++) {
+        if (spec.code.includes(w[j]) || spec.exit.includes(w[j])) return false;
+        if (spec.attached.includes(w[j])) break;
+        if (spec.value.includes(w[j])) { if (j === w.length - 1) k++; break; }
+      }
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+// The program one pipe stage runs, past assignments, keywords and wrappers:
+// { shell: true } for a shell, { interpreter, rest } for an interpreter and the
+// words after it, or null.
+function stageProgram(command) {
+  // `bash; echo`, `bash>out`, `|& bash`, `(bash)`; a quoted `FOO="a;b"` does not end it.
+  // Words sit on a stack (next word on top), so expanding env -S is O(words), not a splice.
+  const stack = shellWords(command).reverse();
+  const expand = (text) => { const more = shellWords(text); for (let k = more.length - 1; k >= 0; k--) stack.push(more[k]); };
+  while (stack.length) {
+    const word = stack.pop();
+    // VAR=x sh -, { bash; }, if ...; then bash; fi. A for, select or case word list is not a command.
+    if (/^(?:for|select|case)$/.test(word)) return null;
+    if (KEYWORDS.has(word) || /^[A-Za-z_]\w*\+?=/.test(word)) continue;
+    const name = word.slice(word.lastIndexOf('/') + 1);
+    if (PIPE_SHELL.test(name)) return { shell: true };
+    const interpreter = INTERPRETERS.find(([re]) => re.test(name));
+    if (interpreter) return { interpreter: interpreter[1], rest: stack.slice().reverse() };
+    const wrapper = Object.prototype.hasOwnProperty.call(WRAPPERS, name) ? WRAPPERS[name] : null;
+    if (!wrapper) return null;
+    const [shortValue, longValue] = wrapper;
+    while (stack.length) {
+      const w = stack[stack.length - 1];
+      if (w === '--') { stack.pop(); break; }
+      if (name === 'env' && /^[A-Za-z_]\w*=/.test(w)) { stack.pop(); continue; }
+      // env -S / --split-string splits its value into more env arguments, so
+      // its words are walked like the rest: env -S PATH=1 bash runs bash.
+      if (name === 'env' && (w === '-S' || w === '--split-string')) {
+        stack.pop();
+        if (stack.length) expand(stack.pop());
+        continue;
+      }
+      if (name === 'env' && /^--split-string=|^-S./.test(w)) {
+        stack.pop();
+        expand(w.slice(w.startsWith('--') ? w.indexOf('=') + 1 : 2));
+        continue;
+      }
+      if (name === 'timeout' && /^\d/.test(w)) { stack.pop(); break; }
+      if (!w.startsWith('-') || w === '-') break;
+      stack.pop();
+      if (w.startsWith('--')) {
+        if (!w.includes('=') && longValue.includes(w.slice(2))) stack.pop();
+        continue;
+      }
+      // A value flag at the end of a cluster takes the next word; -uroot carries its own.
+      const letters = w.slice(1);
+      if ([...letters].findIndex(c => shortValue.includes(c)) === letters.length - 1) stack.pop();
+    }
+  }
+  return null;
+}
+
 // A fetch with a | after it on the same line. Each line is scanned once.
 function fetchThenPipe(cmd) {
   for (const line of cmd.split(/[\n\r\u2028\u2029]/)) {
@@ -798,50 +909,65 @@ function fetchThenPipe(cmd) {
   return false;
 }
 
-function pipesToShell(cmd) {
+// The pipe stages after the first fetch on the line, read as text.
+function fetchStages(cmd) {
   const fetch = FETCH_NAME.exec(cmd);
-  if (!fetch) return false;
-  for (const command of cmd.slice(fetch.index).split('|').slice(1).flatMap(stageCommands)) {
-    // `bash; echo`, `bash>out`, `|& bash`, `(bash)`; a quoted `FOO="a;b"` does not end it.
-    // Words sit on a stack (next word on top), so expanding env -S is O(words), not a splice.
-    const stack = shellWords(command).reverse();
-    const expand = (text) => { const more = shellWords(text); for (let k = more.length - 1; k >= 0; k--) stack.push(more[k]); };
-    while (stack.length) {
-      const word = stack.pop();
-      // VAR=x sh -, { bash; }, if ...; then bash; fi. A for, select or case word list is not a command.
-      if (/^(?:for|select|case)$/.test(word)) break;
-      if (KEYWORDS.has(word) || /^[A-Za-z_]\w*\+?=/.test(word)) continue;
-      const name = word.slice(word.lastIndexOf('/') + 1);
-      if (PIPE_SHELL.test(name)) return true;
-      const wrapper = Object.prototype.hasOwnProperty.call(WRAPPERS, name) ? WRAPPERS[name] : null;
-      if (!wrapper) break;
-      const [shortValue, longValue] = wrapper;
-      while (stack.length) {
-        const w = stack[stack.length - 1];
-        if (w === '--') { stack.pop(); break; }
-        if (name === 'env' && /^[A-Za-z_]\w*=/.test(w)) { stack.pop(); continue; }
-        // env -S / --split-string splits its value into more env arguments, so
-        // its words are walked like the rest: env -S PATH=1 bash runs bash.
-        if (name === 'env' && (w === '-S' || w === '--split-string')) {
-          stack.pop();
-          if (stack.length) expand(stack.pop());
-          continue;
-        }
-        if (name === 'env' && /^--split-string=|^-S./.test(w)) {
-          stack.pop();
-          expand(w.slice(w.startsWith('--') ? w.indexOf('=') + 1 : 2));
-          continue;
-        }
-        if (name === 'timeout' && /^\d/.test(w)) { stack.pop(); break; }
-        if (!w.startsWith('-') || w === '-') break;
-        stack.pop();
-        if (w.startsWith('--')) {
-          if (!w.includes('=') && longValue.includes(w.slice(2))) stack.pop();
-          continue;
-        }
-        // A value flag at the end of a cluster takes the next word; -uroot carries its own.
-        const letters = w.slice(1);
-        if ([...letters].findIndex(c => shortValue.includes(c)) === letters.length - 1) stack.pop();
+  return fetch ? cmd.slice(fetch.index).split('|').slice(1).flatMap(stageCommands) : [];
+}
+
+function pipesToShell(cmd) {
+  return fetchStages(cmd).some((command) => { const r = stageProgram(command); return !!(r && r.shell); });
+}
+
+const runsFromStdin = (r) => !!(r && r.interpreter && readsCodeFromStdin(r.interpreter, r.rest));
+
+// Programs that only print or search the words they get, so curl among their
+// arguments (printf curl, grep wget log) is a name, not a download.
+const PRINTERS = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'cat', 'head', 'tail', 'wc', 'ls', 'which', 'test', '[', 'true', 'false', 'man']);
+
+// A curl or wget whose stdout is piped into an interpreter that reads its
+// program from stdin. The line is read with the shell reader: the pipeline
+// starts at a top-level command whose program is curl or wget and runs only
+// through its own | stages, a stage whose stdin is a regular file
+// (python3 < local.py) does not read the download, and a redirect between
+// options and the script (python3 2>/dev/null x.py) is set apart. The line is
+// walked as text instead, as before, when the reader is not sure of it, when a
+// stage opens a compound command ((...), { }, if, while, until, for, select,
+// case), or when curl or wget appears anywhere else: inside a group or a
+// substitution, behind env -S or xargs, or after any program but a printer.
+// The rule asks this of each view and of the line as typed, since a rendered
+// view drops a redirect's descriptor number (3< reads as <).
+const PIPE_OP = /^\|&?$/;
+const FETCHER = /^(?:curl|wget)$/;
+function pipesToInterpreter(src) {
+  const read = readShell(src);
+  const asText = () => fetchStages(src).some((command) => runsFromStdin(stageProgram(command)));
+  if (!read.sure) return asText();
+  const mention = /(?:curl|wget)\b/;
+  for (const f of read.frames) {
+    for (const c of f.cmds) {
+      const words = argv(c);
+      if (!words.some((w) => mention.test(w.value) || mention.test(src.slice(w.start, w.end)))) continue;
+      const p = programWord(words);
+      const name = p && !p.dynamic ? base(p.value) : null;
+      const producer = name && FETCHER.test(name) && f.kind === 'top' && !c.group;
+      if (!producer && !(name && PRINTERS.has(name))) return asText();
+    }
+  }
+  const stage = (c) => {
+    if (c.words.some((w) => w.target && /^(?:<|<>)$/.test(w.target) && ['', '0'].includes(redirectFd(src, w)) && !w.dynamic && regularPath(w.value))) return false;
+    return runsFromStdin(stageProgram(argv(c).map((w) => src.slice(w.start, w.end)).join(' ')));
+  };
+  const compound = (c) => { const w = c.words[0]; return !!w && (w.op === '(' || (!w.op && !w.spans.length && OPENERS.has(w.value))); };
+  for (const f of read.frames) {
+    const cmds = f.cmds;
+    for (let i = 0; i < cmds.length; i++) {
+      const p = programWord(argv(cmds[i]));
+      if (!p || p.dynamic || !FETCHER.test(base(p.value)) || !PIPE_OP.test(cmds[i].op)) continue;
+      for (let j = i + 1; j < cmds.length; j++) {
+        if (compound(cmds[j])) return fetchStages(src).some((command) => runsFromStdin(stageProgram(command)));
+        if (stage(cmds[j])) return true;
+        if (!PIPE_OP.test(cmds[j].op)) break;
       }
     }
   }
@@ -1294,7 +1420,7 @@ function checkCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   const quoted = /["'\\]/.test(cmd);
   const blanked = quotedGlobsBlanked(cmd);
   const globViews = blanked === cmd ? null : shellViews(blanked);
-  const hit = (p, regex, vs) => vs.some((v) => regex.test(p.segment ? v.masked : v.text) && (!p.confirm || p.confirm(v.text)));
+  const hit = (p, regex, vs) => vs.some((v) => regex.test(p.segment ? v.masked : v.text) && (!p.confirm || p.confirm(v.text, cmd)));
   for (const p of PATTERNS) {
     if (LEVELS[p.level] > threshold) continue;
     const full = quoted && p.quoted ? p.quoted : p.regex;
