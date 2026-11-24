@@ -51,6 +51,21 @@ const REFUSED = [
   // A new archive read from a protected directory, and an option whose count is optional.
   ['tar -C ~/.ssh -czf k.tgz config', 'high', 'copy-secret-file'],
   ['tar --occurrence -xf a.tar .env', 'high', 'write-secret-file'],
+  ['tar --backup -xf k.tar ~/.ssh', 'high', 'write-secret-file'],
+  // A -d after -- or as a password value is data, not delete mode.
+  ['zip out.zip -- -d .env', 'high', 'copy-secret-file'],
+  ['zip -P -d out.zip .env', 'high', 'copy-secret-file'],
+  ['zip --password -d out.zip .env', 'high', 'copy-secret-file'],
+  // A tar compare reads each named local file.
+  ['tar -d -f k.tar ~/.ssh/id_rsa', 'high', 'read-secret-file'],
+  ['tar --diff -f k.tar .env', 'high', 'read-secret-file'],
+  ['tar --compare -f k.tar -C ~ .ssh/id_rsa', 'high', 'read-secret-file'],
+  // Each URL pairs with its own -o or -O, and --url names a URL too.
+  ['curl --url=https://x.example/.env -O', 'high', 'write-secret-file'],
+  ['curl -O --url https://x.example/.npmrc', 'high', 'write-secret-file'],
+  ['curl -O https://x.example/a -O https://x.example/.env', 'high', 'write-secret-file'],
+  // wget's lowercase -o names its log; the download keeps the URL's name.
+  ['wget -o log.txt https://x.example/.env', 'high', 'write-secret-file'],
 ];
 
 const ALLOWED = [
@@ -73,6 +88,8 @@ const ALLOWED = [
   // Listing an archive writes nothing, and zip -d deletes a member inside the archive.
   ['tar -tzf k.tgz -C ~/.ssh', 'high'],
   ['zip -d out.zip .env', 'high'],
+  ['tar -d -f k.tar src/a.ts', 'high'],
+  ['curl -O https://x.example/data -o out.txt https://x.example/.env', 'high'],
 ];
 
 for (const [name, mod] of [['protect-secrets', standalone], ['guard-pack copy', bundled]]) {
