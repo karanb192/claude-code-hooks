@@ -49,6 +49,27 @@ describe('Regression: archive extraction of named config members', () => {
     for (const cmd of ['tar -xf evil.tar .claude', 'tar -xf evil.tar .claude/', 'unzip evil.zip ".claude/*"']) bashBlocked(cmd, 'claude-dir');
   });
 
+  it('reads a bare --occurrence as a flag, so the member after it still counts', () => {
+    for (const cmd of ['tar -xf evil.tar --occurrence .claude/settings.json', 'tar -xf evil.tar --occurrence=1 .claude/settings.json'])
+      bashBlocked(cmd, 'settings-file');
+  });
+
+  it('denies a wildcard member that can select a protected path', () => {
+    for (const cmd of [
+      'unzip evil.zip ".claude/settings.*"',
+      'unzip evil.zip "*settings.json"',
+      'unzip evil.zip "[.]claude/set*"',
+      'tar -xf evil.tar --wildcards ".claude/set*"',
+    ]) bashBlocked(cmd, 'settings-file');
+  });
+
+  it('judges the path a member lands on after -j or --strip-components', () => {
+    for (const cmd of ['tar -xf evil.tar .claude/./settings.json', 'tar -xf evil.tar --strip-components=1 x/.claude/settings.json'])
+      bashBlocked(cmd, 'settings-file');
+    bashBlocked('unzip -j evil.zip a/hooks.json', 'hooks-manifest');
+    for (const cmd of ['unzip -j evil.zip .claude/settings.json', 'tar -xf evil.tar --strip-components=1 .claude/settings.json']) bashAllowed(cmd);
+  });
+
   it('still allows listing, printing, other members and extraction elsewhere', () => {
     for (const cmd of [
       'tar -xf evil.tar',
@@ -61,6 +82,7 @@ describe('Regression: archive extraction of named config members', () => {
       'unzip -l evil.zip .claude/settings.json',
       'unzip -p evil.zip .claude/settings.json',
       'unzip -o evil.zip src/app.js',
+      'unzip evil.zip "src/*.js"',
     ]) bashAllowed(cmd);
   });
 });

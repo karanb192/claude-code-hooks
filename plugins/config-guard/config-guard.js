@@ -355,18 +355,20 @@ function tarOutputs(args) {
 // The member names a tar extraction writes, given on its command line.
 // Options that take a value skip it (attached or as the next word); with
 // -O or --to-stdout nothing is written. A long option not known to take a
-// value is treated as a flag, so its next word counts as a member.
+// value is treated as a flag, so its next word counts as a member. Also
+// returns --strip-components, and whether a rename option makes the
+// destination unknown.
 const TAR_VALUE = 'bCfFgHIKLNTVX';
-const TAR_LONG_VALUE = /^--(?:file|directory|files-from|exclude|exclude-from|transform|xform|owner|group|mode|mtime|newer|newer-mtime|after-date|listed-incremental|index-file|volno-file|label|rsh-command|use-compress-program|to-command|info-script|new-volume-script|starting-file|tape-length|blocking-factor|record-size|format|quoting-style|strip-components|suffix|level|sparse-version|pax-option|owner-map|group-map|warning|checkpoint-action|occurrence)$/;
-function tarMembers(args) {
+const TAR_LONG_VALUE = /^--(?:file|directory|files-from|exclude|exclude-from|transform|xform|owner|group|mode|mtime|newer|newer-mtime|after-date|listed-incremental|index-file|volno-file|label|rsh-command|use-compress-program|to-command|info-script|new-volume-script|starting-file|tape-length|blocking-factor|record-size|format|quoting-style|strip-components|strip|suffix|level|sparse-version|pax-option|owner-map|group-map|warning|checkpoint-action)$/;
+function tarExtraction(args) {
   const words = shellWords(args);
   const members = [];
-  let options = true;
+  let options = true, strip = 0, renamed = false;
   for (let i = 0; i < words.length; i++) {
     const w = words[i];
     if (!options || w === '-' || !w.startsWith('-')) {
       if (options && i === 0 && /^[a-zA-Z]+$/.test(w)) {
-        if (w.includes('O')) return [];
+        if (w.includes('O')) return { members: [] };
         for (const c of w) if (TAR_VALUE.includes(c)) i++;
         continue;
       }
@@ -375,31 +377,42 @@ function tarMembers(args) {
     }
     if (w === '--') { options = false; continue; }
     if (w.startsWith('--')) {
-      if (/^--to-(?:stdout|command)\b/.test(w)) return [];
+      if (/^--to-(?:stdout|command)\b/.test(w)) return { members: [] };
+      const st = w.match(/^--strip(?:-c[a-z-]*)?(?:=(.*))?$/);
+      if (st) {
+        const v = st[1] !== undefined ? st[1] : words[++i];
+        if (/^\d{1,3}$/.test(v || '')) strip = Number(v); else renamed = true;
+        continue;
+      }
+      if (/^--(?:transform|xform)\b/.test(w)) renamed = true;
       if (TAR_LONG_VALUE.test(w)) i++;
       continue;
     }
     for (let k = 1; k < w.length; k++) {
-      if (w[k] === 'O') return [];
+      if (w[k] === 'O') return { members: [] };
+      // bsdtar's -s rewrites member names.
+      if (w[k] === 's') renamed = true;
       if (TAR_VALUE.includes(w[k])) { if (k === w.length - 1) i++; break; }
     }
   }
-  return members;
+  return { members, strip, renamed };
 }
 
 // The members an unzip call extracts: the words after the archive name, up
 // to -x. -l, -t, -v, -z, -Z, -p and -c list, test or print without writing.
-function unzipMembers(args) {
+// -j drops the folders, so each member lands under its own name.
+function unzipExtraction(args) {
   const words = shellWords(args);
   const members = [];
-  let archive = false, excluding = false;
+  let archive = false, excluding = false, junk = false;
   for (let i = 0; i < words.length; i++) {
     const w = words[i];
     if (w.startsWith('-') && w !== '-') {
       excluding = false;
       for (let k = 1; k < w.length; k++) {
         const c = w[k];
-        if ('ltvzZpc'.includes(c)) return [];
+        if ('ltvzZpc'.includes(c)) return { members: [] };
+        if (c === 'j') junk = true;
         if (c === 'x') { excluding = true; break; }
         if ('dPOI'.includes(c)) { if (k === w.length - 1) i++; break; }
       }
@@ -409,30 +422,156 @@ function unzipMembers(args) {
     if (!archive) { archive = true; continue; }
     members.push(w);
   }
-  return members;
+  return { members, junk };
 }
 
-function unzipWrites(cmd, tokenRegex) {
+function unzipWrites(cmd) {
   for (const seg of cmd.split(/[|;&]/)) {
     const m = /\bunzip\b/i.exec(seg);
     if (m && /\s-[a-zA-Z]*[dxC]\b/i.test(seg.slice(m.index + m[0].length))) return true;
   }
-  for (const seg of unquotedSegments(cmd.replace(/\\\r?\n/g, ' '))) {
-    const m = /(?<![\w.])unzip\b([\s\S]*)/i.exec(seg);
-    if (m && unzipMembers(m[1]).some((v) => tokenRegex.test(' ' + v))) return true;
-  }
   return false;
 }
 
-// An archive extraction that names a .claude folder as a member.
-function extractsClaudeDir(cmd) {
+// Archive-side wildcards: * and ? match any character, / included, and
+// [...] a class. Greedy matching with one backtrack point keeps it linear
+// in the pattern times the name.
+function globMatch(glob, name) {
+  let g = 0, n = 0, star = -1, mark = 0;
+  const one = (at, c) => {
+    if (glob[at] === '?') return [true, at + 1];
+    if (glob[at] === '[') {
+      const end = glob.indexOf(']', at + 2);
+      if (end > 0) {
+        let body = glob.slice(at + 1, end);
+        const neg = body[0] === '!' || body[0] === '^';
+        if (neg) body = body.slice(1);
+        let hit = false;
+        for (let k = 0; k < body.length; k++) {
+          if (body[k + 1] === '-' && k + 2 < body.length) { if (c >= body[k] && c <= body[k + 2]) hit = true; k += 2; }
+          else if (body[k] === c) hit = true;
+        }
+        return [hit !== neg, end + 1];
+      }
+    }
+    if (glob[at] === '\\' && at + 1 < glob.length) return [glob[at + 1] === c, at + 2];
+    return [glob[at] === c, at + 1];
+  };
+  while (n < name.length) {
+    if (g < glob.length && glob[g] === '*') { star = g++; mark = n; continue; }
+    if (g < glob.length) { const [ok, next] = one(g, name[n]); if (ok) { g = next; n++; continue; } }
+    if (star < 0) return false;
+    g = star + 1; n = ++mark;
+  }
+  while (glob[g] === '*') g++;
+  return g === glob.length;
+}
+
+// One name a pattern matches: * as nothing, ? as x, a class as a member.
+function globExample(glob) {
+  let out = '';
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === '*') continue;
+    if (c === '?') { out += 'x'; continue; }
+    if (c === '\\' && i + 1 < glob.length) { out += glob[++i]; continue; }
+    if (c === '[') {
+      const end = glob.indexOf(']', i + 2);
+      if (end > 0) {
+        const body = glob.slice(i + 1, end);
+        out += /^[!^]/.test(body) ? '#' : body[0];
+        i = end;
+        continue;
+      }
+    }
+    out += c;
+  }
+  return out;
+}
+
+// Names the protected-path rules stand for, used to judge a wildcard member.
+const PROTECTED_SAMPLES = [
+  '.claude/settings.json', '.claude/settings.local.json', 'managed-settings.json', '.claude/hooks/x', '.claude/hooks',
+  'hooks.json', '.mcp.json', '.claude.json', '.claude-plugin/plugin.json', '.codex-plugin/plugin.json', 'CLAUDE.md',
+  'CLAUDE.local.md', 'AGENTS.md', 'AGENTS.override.md', '.claude/rules/x', '.claude/agents/x', '.claude/commands/x',
+  '.claude/plugins/x', '.claude/subagent-spawn-cap',
+];
+
+// Where each extracted member lands, after --strip-components or -j, plus
+// the wildcard members with the folder depth they lose. A member whose
+// destination cannot be known is judged by its own name.
+function archiveExtractions(cmd) {
+  const found = [];
   for (const seg of unquotedSegments(cmd.replace(/\\\r?\n/g, ' '))) {
     const tar = TAR_RUN.exec(seg);
-    if (tar && TAR_EXTRACT.test(tar[1]) && tarMembers(tar[1]).some((v) => CLAUDE_DIR_OPERAND.test(' ' + v))) return true;
+    if (tar && TAR_EXTRACT.test(tar[1])) {
+      const x = tarExtraction(tar[1]);
+      for (const m of x.members) found.push({ member: m, strip: x.renamed ? 0 : x.strip, junk: false });
+    }
     const zip = /(?<![\w.])unzip\b([\s\S]*)/i.exec(seg);
-    if (zip && unzipMembers(zip[1]).some((v) => CLAUDE_DIR_OPERAND.test(' ' + v))) return true;
+    if (zip) {
+      const x = unzipExtraction(zip[1]);
+      for (const m of x.members) found.push({ member: m, strip: 0, junk: x.junk });
+    }
   }
-  return false;
+  return found;
+}
+
+function landing(member, strip, junk) {
+  // A name built from a variable cannot be followed through the strip.
+  if (/[$`]/.test(member)) return joinDir('', member);
+  const named = member.replace(/^~(?=\/|$)/, HOME_DIR).replace(/(.)\/+$/, '$1');
+  const parts = joinDir('', named).split('/').filter((p) => p !== '');
+  if (junk) return parts.length ? parts[parts.length - 1] : null;
+  if (parts.length <= strip) return null;
+  return parts.slice(strip).join('/');
+}
+
+// The protected-path rule an extraction writes, if any.
+function archiveWrite(cmd, threshold, tokens) {
+  const found = archiveExtractions(cmd);
+  if (!found.length) return null;
+  const active = tokens.filter((t) => LEVELS[t.level] <= threshold);
+  const pairs = (junk) => active.flatMap((t) => PROTECTED_SAMPLES
+    .map((sample) => (junk ? path.posix.basename(sample) : sample))
+    .filter((dest) => t.regex.test(' ' + dest)).map((dest) => [t, dest]));
+  const plain = pairs(false), flat = pairs(true);
+  const seen = new Set();
+  for (const { member, strip, junk } of found) {
+    const key = `${strip}:${junk}:${member}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (!/[*?[]/.test(member)) {
+      const dest = landing(member, strip, junk);
+      const hit = dest && active.find((t) => t.regex.test(' ' + dest));
+      if (hit) return hit;
+      continue;
+    }
+    // The pattern text itself is still judged as a path, as before.
+    const named = active.find((t) => t.regex.test(' ' + member));
+    if (named) return named;
+    // Folder prefixes the pattern itself can match: each part up to a /,
+    // with its wildcards filled in, so [.]claude/* is tried as .claude/...
+    const prefixes = ['', 'x/'];
+    for (let i = member.indexOf('/'); i > 0 && prefixes.length < 10; i = member.indexOf('/', i + 1)) prefixes.push(globExample(member.slice(0, i + 1)));
+    const depth = junk ? 2 : strip;
+    const depths = [...new Set([...Array(Math.min(depth, 8) + 1).keys(), depth])];
+    for (const [t, dest] of junk ? flat : plain) {
+      for (const pre of prefixes) {
+        for (const k of depths) if (globMatch(member, pre + 'x/'.repeat(k) + dest)) return t;
+      }
+    }
+  }
+  return null;
+}
+
+// An archive extraction that writes a .claude folder by name.
+function extractsClaudeDir(cmd) {
+  return archiveExtractions(cmd).some(({ member, strip, junk }) => {
+    if (/[*?[]/.test(member) && CLAUDE_DIR_OPERAND.test(' ' + member)) return true;
+    const dest = landing(member, strip, junk);
+    return dest !== null && CLAUDE_DIR_OPERAND.test(' ' + dest);
+  });
 }
 
 function tarWrites(cmd, tokenRegex) {
@@ -450,7 +589,6 @@ function tarWrites(cmd, tokenRegex) {
     const { archive, side } = tarOutputs(args);
     if (/\s--rem/.test(args) || named(side)) return true;
     if (!extracts && TAR_ARCHIVING.test(args) && named(archive)) return true;
-    if (extracts && named(tarMembers(args))) return true;
   }
   return false;
 }
@@ -987,11 +1125,15 @@ function checkCommandText(rawCmd, safetyLevel, cwd, dirMoves = true) {
       return { blocked: true, id: t.id, level: t.level, reason: `deleting protected config: ${t.reason}` };
     if (MOVE_COPY_VERB.test(cmd))
       return { blocked: true, id: t.id, level: t.level, reason: `moving/copying/linking a protected config path: ${t.reason}` };
-    if (WRITE_VERB.test(cmd) || patchWrites(cmd) || tarWrites(cmd, t.regex) || unzipWrites(cmd, t.regex))
+    if (WRITE_VERB.test(cmd) || patchWrites(cmd) || tarWrites(cmd, t.regex) || unzipWrites(cmd))
       return { blocked: true, id: t.id, level: t.level, reason: `writing to protected config: ${t.reason}` };
   }
   if (extractsClaudeDir(cmd)) {
     return { blocked: true, id: 'claude-dir', level: 'critical', reason: 'extracting a .claude folder from an archive overwrites its settings and hooks' };
+  }
+  const archived = archiveWrite(cmd, threshold, [...BASH_TOKENS, ...registeredHookTokens(cwd)]);
+  if (archived) {
+    return { blocked: true, id: archived.id, level: archived.level, reason: `extracting an archive member onto protected config: ${archived.reason}` };
   }
   const dirChange = claudeDirChange(cmd, cwd, dirMoves);
   if (dirChange === true) {
