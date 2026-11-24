@@ -991,6 +991,18 @@ function uploadArgs(name, ops) {
   return out.map(u => ({ value: u.value && uploadedFile(u.value, u.kind), word: u.kind === 'T' ? u.word : null }));
 }
 
+// Code given to an interpreter on the command line (python -c, node -e, ruby -e, perl -e, php -r)
+// or in a heredoc opens a file by naming it in a string literal: open('.env'), File.read(".env").
+// Every word is scanned, so the code is found whatever option carries it.
+const INTERPRETER = /^(?:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|ruby|perl|php|lua[0-9.]*|luajit|Rscript|osascript|julia|pwsh)$/;
+const CODE_LITERAL = /(['"`])((?:\\[\s\S]|(?!\1)[^\\\n])*)\1/g;
+function codeReads(code, take, ctx) {
+  for (const m of code.matchAll(CODE_LITERAL)) {
+    const v = m[2].replace(/^[+<>]+\s*/, '').trim();
+    if (v && v.length < 512) take('read', secretPath(v, null, ctx));
+  }
+}
+
 function commandFileAccess(cmd, ctx) {
   const found = (kind, file) => file && { id: FILE_ACCESS[kind].id, level: file.level, reason: `${FILE_ACCESS[kind].reason} (${file.reason})` };
   // Every operand is checked and the most severe file wins, so operand order never lowers the level.
@@ -1009,6 +1021,14 @@ function commandFileAccess(cmd, ctx) {
   if (name === 'curl' || name === 'wget') {
     for (const u of uploadArgs(name, ops)) take('send', secretPath(u.value, u.word, ctx));
     return best;
+  }
+  if (INTERPRETER.test(name)) {
+    for (const w of ops) codeReads(w.value, take, ctx);
+    for (const h of ctx.heredocs || []) if (h.cmd === cmd) codeReads(ctx.src.slice(h.bodyStart, h.bodyEnd), take, ctx);
+    // perl -n or -p and ruby -n or -p read their file operands line by line, like sed.
+    if (/^(?:perl|ruby)$/.test(name) && ops.some(w => /^-[A-Za-z]*[np]/.test(w.value))) {
+      for (const w of ops) if (!/^-/.test(w.value)) take('read', secretPath(w.value, w, ctx));
+    }
   }
   if (name === 'source' || name === '.') {
     if (ops[0]) take('source', secretPath(ops[0].value, ops[0], ctx));
@@ -1061,7 +1081,7 @@ function secretFileAccess(text, safetyLevel, literal) {
     }
     for (const [value, count] of literal) if ((seen.get(value) || 0) <= count) skip.add(value);
   }
-  const ctx = { safetyLevel, src: text, literal: skip };
+  const ctx = { safetyLevel, src: text, literal: skip, heredocs: read.heredocs };
   let best = null;
   for (const frame of read.frames) {
     for (const cmd of frame.cmds) best = stronger(best, commandFileAccess(cmd, ctx));
