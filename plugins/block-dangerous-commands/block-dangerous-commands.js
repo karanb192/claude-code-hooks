@@ -1412,6 +1412,34 @@ function pushForces(cmd) {
   });
 }
 
+// An absolute or home path spelled with . or .. components or repeated /
+// (/./etc, //etc, /tmp/../etc, of=//dev/sda, ~/x/../..) names the same path as
+// its plain spelling. The rules that judge a path operand also read each view
+// with such paths reduced lexically, beside the text as written, so a spelling
+// can only add a refusal. .. at the root stays at the root; after ~ or $HOME it
+// is kept, since it leaves the home directory.
+const PATH_RULES = new Set(['rm-home', 'rm-home-var', 'rm-home-trailing', 'rm-home-abs', 'rm-root', 'rm-system', 'rm-cwd', 'rm-parent', 'dd-disk', 'mkfs']);
+const PATH_TOKEN = /(^|[\s"'=(<>])((?:~|\$HOME|\$\{HOME\})?\/[^\s;&|<>()"'`]*)/g;
+function reducePath(token) {
+  const m = /^(~|\$HOME|\$\{HOME\})?(\/.*)$/.exec(token);
+  const [, home = '', rest] = m;
+  const out = [];
+  for (const part of rest.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') {
+      if (out.length && out[out.length - 1] !== '..') out.pop();
+      else if (home) out.push('..');
+      continue;
+    }
+    out.push(part);
+  }
+  return home + '/' + out.join('/') + (out.length && /\/\.?$/.test(rest) ? '/' : '');
+}
+function reducedPaths(text) {
+  if (!/\/\.|\/\//.test(text)) return text;
+  return text.replace(PATH_TOKEN, (all, before, token) => before + reducePath(token));
+}
+
 function checkCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   const threshold = LEVELS[safetyLevel] || 2;
   // bash removes a backslash-newline outright, joining the two lines.
@@ -1421,11 +1449,22 @@ function checkCommand(cmd, safetyLevel = SAFETY_LEVEL) {
   const blanked = quotedGlobsBlanked(cmd);
   const globViews = blanked === cmd ? null : shellViews(blanked);
   const hit = (p, regex, vs) => vs.some((v) => regex.test(p.segment ? v.masked : v.text) && (!p.confirm || p.confirm(v.text, cmd)));
+  const reduce = (vs) => {
+    if (!vs) return null;
+    const out = vs.map((v) => { const text = reducedPaths(v.text); return text === v.text ? null : { text, masked: maskQuotedSeparators(text) }; }).filter(Boolean);
+    return out.length ? out : null;
+  };
+  let reduced;
   for (const p of PATTERNS) {
     if (LEVELS[p.level] > threshold) continue;
     const full = quoted && p.quoted ? p.quoted : p.regex;
     const plain = p.plain && (quoted && p.plainQuoted ? p.plainQuoted : p.plain);
-    const found = plain && globViews ? hit(p, plain, views) || hit(p, full, globViews) : hit(p, full, views);
+    const judge = (vs, gvs) => (plain && gvs ? hit(p, plain, vs) || hit(p, full, gvs) : hit(p, full, vs));
+    let found = judge(views, globViews);
+    if (!found && PATH_RULES.has(p.id)) {
+      if (reduced === undefined) reduced = { views: reduce(views), globViews: reduce(globViews) };
+      if (reduced.views) found = judge(reduced.views, globViews ? reduced.globViews || globViews : null);
+    }
     if (found) return { blocked: true, pattern: p };
   }
   return { blocked: false, pattern: null };
