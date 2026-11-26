@@ -2,7 +2,7 @@
 
 > Branch-aware git guardrails plus destructive gh CLI protection: denies the operations that rewrite shared history or close things you didn't mean to close.
 
-A `PreToolUse` hook fires before every `Bash` call and checks the command against a tiered pattern list. On a match it returns `permissionDecision: "deny"` with the pattern id and reason, so Claude sees exactly why the command was refused. Branch-aware rules (`git commit`, `merge`, `rebase`, `reset`, `push` while on a protected branch) resolve the branch at check time in the repository the command reaches (`git branch --show-current` for the session's repository, the `HEAD` file for any other); everything else matches on the command text alone. Protected branches are `main` and `master`.
+A `PreToolUse` hook fires before every `Bash` call and checks the command against a tiered pattern list. On a match it returns `permissionDecision: "deny"` with the pattern id and reason, so Claude sees exactly why the command was refused. Branch-aware rules (`git commit`, `merge`, `rebase`, `reset`, `push` while on a protected branch) resolve the branch at check time in the repository the command reaches (`git branch --show-current` for the session's repository, the `HEAD` file for any other); everything else matches on the command text alone. The session's repository is the folder the command runs in, taken from the payload's `cwd` (the hook's own folder only when the payload has none), and `cd` or `-C` in the command resolve from it. A `cwd` whose branch cannot be read (a missing folder, git failing) refuses the branch rules; a folder outside any git repository has no branch to protect. Protected branches are `main` and `master`.
 
 ## Install
 
@@ -76,7 +76,7 @@ From 1.2.0, a guard that cannot finish its check refuses the call instead of all
 
 ## Data & privacy
 
-Blocked commands are logged (with timestamp, pattern id, session id, cwd, and permission mode) to `~/.claude/hooks-logs/<date>.jsonl`. The only command it runs is `git branch --show-current`, locally, in the session's repository. For another repository the command names it runs nothing: it reads that repository's `HEAD` and ref files. It makes no network calls.
+Blocked commands are logged (with timestamp, pattern id, session id, cwd, and permission mode) to `~/.claude/hooks-logs/<date>.jsonl`. The only command it runs is `git branch --show-current`, locally, in the folder the command runs in. For another repository the command names it runs nothing: it reads that repository's `HEAD` and ref files. It makes no network calls.
 
 ## Uninstall
 
